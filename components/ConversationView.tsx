@@ -32,7 +32,7 @@ export default function ConversationView({ messages }: { messages: ChatMessage[]
                 : "self-start bg-white/5 text-zinc-200"
             }`}
           >
-            <p>{message.text}</p>
+            <p className="whitespace-pre-wrap break-words">{message.text}</p>
           </div>
         ))}
       </div>
