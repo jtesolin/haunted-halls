@@ -83,8 +83,8 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-[#09090c] text-white">
-      <div className="mx-auto flex min-h-screen max-w-[1600px] gap-6 px-4 py-6 sm:px-6 lg:px-8">
+    <div className="h-screen overflow-hidden bg-[#09090c] text-white">
+      <div className="flex h-full w-full gap-6 px-4 py-6 sm:px-6 lg:px-8">
         <SessionHistorySidebar
           sessions={sessions}
           activeSessionId={activeSessionId}
@@ -92,7 +92,7 @@ export default function Home() {
           onNewSession={handleNewSession}
         />
 
-        <main className="flex min-h-screen flex-1 flex-col rounded-[32px] border border-white/10 bg-slate-950/90 p-6 shadow-2xl shadow-black/20">
+        <main className="flex h-full min-h-0 flex-1 flex-col overflow-hidden rounded-[32px] border border-white/10 bg-slate-950/90 p-6 shadow-2xl shadow-black/20">
           <header className="mb-6 flex items-center justify-between gap-4 rounded-3xl border border-white/10 bg-white/5 p-5">
             <div>
               <p className="text-sm uppercase tracking-[0.28em] text-sky-300/80">Dungeon MUD</p>
@@ -103,12 +103,8 @@ export default function Home() {
             </div>
           </header>
 
-          <div
-            className={`flex min-h-0 flex-1 flex-col gap-6 ${
-              hasMessages ? "justify-between" : "justify-center"
-            }`}
-          >
-            <div className="min-h-[20rem] rounded-3xl border border-white/10 bg-black/40 p-4">
+          <div className="flex h-full min-h-0 flex-col gap-6">
+            <div className="flex-1 min-h-0 overflow-hidden rounded-3xl border border-white/10 bg-black/40 p-4">
               {hasMessages ? (
                 <ConversationView messages={activeSession.messages} />
               ) : (
@@ -119,7 +115,7 @@ export default function Home() {
               )}
             </div>
 
-            <div className="mt-2">
+            <div className="mt-2 shrink-0">
               <ChatInput
                 value={messageText}
                 onChange={setMessageText}

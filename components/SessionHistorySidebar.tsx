@@ -18,7 +18,7 @@ export default function SessionHistorySidebar({
   onNewSession: () => void;
 }) {
   return (
-    <aside className="flex w-full max-w-[320px] flex-col gap-4 rounded-3xl border border-white/10 bg-zinc-950/95 p-4 shadow-xl">
+    <aside className="flex h-full w-full max-w-[320px] flex-col gap-4 overflow-hidden rounded-3xl border border-white/10 bg-zinc-950/95 p-4 shadow-xl">
       <div className="flex items-center justify-between gap-3">
         <div>
           <p className="text-xs uppercase tracking-[0.24em] text-zinc-400">Sessions</p>
@@ -33,29 +33,31 @@ export default function SessionHistorySidebar({
         </button>
       </div>
 
-      <div className="space-y-3 overflow-y-auto pr-1">
-        {sessions.map((session) => (
-          <button
-            key={session.id}
-            type="button"
-            onClick={() => onSelectSession(session.id)}
-            className={`w-full rounded-3xl px-4 py-4 text-left transition ${
-              session.id === activeSessionId
-                ? "bg-slate-800 text-white ring-1 ring-sky-500/30"
-                : "bg-white/5 text-zinc-300 hover:bg-white/10"
-            }`}
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="block text-sm font-semibold text-left">{session.title}</span>
-              <span className="rounded-full bg-white/5 px-2 py-1 text-[11px] text-zinc-400">
-                {session.messages.length}
-              </span>
-            </div>
-            <p className="mt-2 text-xs leading-5 text-zinc-500">
-              {session.messages.length > 0 ? `${session.messages.length} message${session.messages.length === 1 ? "" : "s"}` : "No messages yet"}
-            </p>
-          </button>
-        ))}
+      <div className="flex-1 overflow-hidden">
+        <div className="space-y-3 h-full overflow-y-auto pr-1 custom-scrollbar">
+          {sessions.map((session) => (
+            <button
+              key={session.id}
+              type="button"
+              onClick={() => onSelectSession(session.id)}
+              className={`w-full rounded-3xl px-4 py-4 text-left transition ${
+                session.id === activeSessionId
+                  ? "bg-slate-800 text-white ring-1 ring-sky-500/30"
+                  : "bg-white/5 text-zinc-300 hover:bg-white/10"
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="block text-sm font-semibold text-left">{session.title}</span>
+                <span className="rounded-full bg-white/5 px-2 py-1 text-[11px] text-zinc-400">
+                  {session.messages.length}
+                </span>
+              </div>
+              <p className="mt-2 text-xs leading-5 text-zinc-500">
+                {session.messages.length > 0 ? `${session.messages.length} message${session.messages.length === 1 ? "" : "s"}` : "No messages yet"}
+              </p>
+            </button>
+          ))}
+        </div>
       </div>
     </aside>
   );

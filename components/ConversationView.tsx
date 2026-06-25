@@ -21,7 +21,7 @@ export default function ConversationView({ messages }: { messages: ChatMessage[]
   }, [messages.length]);
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto pr-2" ref={containerRef}>
+    <div className="flex h-full min-h-0 flex-col overflow-y-auto pr-2 custom-scrollbar" ref={containerRef}>
       <div className="flex flex-col gap-4 py-4">
         {messages.map((message) => (
           <div
