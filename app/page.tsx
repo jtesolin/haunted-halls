@@ -31,6 +31,7 @@ export default function Home() {
   ]);
   const [activeSessionId, setActiveSessionId] = useState(sessions[0].id);
   const [messageText, setMessageText] = useState("");
+  const [isSending, setIsSending] = useState(false);
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId) ?? sessions[0],
@@ -51,9 +52,9 @@ export default function Home() {
     setMessageText("");
   };
 
-  const handleSendMessage = () => {
+  const handleSendMessage = async () => {
     const trimmed = messageText.trim();
-    if (!trimmed) {
+    if (!trimmed || isSending) {
       return;
     }
 
@@ -63,23 +64,56 @@ export default function Home() {
       text: trimmed,
     };
 
-    const assistantMessage: ChatMessage = {
-      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-      role: "assistant",
-      text: `The hall answers: ${trimmed}`,
-    };
-
+    setMessageText("");
+    setIsSending(true);
     setSessions((currentSessions) =>
       currentSessions.map((session) =>
         session.id === activeSession.id
-          ? {
-              ...session,
-              messages: [...session.messages, userMessage, assistantMessage],
-            }
+          ? { ...session, messages: [...session.messages, userMessage] }
           : session
       )
     );
-    setMessageText("");
+
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: trimmed }),
+      });
+
+      const result = await response.json();
+      const hallReply = typeof result?.message === "string" ? result.message : "The hall did not respond.";
+
+      const assistantMessage: ChatMessage = {
+        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        role: "assistant",
+        text: hallReply,
+      };
+
+      setSessions((currentSessions) =>
+        currentSessions.map((session) =>
+          session.id === activeSession.id
+            ? { ...session, messages: [...session.messages, assistantMessage] }
+            : session
+        )
+      );
+    } catch (error) {
+      const assistantMessage: ChatMessage = {
+        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        role: "assistant",
+        text: "The hall cannot respond right now. Please try again later.",
+      };
+
+      setSessions((currentSessions) =>
+        currentSessions.map((session) =>
+          session.id === activeSession.id
+            ? { ...session, messages: [...session.messages, assistantMessage] }
+            : session
+        )
+      );
+    } finally {
+      setIsSending(false);
+    }
   };
 
   return (
@@ -120,7 +154,7 @@ export default function Home() {
                 value={messageText}
                 onChange={setMessageText}
                 onSend={handleSendMessage}
-                disabled={false}
+                disabled={isSending || messageText.trim().length === 0}
               />
             </div>
           </div>
