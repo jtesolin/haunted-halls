@@ -4,18 +4,7 @@ import { useMemo, useState } from "react";
 import ChatInput from "@/components/ChatInput";
 import ConversationView from "@/components/ConversationView";
 import SessionHistorySidebar from "@/components/SessionHistorySidebar";
-
-type ChatMessage = {
-  id: string;
-  role: "user" | "assistant";
-  text: string;
-};
-
-type ChatSession = {
-  id: string;
-  title: string;
-  messages: ChatMessage[];
-};
+import type { ChatMessage, ChatSession } from "@/types/chat";
 
 function createSession(title: string): ChatSession {
   return {
@@ -82,7 +71,7 @@ export default function Home() {
       });
 
       const result = await response.json();
-      const hallReply = typeof result?.message === "string" ? result.message : "The hall did not respond.";
+      const hallReply = typeof result?.reply === "string" ? result.reply : "The hall did not respond.";
 
       const assistantMessage: ChatMessage = {
         id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,

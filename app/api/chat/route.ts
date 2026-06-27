@@ -1,16 +1,21 @@
 import { NextResponse } from "next/server";
+import type { ChatRequest, ChatResponse } from "@/types/chat";
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
-    const message = typeof body?.message === "string" ? body.message : "";
+    const body: ChatRequest = await request.json();
+    const payload: ChatRequest = {
+      message: body.message,
+      campaign_id: body.campaign_id,
+      character_id: body.character_id,
+    };
 
     const response = await fetch("http://localhost:8000/api/chat", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify(payload),
     });
 
     if (!response.ok) {
@@ -21,7 +26,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const data = await response.json();
+    const data: ChatResponse = await response.json();
     return NextResponse.json(data);
   } catch (error) {
     return NextResponse.json(
