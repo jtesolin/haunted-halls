@@ -1,15 +1,23 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import ChatInput from "@/components/ChatInput";
 import ConversationView from "@/components/ConversationView";
 import SessionHistorySidebar from "@/components/SessionHistorySidebar";
-import type { ChatMessage, ChatSession } from "@/types/chat";
+import type { CampaignDetailsResponse, CampaignSummary, ChatMessage, ChatSession } from "@/types/chat";
 
-function createSession(title: string): ChatSession {
+function createSession(
+  title: string,
+  campaignId?: string,
+  playerId?: string,
+  lastMessage?: string | null
+): ChatSession {
   return {
-    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    id: campaignId ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     title,
+    campaign_id: campaignId,
+    player_id: playerId,
+    last_message: lastMessage,
     messages: [],
   };
 }
@@ -20,6 +28,8 @@ export default function Home() {
   ]);
   const [activeSessionId, setActiveSessionId] = useState(sessions[0].id);
   const [messageText, setMessageText] = useState("");
+  const [playerId, setPlayerId] = useState("player-1");
+  const [playerIdError, setPlayerIdError] = useState("");
   const [isSending, setIsSending] = useState(false);
 
   const activeSession = useMemo(
@@ -29,6 +39,102 @@ export default function Home() {
 
   const hasMessages = activeSession.messages.length > 0;
 
+  useEffect(() => {
+    const normalizedPlayerId = playerId.trim();
+    if (!normalizedPlayerId || normalizedPlayerId.toLowerCase() === "anonymous") {
+      return;
+    }
+
+    const loadCampaignSummaries = async () => {
+      try {
+        const response = await fetch(`/api/campaigns/${encodeURIComponent(normalizedPlayerId)}`);
+        if (!response.ok) {
+          return;
+        }
+
+        const data: CampaignSummary[] = await response.json();
+        setSessions((currentSessions) => {
+          const remoteCampaignIds = new Set(data.map((campaign) => campaign.campaign_id));
+          const existingRemoteSessions = currentSessions.filter(
+            (session) => session.campaign_id && remoteCampaignIds.has(session.campaign_id)
+          );
+          const remainingSessions = currentSessions.filter(
+            (session) => !session.campaign_id || !remoteCampaignIds.has(session.campaign_id)
+          );
+
+          const hydratedCampaignSessions = data.map((campaign) => {
+            const existingSession = existingRemoteSessions.find(
+              (session) => session.campaign_id === campaign.campaign_id
+            );
+
+            return existingSession
+              ? {
+                  ...existingSession,
+                  title: campaign.title || existingSession.title,
+                  player_id: existingSession.player_id ?? normalizedPlayerId,
+                  last_message: campaign.last_message,
+                }
+              : createSession(campaign.title, campaign.campaign_id, normalizedPlayerId, campaign.last_message);
+          });
+
+          return [...hydratedCampaignSessions, ...remainingSessions];
+        });
+      } catch {
+        // Ignore campaign loading failures and keep the local session flow intact.
+      }
+    };
+
+    void loadCampaignSummaries();
+  }, [playerId]);
+
+  const loadCampaignConversation = async (sessionId: string, campaignId: string) => {
+    try {
+      const response = await fetch(`/api/campaign/${encodeURIComponent(campaignId)}`);
+      if (!response.ok) {
+        return;
+      }
+
+      const campaign: CampaignDetailsResponse = await response.json();
+      const conversationMessages = [] as ChatMessage[];
+
+      if (campaign.truncated) {
+        conversationMessages.push({
+          id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          role: "assistant",
+          text: "The memories of the distant past are clouded in mystery",
+        });
+      }
+
+      campaign.messages.forEach((entry) => {
+        conversationMessages.push({
+          id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          role: "user",
+          text: entry.player_message,
+        });
+        conversationMessages.push({
+          id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          role: "assistant",
+          text: entry.ai_reply,
+        });
+      });
+
+      setSessions((currentSessions) =>
+        currentSessions.map((session) =>
+          session.id === sessionId
+            ? {
+                ...session,
+                title: campaign.name || session.title,
+                player_id: campaign.player_id ?? session.player_id,
+                messages: conversationMessages,
+              }
+            : session
+        )
+      );
+    } catch {
+      // Ignore campaign hydration failures and leave the current session intact.
+    }
+  };
+
   const handleNewSession = () => {
     const nextSession = createSession(`Adventure ${sessions.length + 1}`);
     setSessions((current) => [nextSession, ...current]);
@@ -36,16 +142,36 @@ export default function Home() {
     setMessageText("");
   };
 
-  const handleSelectSession = (id: string) => {
+  const handleSelectSession = async (id: string) => {
+    const selectedSession = sessions.find((session) => session.id === id);
     setActiveSessionId(id);
     setMessageText("");
+
+    if (!selectedSession?.campaign_id) {
+      return;
+    }
+
+    if (selectedSession.messages.length > 0) {
+      return;
+    }
+
+    await loadCampaignConversation(id, selectedSession.campaign_id);
   };
 
   const handleSendMessage = async () => {
     const trimmed = messageText.trim();
+    const normalizedPlayerId = playerId.trim();
+
     if (!trimmed || isSending) {
       return;
     }
+
+    if (!normalizedPlayerId || normalizedPlayerId.toLowerCase() === "anonymous") {
+      setPlayerIdError("Please enter a real player identifier before sending.");
+      return;
+    }
+
+    setPlayerIdError("");
 
     const userMessage: ChatMessage = {
       id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -67,11 +193,17 @@ export default function Home() {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: trimmed }),
+        body: JSON.stringify({
+          message: trimmed,
+          campaign_id: activeSession.campaign_id ?? null,
+          character_id: null,
+          player_id: normalizedPlayerId,
+        }),
       });
 
       const result = await response.json();
       const hallReply = typeof result?.reply === "string" ? result.reply : "The hall did not respond.";
+      const returnedCampaignId = typeof result?.campaign_id === "string" ? result.campaign_id : undefined;
 
       const assistantMessage: ChatMessage = {
         id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -82,10 +214,15 @@ export default function Home() {
       setSessions((currentSessions) =>
         currentSessions.map((session) =>
           session.id === activeSession.id
-            ? { ...session, messages: [...session.messages, assistantMessage] }
+            ? {
+                ...session,
+                campaign_id: session.campaign_id ?? returnedCampaignId,
+                messages: [...session.messages, assistantMessage],
+              }
             : session
         )
       );
+
     } catch (error) {
       const assistantMessage: ChatMessage = {
         id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -121,6 +258,24 @@ export default function Home() {
               <p className="text-sm uppercase tracking-[0.28em] text-sky-300/80">Dungeon MUD</p>
               <h1 className="mt-2 text-3xl font-semibold text-white">Chat with the haunted halls</h1>
             </div>
+            <div className="flex flex-col gap-2">
+              <label htmlFor="player-id" className="text-xs uppercase tracking-[0.24em] text-zinc-400">
+                Player ID
+              </label>
+              <input
+                id="player-id"
+                value={playerId}
+                onChange={(event) => {
+                  setPlayerId(event.target.value);
+                  if (playerIdError) {
+                    setPlayerIdError("");
+                  }
+                }}
+                placeholder="Enter a real player identifier"
+                className="rounded-2xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none transition focus:border-sky-500/60"
+              />
+              {playerIdError ? <p className="text-xs text-rose-400">{playerIdError}</p> : null}
+            </div>
             <div className="rounded-3xl bg-white/5 px-4 py-3 text-sm text-zinc-300">
               {activeSession.messages.length} message{activeSession.messages.length === 1 ? "" : "s"}
             </div>
@@ -143,7 +298,12 @@ export default function Home() {
                 value={messageText}
                 onChange={setMessageText}
                 onSend={handleSendMessage}
-                disabled={isSending || messageText.trim().length === 0}
+                disabled={
+                  isSending ||
+                  messageText.trim().length === 0 ||
+                  !playerId.trim() ||
+                  playerId.trim().toLowerCase() === "anonymous"
+                }
               />
             </div>
           </div>

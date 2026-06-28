@@ -4,6 +4,7 @@ type SessionSummary = {
   id: string;
   title: string;
   messages: { id: string }[];
+  last_message?: string | null;
 };
 
 export default function SessionHistorySidebar({
@@ -48,12 +49,15 @@ export default function SessionHistorySidebar({
             >
               <div className="flex items-center justify-between gap-2">
                 <span className="block text-sm font-semibold text-left">{session.title}</span>
-                <span className="rounded-full bg-white/5 px-2 py-1 text-[11px] text-zinc-400">
-                  {session.messages.length}
-                </span>
               </div>
-              <p className="mt-2 text-xs leading-5 text-zinc-500">
-                {session.messages.length > 0 ? `${session.messages.length} message${session.messages.length === 1 ? "" : "s"}` : "No messages yet"}
+              <p className="mt-2 line-clamp-2 text-xs leading-5 text-zinc-500">
+                {session.last_message
+                  ? session.last_message.length > 90
+                    ? `${session.last_message.slice(0, 87)}...`
+                    : session.last_message
+                  : session.messages.length > 0
+                    ? "No preview available"
+                    : "No messages yet"}
               </p>
             </button>
           ))}

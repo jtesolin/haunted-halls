@@ -1,13 +1,32 @@
 import { NextResponse } from "next/server";
 import type { ChatRequest, ChatResponse } from "@/types/chat";
 
+function isValidPlayerId(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.trim().toLowerCase() !== "anonymous";
+}
+
 export async function POST(request: Request) {
   try {
-    const body: ChatRequest = await request.json();
+    const body = (await request.json()) as Partial<ChatRequest>;
+    const message = typeof body.message === "string" ? body.message : "";
+    const playerId = typeof body.player_id === "string" ? body.player_id.trim() : "";
+
+    if (!message.trim()) {
+      return NextResponse.json({ error: "Message is required" }, { status: 400 });
+    }
+
+    if (!isValidPlayerId(body.player_id)) {
+      return NextResponse.json(
+        { error: "A valid player_id is required" },
+        { status: 422 }
+      );
+    }
+
     const payload: ChatRequest = {
-      message: body.message,
-      campaign_id: body.campaign_id,
-      character_id: body.character_id,
+      message,
+      campaign_id: typeof body.campaign_id === "string" ? body.campaign_id : null,
+      character_id: typeof body.character_id === "string" ? body.character_id : null,
+      player_id: playerId,
     };
 
     const response = await fetch("http://localhost:8000/api/chat", {
