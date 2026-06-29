@@ -6,6 +6,27 @@ import ConversationView from "@/components/ConversationView";
 import SessionHistorySidebar from "@/components/SessionHistorySidebar";
 import type { CampaignDetailsResponse, CampaignSummary, ChatMessage, ChatSession } from "@/types/chat";
 
+const MAX_INPUT_CHARACTERS = 2000;
+
+function getUserFacingErrorMessage(status: number, fallback: string) {
+  switch (status) {
+    case 401:
+      return "The server rejected the request because the shared API token is missing or invalid.";
+    case 400:
+      return "The message could not be sent. It may be empty, too long, or the campaign is no longer active.";
+    case 404:
+      return "The requested campaign or character could not be found for this player.";
+    case 422:
+      return "Please provide a valid player identifier and try again.";
+    case 429:
+      return "The hall is rate limiting requests right now. Please wait a moment and try again.";
+    case 502:
+      return "The AI service is temporarily unavailable. Please try again shortly.";
+    default:
+      return fallback;
+  }
+}
+
 function createSession(
   title: string,
   campaignId?: string,
@@ -30,6 +51,7 @@ export default function Home() {
   const [messageText, setMessageText] = useState("");
   const [playerId, setPlayerId] = useState("player-1");
   const [playerIdError, setPlayerIdError] = useState("");
+  const [requestError, setRequestError] = useState("");
   const [isSending, setIsSending] = useState(false);
 
   const activeSession = useMemo(
@@ -87,9 +109,11 @@ export default function Home() {
     void loadCampaignSummaries();
   }, [playerId]);
 
-  const loadCampaignConversation = async (sessionId: string, campaignId: string) => {
+  const loadCampaignConversation = async (sessionId: string, campaignId: string, currentPlayerId: string) => {
     try {
-      const response = await fetch(`/api/campaign/${encodeURIComponent(campaignId)}`);
+      const response = await fetch(
+        `/api/campaign/${encodeURIComponent(campaignId)}?player_id=${encodeURIComponent(currentPlayerId)}`
+      );
       if (!response.ok) {
         return;
       }
@@ -155,7 +179,7 @@ export default function Home() {
       return;
     }
 
-    await loadCampaignConversation(id, selectedSession.campaign_id);
+    await loadCampaignConversation(id, selectedSession.campaign_id, playerId.trim());
   };
 
   const handleSendMessage = async () => {
@@ -171,7 +195,13 @@ export default function Home() {
       return;
     }
 
+    if (trimmed.length > MAX_INPUT_CHARACTERS) {
+      setRequestError(`Please keep your message under ${MAX_INPUT_CHARACTERS} characters.`);
+      return;
+    }
+
     setPlayerIdError("");
+    setRequestError("");
 
     const userMessage: ChatMessage = {
       id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -201,6 +231,30 @@ export default function Home() {
         }),
       });
 
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        const userMessage = getUserFacingErrorMessage(
+          response.status,
+          typeof result?.error === "string" ? result.error : "The hall did not respond."
+        );
+        setRequestError(userMessage);
+
+        const assistantMessage: ChatMessage = {
+          id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          role: "assistant",
+          text: userMessage,
+        };
+
+        setSessions((currentSessions) =>
+          currentSessions.map((session) =>
+            session.id === activeSession.id
+              ? { ...session, messages: [...session.messages, assistantMessage] }
+              : session
+          )
+        );
+        return;
+      }
+
       const result = await response.json();
       const hallReply = typeof result?.reply === "string" ? result.reply : "The hall did not respond.";
       const returnedCampaignId = typeof result?.campaign_id === "string" ? result.campaign_id : undefined;
@@ -223,7 +277,7 @@ export default function Home() {
         )
       );
 
-    } catch (error) {
+    } catch {
       const assistantMessage: ChatMessage = {
         id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
         role: "assistant",
@@ -275,6 +329,7 @@ export default function Home() {
                 className="rounded-2xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none transition focus:border-sky-500/60"
               />
               {playerIdError ? <p className="text-xs text-rose-400">{playerIdError}</p> : null}
+              {requestError ? <p className="text-xs text-amber-300">{requestError}</p> : null}
             </div>
             <div className="rounded-3xl bg-white/5 px-4 py-3 text-sm text-zinc-300">
               {activeSession.messages.length} message{activeSession.messages.length === 1 ? "" : "s"}
@@ -301,6 +356,7 @@ export default function Home() {
                 disabled={
                   isSending ||
                   messageText.trim().length === 0 ||
+                  messageText.trim().length > MAX_INPUT_CHARACTERS ||
                   !playerId.trim() ||
                   playerId.trim().toLowerCase() === "anonymous"
                 }

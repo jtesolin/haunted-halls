@@ -1,14 +1,34 @@
 import { NextResponse } from "next/server";
+import { getEngineAuthHeaders, getEngineBaseUrl } from "@/lib/engine";
 
-export async function GET(_request: Request, { params }: { params: Promise<{ campaign_id: string }> }) {
+function isValidPlayerId(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.trim().toLowerCase() !== "anonymous";
+}
+
+export async function GET(request: Request, { params }: { params: Promise<{ campaign_id: string }> }) {
   try {
     const { campaign_id } = await params;
+    const playerId = new URL(request.url).searchParams.get("player_id")?.trim() ?? "";
 
     if (!campaign_id?.trim()) {
       return NextResponse.json({ error: "campaign_id is required" }, { status: 400 });
     }
 
-    const response = await fetch(`http://localhost:8000/api/campaign/${encodeURIComponent(campaign_id)}`);
+    if (!isValidPlayerId(playerId)) {
+      return NextResponse.json(
+        { error: "A valid player_id query parameter is required" },
+        { status: 422 }
+      );
+    }
+
+    const url = new URL(`${getEngineBaseUrl()}/api/campaign/${encodeURIComponent(campaign_id)}`);
+    url.searchParams.set("player_id", playerId);
+
+    const response = await fetch(url, {
+      headers: {
+        ...getEngineAuthHeaders(),
+      },
+    });
 
     if (!response.ok) {
       const text = await response.text();

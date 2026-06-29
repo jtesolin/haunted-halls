@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import type { ChatRequest, ChatResponse } from "@/types/chat";
+import { getEngineAuthHeaders, getEngineBaseUrl, getMaxInputCharacters } from "@/lib/engine";
 
 function isValidPlayerId(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0 && value.trim().toLowerCase() !== "anonymous";
@@ -10,9 +11,17 @@ export async function POST(request: Request) {
     const body = (await request.json()) as Partial<ChatRequest>;
     const message = typeof body.message === "string" ? body.message : "";
     const playerId = typeof body.player_id === "string" ? body.player_id.trim() : "";
+    const maxInputCharacters = getMaxInputCharacters();
 
     if (!message.trim()) {
       return NextResponse.json({ error: "Message is required" }, { status: 400 });
+    }
+
+    if (message.length > maxInputCharacters) {
+      return NextResponse.json(
+        { error: `Message exceeds the ${maxInputCharacters}-character limit` },
+        { status: 400 }
+      );
     }
 
     if (!isValidPlayerId(body.player_id)) {
@@ -24,15 +33,15 @@ export async function POST(request: Request) {
 
     const payload: ChatRequest = {
       message,
-      campaign_id: typeof body.campaign_id === "string" ? body.campaign_id : null,
-      character_id: typeof body.character_id === "string" ? body.character_id : null,
+      campaign_id: typeof body.campaign_id === "string" && body.campaign_id.trim().length > 0 ? body.campaign_id : null,
+      character_id: typeof body.character_id === "string" && body.character_id.trim().length > 0 ? body.character_id : null,
       player_id: playerId,
     };
 
-    const response = await fetch("http://localhost:8000/api/chat", {
+    const response = await fetch(`${getEngineBaseUrl()}/api/chat`, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
+        ...getEngineAuthHeaders(true),
       },
       body: JSON.stringify(payload),
     });

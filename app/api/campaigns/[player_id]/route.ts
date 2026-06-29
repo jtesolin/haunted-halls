@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getEngineAuthHeaders, getEngineBaseUrl } from "@/lib/engine";
 
 function isValidPlayerId(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0 && value.trim().toLowerCase() !== "anonymous";
@@ -15,7 +16,11 @@ export async function GET(_request: Request, { params }: { params: Promise<{ pla
       );
     }
 
-    const response = await fetch(`http://localhost:8000/api/campaigns/${encodeURIComponent(player_id)}`);
+    const response = await fetch(`${getEngineBaseUrl()}/api/campaigns/${encodeURIComponent(player_id)}`, {
+      headers: {
+        ...getEngineAuthHeaders(),
+      },
+    });
 
     if (!response.ok) {
       const text = await response.text();
