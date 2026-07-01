@@ -6,6 +6,7 @@ type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   text: string;
+  is_loading?: boolean;
 };
 
 export default function ConversationView({ messages }: { messages: ChatMessage[] }) {
@@ -33,6 +34,9 @@ export default function ConversationView({ messages }: { messages: ChatMessage[]
             }`}
           >
             <p className="whitespace-pre-wrap break-words">{message.text}</p>
+            {message.is_loading ? (
+              <p className="mt-2 animate-pulse text-xs uppercase tracking-[0.14em] text-zinc-400">Loading opening...</p>
+            ) : null}
           </div>
         ))}
       </div>

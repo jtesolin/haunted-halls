@@ -1,12 +1,19 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import ChatInput from "@/components/ChatInput";
 import ConversationView from "@/components/ConversationView";
 import SessionHistorySidebar from "@/components/SessionHistorySidebar";
-import type { CampaignDetailsResponse, CampaignSummary, ChatMessage, ChatSession } from "@/types/chat";
+import type {
+  CampaignDetailsResponse,
+  CampaignSummary,
+  ChatMessage,
+  ChatSession,
+  CreateCampaignResponse,
+} from "@/types/chat";
 
 const MAX_INPUT_CHARACTERS = 2000;
+const OPENING_LOADING_TEXT = "The narrator is preparing your opening scene...";
 
 function getUserFacingErrorMessage(status: number, fallback: string) {
   switch (status) {
@@ -62,6 +69,15 @@ function shouldAutonameSession(sessionTitle: string): boolean {
   return sessionTitle === "New adventure" || /^Adventure \d+$/.test(sessionTitle);
 }
 
+function createLoadingNarratorMessage(): ChatMessage {
+  return {
+    id: `loading-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    role: "assistant",
+    text: OPENING_LOADING_TEXT,
+    is_loading: true,
+  };
+}
+
 export default function Home() {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState("");
@@ -70,6 +86,8 @@ export default function Home() {
   const [playerIdError, setPlayerIdError] = useState("");
   const [requestError, setRequestError] = useState("");
   const [isSending, setIsSending] = useState(false);
+  const [isCreatingSession, setIsCreatingSession] = useState(false);
+  const [isCreatingTransitionPending, startCreateTransition] = useTransition();
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId) ?? sessions[0] ?? null,
@@ -77,6 +95,96 @@ export default function Home() {
   );
 
   const hasMessages = activeSession ? activeSession.messages.length > 0 : false;
+
+  const createAndHydrateSession = useCallback(async () => {
+    const normalizedPlayerId = playerId.trim();
+
+    if (isCreatingSession) {
+      return;
+    }
+
+    if (!normalizedPlayerId || normalizedPlayerId.toLowerCase() === "anonymous") {
+      setPlayerIdError("Please enter a real player identifier before creating a campaign.");
+      return;
+    }
+
+    setPlayerIdError("");
+    setRequestError("");
+    setIsCreatingSession(true);
+
+    const optimisticSessionId = `optimistic-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const loadingNarratorMessage = createLoadingNarratorMessage();
+    const optimisticSession: ChatSession = {
+      ...createSession("New adventure", optimisticSessionId, normalizedPlayerId, OPENING_LOADING_TEXT),
+      id: optimisticSessionId,
+      title: "New adventure",
+      last_message: OPENING_LOADING_TEXT,
+      conversation_loaded: true,
+      messages: [loadingNarratorMessage],
+      is_optimistic: true,
+    };
+
+    setSessions((current) => sortSessionsByRecency([optimisticSession, ...current]));
+    setActiveSessionId(optimisticSessionId);
+    setMessageText("");
+
+    try {
+      const response = await fetch("/api/campaign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ player_id: normalizedPlayerId }),
+      });
+
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        const userMessage = getUserFacingErrorMessage(
+          response.status,
+          typeof result?.error === "string" ? result.error : "Unable to create a new campaign."
+        );
+
+        setSessions((current) => current.filter((session) => session.id !== optimisticSessionId));
+        setActiveSessionId((current) => (current === optimisticSessionId ? "" : current));
+        setRequestError(userMessage);
+        return;
+      }
+
+      const campaign: CreateCampaignResponse = await response.json();
+      const fallbackTitle = "New adventure";
+      const hydratedMessages = campaign.messages.map((entry) => ({
+        id: entry.turn_id,
+        role: entry.role,
+        text: entry.content,
+      }));
+
+      const newestMessage = hydratedMessages[hydratedMessages.length - 1];
+      const nextSession: ChatSession = {
+        ...createSession(campaign.name || fallbackTitle, campaign.campaign_id, campaign.player_id ?? normalizedPlayerId),
+        title: campaign.name || fallbackTitle,
+        messages: hydratedMessages,
+        last_message: newestMessage?.text ?? null,
+        conversation_loaded: true,
+        updated_at: Date.now(),
+        is_optimistic: false,
+      };
+
+      setSessions((current) =>
+        sortSessionsByRecency([
+          nextSession,
+          ...current.filter(
+            (session) => session.id !== optimisticSessionId && session.campaign_id !== campaign.campaign_id
+          ),
+        ])
+      );
+      setActiveSessionId(nextSession.id);
+      setMessageText("");
+    } catch {
+      setSessions((current) => current.filter((session) => session.id !== optimisticSessionId));
+      setActiveSessionId((current) => (current === optimisticSessionId ? "" : current));
+      setRequestError("Unable to create a new campaign right now. Please try again shortly.");
+    } finally {
+      setIsCreatingSession(false);
+    }
+  }, [isCreatingSession, playerId]);
 
   useEffect(() => {
     const normalizedPlayerId = playerId.trim();
@@ -123,13 +231,14 @@ export default function Home() {
           });
 
           const nextSessions = sortSessionsByRecency([...hydratedCampaignSessions, ...remainingSessions]);
-
-          if (nextSessions.length === 0) {
-            return [createSession("New adventure")];
-          }
-
           return nextSessions;
         });
+
+        if (data.length === 0) {
+          await createAndHydrateSession();
+          return;
+        }
+
         const latestCampaign = data[0];
         if (latestCampaign?.campaign_id) {
           void loadCampaignConversation(
@@ -147,7 +256,7 @@ export default function Home() {
     };
 
     void loadCampaignSummaries();
-  }, [playerId]);
+  }, [createAndHydrateSession, playerId]);
 
   async function loadCampaignConversation(sessionId: string, campaignId: string, currentPlayerId: string) {
     try {
@@ -197,10 +306,9 @@ export default function Home() {
   }
 
   const handleNewSession = () => {
-    const nextSession = createSession(`Adventure ${sessions.length + 1}`);
-    setSessions((current) => [nextSession, ...current]);
-    setActiveSessionId(nextSession.id);
-    setMessageText("");
+    startCreateTransition(() => {
+      void createAndHydrateSession();
+    });
   };
 
   const handleSelectSession = async (id: string) => {
@@ -378,6 +486,7 @@ export default function Home() {
           activeSessionId={activeSession?.id ?? ""}
           onSelectSession={handleSelectSession}
           onNewSession={handleNewSession}
+          isCreating={isCreatingSession || isCreatingTransitionPending}
         />
 
         <main className="flex h-full min-h-0 flex-1 flex-col overflow-hidden rounded-[32px] border border-white/10 bg-slate-950/90 p-6 shadow-2xl shadow-black/20">
@@ -431,6 +540,7 @@ export default function Home() {
                   isSending ||
                   messageText.trim().length === 0 ||
                   messageText.trim().length > MAX_INPUT_CHARACTERS ||
+                  isCreatingSession ||
                   !playerId.trim() ||
                   playerId.trim().toLowerCase() === "anonymous"
                 }

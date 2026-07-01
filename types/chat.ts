@@ -11,12 +11,17 @@ export interface ChatResponse {
   turn_id: string;
 }
 
+export interface CreateCampaignRequest {
+  player_id: string;
+}
+
 export type ChatRole = "user" | "assistant";
 
 export interface ChatMessage {
   id: string;
   role: ChatRole;
   text: string;
+  is_loading?: boolean;
 }
 
 export interface ChatSession {
@@ -28,6 +33,7 @@ export interface ChatSession {
   updated_at: number;
   conversation_loaded: boolean;
   messages: ChatMessage[];
+  is_optimistic?: boolean;
 }
 
 export interface CampaignSummary {
@@ -52,3 +58,5 @@ export interface CampaignDetailsResponse {
   messages: CampaignMessageEntry[];
   truncated: boolean;
 }
+
+export type CreateCampaignResponse = CampaignDetailsResponse;
