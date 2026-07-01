@@ -36,8 +36,9 @@ export interface CampaignSummary {
 
 export interface CampaignMessageEntry {
   turn_id: string;
-  player_message: string;
-  ai_reply: string;
+  player_id: string;
+  role: ChatRole;
+  content: string;
   created_at: string;
 }
 

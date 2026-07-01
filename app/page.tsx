@@ -131,14 +131,9 @@ export default function Home() {
 
       campaign.messages.forEach((entry) => {
         conversationMessages.push({
-          id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-          role: "user",
-          text: entry.player_message,
-        });
-        conversationMessages.push({
-          id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-          role: "assistant",
-          text: entry.ai_reply,
+          id: entry.turn_id,
+          role: entry.role,
+          text: entry.content,
         });
       });
 
