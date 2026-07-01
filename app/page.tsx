@@ -39,15 +39,32 @@ function createSession(
     campaign_id: campaignId,
     player_id: playerId,
     last_message: lastMessage,
+    updated_at: Date.now(),
+    conversation_loaded: false,
     messages: [],
   };
 }
 
+function sortSessionsByRecency(sessionList: ChatSession[]): ChatSession[] {
+  return [...sessionList].sort((a, b) => b.updated_at - a.updated_at);
+}
+
+function summarizeSessionTitle(message: string): string {
+  const compact = message.replace(/\s+/g, " ").trim();
+  if (!compact) {
+    return "New adventure";
+  }
+
+  return compact.length > 40 ? `${compact.slice(0, 37)}...` : compact;
+}
+
+function shouldAutonameSession(sessionTitle: string): boolean {
+  return sessionTitle === "New adventure" || /^Adventure \d+$/.test(sessionTitle);
+}
+
 export default function Home() {
-  const [sessions, setSessions] = useState<ChatSession[]>([
-    createSession("New adventure"),
-  ]);
-  const [activeSessionId, setActiveSessionId] = useState(sessions[0].id);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState("");
   const [messageText, setMessageText] = useState("");
   const [playerId, setPlayerId] = useState("player-1");
   const [playerIdError, setPlayerIdError] = useState("");
@@ -55,11 +72,11 @@ export default function Home() {
   const [isSending, setIsSending] = useState(false);
 
   const activeSession = useMemo(
-    () => sessions.find((session) => session.id === activeSessionId) ?? sessions[0],
+    () => sessions.find((session) => session.id === activeSessionId) ?? sessions[0] ?? null,
     [sessions, activeSessionId]
   );
 
-  const hasMessages = activeSession.messages.length > 0;
+  const hasMessages = activeSession ? activeSession.messages.length > 0 : false;
 
   useEffect(() => {
     const normalizedPlayerId = playerId.trim();
@@ -76,6 +93,7 @@ export default function Home() {
 
         const data: CampaignSummary[] = await response.json();
         setSessions((currentSessions) => {
+          const now = Date.now();
           const remoteCampaignIds = new Set(data.map((campaign) => campaign.campaign_id));
           const existingRemoteSessions = currentSessions.filter(
             (session) => session.campaign_id && remoteCampaignIds.has(session.campaign_id)
@@ -84,7 +102,7 @@ export default function Home() {
             (session) => !session.campaign_id || !remoteCampaignIds.has(session.campaign_id)
           );
 
-          const hydratedCampaignSessions = data.map((campaign) => {
+          const hydratedCampaignSessions = data.map((campaign, index) => {
             const existingSession = existingRemoteSessions.find(
               (session) => session.campaign_id === campaign.campaign_id
             );
@@ -92,24 +110,46 @@ export default function Home() {
             return existingSession
               ? {
                   ...existingSession,
-                  title: campaign.title || existingSession.title,
+                  title: campaign.name || existingSession.title,
                   player_id: existingSession.player_id ?? normalizedPlayerId,
                   last_message: campaign.last_message,
+                  updated_at: existingSession.updated_at,
+                  conversation_loaded: existingSession.conversation_loaded,
                 }
-              : createSession(campaign.title, campaign.campaign_id, normalizedPlayerId, campaign.last_message);
+              : {
+                  ...createSession(campaign.name, campaign.campaign_id, normalizedPlayerId, campaign.last_message),
+                  updated_at: now - index,
+                };
           });
 
-          return [...hydratedCampaignSessions, ...remainingSessions];
+          const nextSessions = sortSessionsByRecency([...hydratedCampaignSessions, ...remainingSessions]);
+
+          if (nextSessions.length === 0) {
+            return [createSession("New adventure")];
+          }
+
+          return nextSessions;
         });
+        const latestCampaign = data[0];
+        if (latestCampaign?.campaign_id) {
+          void loadCampaignConversation(
+            latestCampaign.campaign_id,
+            latestCampaign.campaign_id,
+            normalizedPlayerId
+          );
+        }
       } catch {
-        // Ignore campaign loading failures and keep the local session flow intact.
+        // Keep local session flow intact if history cannot be loaded.
+        setSessions((currentSessions) =>
+          currentSessions.length > 0 ? currentSessions : [createSession("New adventure")]
+        );
       }
     };
 
     void loadCampaignSummaries();
   }, [playerId]);
 
-  const loadCampaignConversation = async (sessionId: string, campaignId: string, currentPlayerId: string) => {
+  async function loadCampaignConversation(sessionId: string, campaignId: string, currentPlayerId: string) {
     try {
       const response = await fetch(
         `/api/campaign/${encodeURIComponent(campaignId)}?player_id=${encodeURIComponent(currentPlayerId)}`
@@ -145,6 +185,8 @@ export default function Home() {
                 title: campaign.name || session.title,
                 player_id: campaign.player_id ?? session.player_id,
                 messages: conversationMessages,
+                updated_at: Date.now(),
+                conversation_loaded: true,
               }
             : session
         )
@@ -152,7 +194,7 @@ export default function Home() {
     } catch {
       // Ignore campaign hydration failures and leave the current session intact.
     }
-  };
+  }
 
   const handleNewSession = () => {
     const nextSession = createSession(`Adventure ${sessions.length + 1}`);
@@ -170,7 +212,7 @@ export default function Home() {
       return;
     }
 
-    if (selectedSession.messages.length > 0) {
+    if (selectedSession.conversation_loaded) {
       return;
     }
 
@@ -181,7 +223,7 @@ export default function Home() {
     const trimmed = messageText.trim();
     const normalizedPlayerId = playerId.trim();
 
-    if (!trimmed || isSending) {
+    if (!trimmed || isSending || !activeSession) {
       return;
     }
 
@@ -207,10 +249,26 @@ export default function Home() {
     setMessageText("");
     setIsSending(true);
     setSessions((currentSessions) =>
-      currentSessions.map((session) =>
-        session.id === activeSession.id
-          ? { ...session, messages: [...session.messages, userMessage] }
-          : session
+      sortSessionsByRecency(
+        currentSessions.map((session) => {
+          if (session.id !== activeSession.id) {
+            return session;
+          }
+
+          const nextTitle =
+            session.messages.length === 0 && shouldAutonameSession(session.title)
+              ? summarizeSessionTitle(trimmed)
+              : session.title;
+
+          return {
+            ...session,
+            title: nextTitle,
+            last_message: trimmed,
+            updated_at: Date.now(),
+            conversation_loaded: true,
+            messages: [...session.messages, userMessage],
+          };
+        })
       )
     );
 
@@ -241,10 +299,18 @@ export default function Home() {
         };
 
         setSessions((currentSessions) =>
-          currentSessions.map((session) =>
-            session.id === activeSession.id
-              ? { ...session, messages: [...session.messages, assistantMessage] }
-              : session
+          sortSessionsByRecency(
+            currentSessions.map((session) =>
+              session.id === activeSession.id
+                ? {
+                    ...session,
+                    last_message: userMessage,
+                    updated_at: Date.now(),
+                    conversation_loaded: true,
+                    messages: [...session.messages, assistantMessage],
+                  }
+                : session
+            )
           )
         );
         return;
@@ -261,14 +327,19 @@ export default function Home() {
       };
 
       setSessions((currentSessions) =>
-        currentSessions.map((session) =>
-          session.id === activeSession.id
-            ? {
-                ...session,
-                campaign_id: session.campaign_id ?? returnedCampaignId,
-                messages: [...session.messages, assistantMessage],
-              }
-            : session
+        sortSessionsByRecency(
+          currentSessions.map((session) =>
+            session.id === activeSession.id
+              ? {
+                  ...session,
+                  campaign_id: session.campaign_id ?? returnedCampaignId,
+                  last_message: hallReply,
+                  updated_at: Date.now(),
+                  conversation_loaded: true,
+                  messages: [...session.messages, assistantMessage],
+                }
+              : session
+          )
         )
       );
 
@@ -280,10 +351,18 @@ export default function Home() {
       };
 
       setSessions((currentSessions) =>
-        currentSessions.map((session) =>
-          session.id === activeSession.id
-            ? { ...session, messages: [...session.messages, assistantMessage] }
-            : session
+        sortSessionsByRecency(
+          currentSessions.map((session) =>
+            session.id === activeSession.id
+              ? {
+                  ...session,
+                  last_message: assistantMessage.text,
+                  updated_at: Date.now(),
+                  conversation_loaded: true,
+                  messages: [...session.messages, assistantMessage],
+                }
+              : session
+          )
         )
       );
     } finally {
@@ -296,7 +375,7 @@ export default function Home() {
       <div className="flex h-full w-full gap-6 px-4 py-6 sm:px-6 lg:px-8">
         <SessionHistorySidebar
           sessions={sessions}
-          activeSessionId={activeSessionId}
+          activeSessionId={activeSession?.id ?? ""}
           onSelectSession={handleSelectSession}
           onNewSession={handleNewSession}
         />
@@ -327,14 +406,14 @@ export default function Home() {
               {requestError ? <p className="text-xs text-amber-300">{requestError}</p> : null}
             </div>
             <div className="rounded-3xl bg-white/5 px-4 py-3 text-sm text-zinc-300">
-              {activeSession.messages.length} message{activeSession.messages.length === 1 ? "" : "s"}
+              {activeSession ? activeSession.messages.length : 0} message{activeSession?.messages.length === 1 ? "" : "s"}
             </div>
           </header>
 
           <div className="flex h-full min-h-0 flex-col gap-6">
             <div className="flex-1 min-h-0 overflow-hidden rounded-3xl border border-white/10 bg-black/40 p-4">
               {hasMessages ? (
-                <ConversationView messages={activeSession.messages} />
+                <ConversationView messages={activeSession?.messages ?? []} />
               ) : (
                 <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-zinc-400">
                   <p className="max-w-xl text-lg">Your adventure begins when you send the first command.</p>

@@ -3,7 +3,7 @@
 type SessionSummary = {
   id: string;
   title: string;
-  messages: { id: string }[];
+  messages: { id: string; text: string }[];
   last_message?: string | null;
 };
 
@@ -36,8 +36,12 @@ export default function SessionHistorySidebar({
 
       <div className="flex-1 overflow-hidden">
         <div className="space-y-3 h-full overflow-y-auto pr-1 custom-scrollbar">
-          {sessions.map((session) => (
-            <button
+          {sessions.map((session) => {
+            const latestMessage = session.messages[session.messages.length - 1];
+            const previewText = session.last_message ?? latestMessage?.text ?? null;
+
+            return (
+              <button
               key={session.id}
               type="button"
               onClick={() => onSelectSession(session.id)}
@@ -51,16 +55,15 @@ export default function SessionHistorySidebar({
                 <span className="block text-sm font-semibold text-left">{session.title}</span>
               </div>
               <p className="mt-2 line-clamp-2 text-xs leading-5 text-zinc-500">
-                {session.last_message
-                  ? session.last_message.length > 90
-                    ? `${session.last_message.slice(0, 87)}...`
-                    : session.last_message
-                  : session.messages.length > 0
-                    ? "No preview available"
-                    : "No messages yet"}
+                {previewText
+                  ? previewText.length > 90
+                    ? `${previewText.slice(0, 87)}...`
+                    : previewText
+                  : "No messages yet"}
               </p>
             </button>
-          ))}
+            );
+          })}
         </div>
       </div>
     </aside>

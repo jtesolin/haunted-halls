@@ -25,12 +25,14 @@ export interface ChatSession {
   campaign_id?: string;
   player_id?: string;
   last_message?: string | null;
+  updated_at: number;
+  conversation_loaded: boolean;
   messages: ChatMessage[];
 }
 
 export interface CampaignSummary {
   campaign_id: string;
-  title: string;
+  name: string;
   last_message: string | null;
 }
 
