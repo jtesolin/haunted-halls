@@ -47,3 +47,46 @@ export async function GET(request: Request, { params }: { params: Promise<{ camp
     );
   }
 }
+
+export async function DELETE(request: Request, { params }: { params: Promise<{ campaign_id: string }> }) {
+  try {
+    const { campaign_id } = await params;
+    const playerId = new URL(request.url).searchParams.get("player_id")?.trim() ?? "";
+
+    if (!campaign_id?.trim()) {
+      return NextResponse.json({ error: "campaign_id is required" }, { status: 400 });
+    }
+
+    if (!isValidPlayerId(playerId)) {
+      return NextResponse.json(
+        { error: "A valid player_id query parameter is required" },
+        { status: 422 }
+      );
+    }
+
+    const url = new URL(`${getEngineBaseUrl()}/api/campaign/${encodeURIComponent(campaign_id)}`);
+    url.searchParams.set("player_id", playerId);
+
+    const response = await fetch(url, {
+      method: "DELETE",
+      headers: {
+        ...getEngineAuthHeaders(),
+      },
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      return NextResponse.json(
+        { error: "Backend request failed", details: text },
+        { status: response.status }
+      );
+    }
+
+    return new Response(null, { status: 204 });
+  } catch (error) {
+    return NextResponse.json(
+      { error: "Unable to proxy delete campaign request", details: (error as Error).message },
+      { status: 500 }
+    );
+  }
+}

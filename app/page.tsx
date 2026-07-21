@@ -87,6 +87,8 @@ export default function Home() {
   const [requestError, setRequestError] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
+  const [deletingSessionIds, setDeletingSessionIds] = useState<string[]>([]);
+  const [isDeletingAllSessions, setIsDeletingAllSessions] = useState(false);
   const [isCreatingTransitionPending, startCreateTransition] = useTransition();
 
   const activeSession = useMemo(
@@ -305,6 +307,22 @@ export default function Home() {
     }
   }
 
+  async function deleteCampaignForPlayer(campaignId: string, currentPlayerId: string) {
+    const response = await fetch(
+      `/api/campaign/${encodeURIComponent(campaignId)}?player_id=${encodeURIComponent(currentPlayerId)}`,
+      { method: "DELETE" }
+    );
+
+    if (!response.ok && response.status !== 404) {
+      const result = await response.json().catch(() => ({}));
+      const message = getUserFacingErrorMessage(
+        response.status,
+        typeof result?.error === "string" ? result.error : "Unable to delete campaign."
+      );
+      throw new Error(message);
+    }
+  }
+
   const handleNewSession = () => {
     startCreateTransition(() => {
       void createAndHydrateSession();
@@ -325,6 +343,104 @@ export default function Home() {
     }
 
     await loadCampaignConversation(id, selectedSession.campaign_id, playerId.trim());
+  };
+
+  const handleDeleteSession = async (id: string) => {
+    if (isDeletingAllSessions) {
+      return;
+    }
+
+    const sessionToDelete = sessions.find((session) => session.id === id);
+    if (!sessionToDelete || sessionToDelete.is_optimistic) {
+      return;
+    }
+
+    const shouldDelete = window.confirm(`Delete \"${sessionToDelete.title}\"? This cannot be undone.`);
+    if (!shouldDelete) {
+      return;
+    }
+
+    const normalizedPlayerId = playerId.trim();
+    if (!normalizedPlayerId || normalizedPlayerId.toLowerCase() === "anonymous") {
+      setPlayerIdError("Please enter a real player identifier before deleting campaigns.");
+      return;
+    }
+
+    setPlayerIdError("");
+    setRequestError("");
+    setDeletingSessionIds((current) => (current.includes(id) ? current : [...current, id]));
+    setSessions((current) => current.filter((session) => session.id !== id));
+    setActiveSessionId((current) => (current === id ? "" : current));
+
+    try {
+      if (sessionToDelete.campaign_id) {
+        await deleteCampaignForPlayer(sessionToDelete.campaign_id, normalizedPlayerId);
+      }
+    } catch (error) {
+      setSessions((current) => sortSessionsByRecency([sessionToDelete, ...current]));
+      setRequestError((error as Error).message);
+    } finally {
+      setDeletingSessionIds((current) => current.filter((sessionId) => sessionId !== id));
+    }
+  };
+
+  const handleDeleteAllSessions = async () => {
+    if (isDeletingAllSessions) {
+      return;
+    }
+
+    const deletableSessions = sessions.filter((session) => !session.is_optimistic);
+    if (deletableSessions.length === 0) {
+      return;
+    }
+
+    const shouldDelete = window.confirm("Delete all sessions? This cannot be undone.");
+    if (!shouldDelete) {
+      return;
+    }
+
+    const normalizedPlayerId = playerId.trim();
+    if (!normalizedPlayerId || normalizedPlayerId.toLowerCase() === "anonymous") {
+      setPlayerIdError("Please enter a real player identifier before deleting campaigns.");
+      return;
+    }
+
+    setPlayerIdError("");
+    setRequestError("");
+    setIsDeletingAllSessions(true);
+    setDeletingSessionIds(deletableSessions.map((session) => session.id));
+
+    const failedIds = new Set<string>();
+
+    try {
+      await Promise.all(
+        deletableSessions.map(async (session) => {
+          if (!session.campaign_id) {
+            return;
+          }
+
+          try {
+            await deleteCampaignForPlayer(session.campaign_id, normalizedPlayerId);
+          } catch {
+            failedIds.add(session.id);
+          }
+        })
+      );
+
+      setSessions((current) =>
+        current.filter((session) => session.is_optimistic || failedIds.has(session.id))
+      );
+      setActiveSessionId("");
+
+      if (failedIds.size > 0) {
+        setRequestError(
+          `Unable to delete ${failedIds.size} session${failedIds.size === 1 ? "" : "s"}. Please try again.`
+        );
+      }
+    } finally {
+      setIsDeletingAllSessions(false);
+      setDeletingSessionIds([]);
+    }
   };
 
   const handleSendMessage = async () => {
@@ -486,7 +602,11 @@ export default function Home() {
           activeSessionId={activeSession?.id ?? ""}
           onSelectSession={handleSelectSession}
           onNewSession={handleNewSession}
+          onDeleteSession={handleDeleteSession}
+          onDeleteAllSessions={handleDeleteAllSessions}
           isCreating={isCreatingSession || isCreatingTransitionPending}
+          isDeletingAll={isDeletingAllSessions}
+          deletingSessionIds={deletingSessionIds}
         />
 
         <main className="flex h-full min-h-0 flex-1 flex-col overflow-hidden rounded-[32px] border border-white/10 bg-slate-950/90 p-6 shadow-2xl shadow-black/20">
