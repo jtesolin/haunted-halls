@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
+import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState, useTransition, type CSSProperties } from "react";
 import ChatInput from "@/components/ChatInput";
 import ConversationView from "@/components/ConversationView";
 import SessionHistorySidebar from "@/components/SessionHistorySidebar";
@@ -14,6 +15,9 @@ import type {
 
 const MAX_INPUT_CHARACTERS = 2000;
 const OPENING_LOADING_TEXT = "The narrator is preparing your opening scene...";
+const SIDEBAR_PREF_KEY = "haunted-halls-sidebar-collapsed";
+const SIDEBAR_WIDTH = "320px";
+const MOBILE_BREAKPOINT_QUERY = "(max-width: 767px)";
 
 function getUserFacingErrorMessage(status: number, fallback: string) {
   switch (status) {
@@ -90,6 +94,9 @@ export default function Home() {
   const [deletingSessionIds, setDeletingSessionIds] = useState<string[]>([]);
   const [isDeletingAllSessions, setIsDeletingAllSessions] = useState(false);
   const [isCreatingTransitionPending, startCreateTransition] = useTransition();
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isMobileViewport, setIsMobileViewport] = useState(false);
+  const [isMobileDrawerOpen, setIsMobileDrawerOpen] = useState(false);
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId) ?? sessions[0] ?? null,
@@ -97,6 +104,62 @@ export default function Home() {
   );
 
   const hasMessages = activeSession ? activeSession.messages.length > 0 : false;
+  const isSidebarVisible = isMobileViewport ? isMobileDrawerOpen : !isSidebarCollapsed;
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const savedPreference = window.localStorage.getItem(SIDEBAR_PREF_KEY);
+    if (savedPreference === "true" || savedPreference === "false") {
+      const nextValue = savedPreference === "true";
+      queueMicrotask(() => {
+        setIsSidebarCollapsed(nextValue);
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const mediaQuery = window.matchMedia(MOBILE_BREAKPOINT_QUERY);
+    const handleChange = (event: MediaQueryListEvent) => {
+      setIsMobileViewport(event.matches);
+      if (!event.matches) {
+        setIsMobileDrawerOpen(false);
+      }
+    };
+
+    queueMicrotask(() => {
+      setIsMobileViewport(mediaQuery.matches);
+    });
+
+    if (typeof mediaQuery.addEventListener === "function") {
+      mediaQuery.addEventListener("change", handleChange);
+      return () => mediaQuery.removeEventListener("change", handleChange);
+    }
+
+    mediaQuery.addListener(handleChange);
+    return () => mediaQuery.removeListener(handleChange);
+  }, []);
+
+  useEffect(() => {
+    if (!isMobileViewport || !isMobileDrawerOpen) {
+      return;
+    }
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsMobileDrawerOpen(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [isMobileDrawerOpen, isMobileViewport]);
 
   const createAndHydrateSession = useCallback(async () => {
     const normalizedPlayerId = playerId.trim();
@@ -334,6 +397,10 @@ export default function Home() {
     setActiveSessionId(id);
     setMessageText("");
 
+    if (isMobileViewport) {
+      setIsMobileDrawerOpen(false);
+    }
+
     if (!selectedSession?.campaign_id) {
       return;
     }
@@ -343,6 +410,19 @@ export default function Home() {
     }
 
     await loadCampaignConversation(id, selectedSession.campaign_id, playerId.trim());
+  };
+
+  const handleSidebarToggle = () => {
+    if (isMobileViewport) {
+      setIsMobileDrawerOpen((current) => !current);
+      return;
+    }
+
+    setIsSidebarCollapsed((current) => {
+      const nextValue = !current;
+      window.localStorage.setItem(SIDEBAR_PREF_KEY, String(nextValue));
+      return nextValue;
+    });
   };
 
   const handleDeleteSession = async (id: string) => {
@@ -596,78 +676,136 @@ export default function Home() {
 
   return (
     <div className="h-screen overflow-hidden bg-[#09090c] text-white">
-      <div className="flex h-full w-full gap-6 px-4 py-6 sm:px-6 lg:px-8">
-        <SessionHistorySidebar
-          sessions={sessions}
-          activeSessionId={activeSession?.id ?? ""}
-          onSelectSession={handleSelectSession}
-          onNewSession={handleNewSession}
-          onDeleteSession={handleDeleteSession}
-          onDeleteAllSessions={handleDeleteAllSessions}
-          isCreating={isCreatingSession || isCreatingTransitionPending}
-          isDeletingAll={isDeletingAllSessions}
-          deletingSessionIds={deletingSessionIds}
-        />
-
-        <main className="flex h-full min-h-0 flex-1 flex-col overflow-hidden rounded-[32px] border border-white/10 bg-slate-950/90 p-6 shadow-2xl shadow-black/20">
-          <header className="mb-6 flex items-center justify-between gap-4 rounded-3xl border border-white/10 bg-white/5 p-5">
-            <div>
-              <p className="text-sm uppercase tracking-[0.28em] text-sky-300/80">Dungeon MUD</p>
-              <h1 className="mt-2 text-3xl font-semibold text-white">Chat with the haunted halls</h1>
-            </div>
-            <div className="flex flex-col gap-2">
-              <label htmlFor="player-id" className="text-xs uppercase tracking-[0.24em] text-zinc-400">
-                Player ID
-              </label>
-              <input
-                id="player-id"
-                value={playerId}
-                onChange={(event) => {
-                  setPlayerId(event.target.value);
-                  if (playerIdError) {
-                    setPlayerIdError("");
-                  }
-                }}
-                placeholder="Enter a real player identifier"
-                className="rounded-2xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none transition focus:border-sky-500/60"
-              />
-              {playerIdError ? <p className="text-xs text-rose-400">{playerIdError}</p> : null}
-              {requestError ? <p className="text-xs text-amber-300">{requestError}</p> : null}
-            </div>
-            <div className="rounded-3xl bg-white/5 px-4 py-3 text-sm text-zinc-300">
-              {activeSession ? activeSession.messages.length : 0} message{activeSession?.messages.length === 1 ? "" : "s"}
-            </div>
-          </header>
-
-          <div className="flex h-full min-h-0 flex-col gap-6">
-            <div className="flex-1 min-h-0 overflow-hidden rounded-3xl border border-white/10 bg-black/40 p-4">
-              {hasMessages ? (
-                <ConversationView messages={activeSession?.messages ?? []} />
-              ) : (
-                <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-zinc-400">
-                  <p className="max-w-xl text-lg">Your adventure begins when you send the first command.</p>
-                  <p className="text-sm">Type something like <span className="rounded-full bg-white/5 px-2 py-1 text-white">look</span> or <span className="rounded-full bg-white/5 px-2 py-1 text-white">go north</span>.</p>
-                </div>
-              )}
-            </div>
-
-            <div className="mt-2 shrink-0">
-              <ChatInput
-                value={messageText}
-                onChange={setMessageText}
-                onSend={handleSendMessage}
-                disabled={
-                  isSending ||
-                  messageText.trim().length === 0 ||
-                  messageText.trim().length > MAX_INPUT_CHARACTERS ||
-                  isCreatingSession ||
-                  !playerId.trim() ||
-                  playerId.trim().toLowerCase() === "anonymous"
-                }
-              />
-            </div>
+      <div className="h-full w-full px-4 py-6 sm:px-6 lg:px-8">
+        <div
+          className={`relative h-full md:grid md:min-h-0 md:transition-[grid-template-columns,gap] md:duration-300 md:ease-in-out md:motion-reduce:transition-none ${
+            isSidebarCollapsed
+              ? "md:grid-cols-[0px_minmax(0,1fr)]"
+              : "md:grid-cols-[var(--sidebar-width)_minmax(0,1fr)]"
+          } ${isSidebarCollapsed ? "md:gap-0" : "md:gap-4"}`}
+          style={{ "--sidebar-width": SIDEBAR_WIDTH } as CSSProperties}
+        >
+          <div
+            className={`group absolute top-2 z-40 transition-[left] duration-300 ease-in-out motion-reduce:transition-none md:-top-2 ${
+              isMobileViewport
+                ? "left-3"
+                : isSidebarCollapsed
+                  ? "left-3"
+                  : "left-[calc(var(--sidebar-width)-0.625rem)]"
+            }`}
+          >
+            <button
+              type="button"
+              onClick={handleSidebarToggle}
+              aria-label={isSidebarVisible ? "Collapse sidebar" : "Expand sidebar"}
+              aria-expanded={isSidebarVisible}
+              aria-controls="campaign-sidebar"
+              aria-describedby="sidebar-toggle-tooltip"
+              className="flex h-7 w-7 items-center justify-center rounded-full border border-zinc-700 bg-zinc-950/95 text-zinc-400 shadow-lg transition-[border-color,color] duration-300 ease-in-out hover:border-zinc-500 hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#09090c] motion-reduce:transition-none"
+            >
+              {isSidebarVisible ? <PanelLeftClose className="h-3.5 w-3.5" aria-hidden="true" /> : <PanelLeftOpen className="h-3.5 w-3.5" aria-hidden="true" />}
+            </button>
+            <span
+              id="sidebar-toggle-tooltip"
+              role="tooltip"
+              className="pointer-events-none absolute left-1/2 top-full z-40 mt-2 -translate-x-1/2 whitespace-nowrap rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-1 text-xs font-medium text-zinc-100 opacity-0 shadow-lg transition group-hover:opacity-100"
+            >
+              {isSidebarVisible ? "Collapse sidebar" : "Expand sidebar"}
+            </span>
           </div>
-        </main>
+
+          <button
+            type="button"
+            aria-label="Close sidebar backdrop"
+            onClick={() => setIsMobileDrawerOpen(false)}
+            className={`absolute inset-0 z-20 bg-black/45 transition-opacity duration-300 ease-in-out md:hidden motion-reduce:transition-none ${
+              isMobileDrawerOpen ? "opacity-100" : "pointer-events-none opacity-0"
+            }`}
+          />
+
+          <SessionHistorySidebar
+            id="campaign-sidebar"
+            sessions={sessions}
+            activeSessionId={activeSession?.id ?? ""}
+            onSelectSession={handleSelectSession}
+            onNewSession={handleNewSession}
+            onDeleteSession={handleDeleteSession}
+            onDeleteAllSessions={handleDeleteAllSessions}
+            isCreating={isCreatingSession || isCreatingTransitionPending}
+            isDeletingAll={isDeletingAllSessions}
+            deletingSessionIds={deletingSessionIds}
+            className={`min-w-0 overflow-hidden ${
+              isSidebarCollapsed ? "md:pointer-events-none" : "md:pointer-events-auto"
+            } ${
+              isMobileDrawerOpen ? "pointer-events-auto" : "pointer-events-none md:pointer-events-auto"
+            } absolute inset-y-0 left-0 z-30 w-[min(var(--sidebar-width),calc(100%-0.5rem))] max-w-none transform-gpu transition-transform duration-300 ease-in-out motion-reduce:transition-none ${
+              isMobileDrawerOpen ? "translate-x-0" : "-translate-x-[calc(100%+1rem)]"
+            } md:relative md:inset-auto md:z-auto md:w-auto md:translate-x-0`}
+            contentClassName={`${
+              isSidebarCollapsed ? "md:pointer-events-none md:-translate-x-3 md:opacity-0" : "md:translate-x-0 md:opacity-100"
+            }`}
+          />
+
+          <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[32px] border border-white/10 bg-slate-950/90 p-6 shadow-2xl shadow-black/20">
+            <header className="mb-6 flex items-center justify-between gap-4 rounded-3xl border border-white/10 bg-white/5 p-5">
+              <div>
+                <p className="text-sm uppercase tracking-[0.28em] text-sky-300/80">Dungeon MUD</p>
+                <h1 className="mt-2 text-3xl font-semibold text-white">Chat with the haunted halls</h1>
+              </div>
+              <div className="flex flex-col gap-2">
+                <label htmlFor="player-id" className="text-xs uppercase tracking-[0.24em] text-zinc-400">
+                  Player ID
+                </label>
+                <input
+                  id="player-id"
+                  value={playerId}
+                  onChange={(event) => {
+                    setPlayerId(event.target.value);
+                    if (playerIdError) {
+                      setPlayerIdError("");
+                    }
+                  }}
+                  placeholder="Enter a real player identifier"
+                  className="rounded-2xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none transition focus:border-sky-500/60"
+                />
+                {playerIdError ? <p className="text-xs text-rose-400">{playerIdError}</p> : null}
+                {requestError ? <p className="text-xs text-amber-300">{requestError}</p> : null}
+              </div>
+              <div className="rounded-3xl bg-white/5 px-4 py-3 text-sm text-zinc-300">
+                {activeSession ? activeSession.messages.length : 0} message{activeSession?.messages.length === 1 ? "" : "s"}
+              </div>
+            </header>
+
+            <div className="flex h-full min-h-0 flex-col gap-6">
+              <div className="flex-1 min-h-0 overflow-hidden rounded-3xl border border-white/10 bg-black/40 p-4">
+                {hasMessages ? (
+                  <ConversationView messages={activeSession?.messages ?? []} />
+                ) : (
+                  <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-zinc-400">
+                    <p className="max-w-xl text-lg">Your adventure begins when you send the first command.</p>
+                    <p className="text-sm">Type something like <span className="rounded-full bg-white/5 px-2 py-1 text-white">look</span> or <span className="rounded-full bg-white/5 px-2 py-1 text-white">go north</span>.</p>
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-2 shrink-0">
+                <ChatInput
+                  value={messageText}
+                  onChange={setMessageText}
+                  onSend={handleSendMessage}
+                  disabled={
+                    isSending ||
+                    messageText.trim().length === 0 ||
+                    messageText.trim().length > MAX_INPUT_CHARACTERS ||
+                    isCreatingSession ||
+                    !playerId.trim() ||
+                    playerId.trim().toLowerCase() === "anonymous"
+                  }
+                />
+              </div>
+            </div>
+          </main>
+        </div>
       </div>
     </div>
   );
