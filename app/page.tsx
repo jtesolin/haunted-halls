@@ -1,10 +1,10 @@
 "use client";
 
-import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, useTransition, type CSSProperties } from "react";
 import ChatInput from "@/components/ChatInput";
+import CampaignSidebar from "@/components/CampaignSidebar";
+import CampaignToolbar from "@/components/CampaignToolbar";
 import ConversationView from "@/components/ConversationView";
-import SessionHistorySidebar from "@/components/SessionHistorySidebar";
 import type {
   CampaignDetailsResponse,
   CampaignSummary,
@@ -17,6 +17,7 @@ const MAX_INPUT_CHARACTERS = 2000;
 const OPENING_LOADING_TEXT = "The narrator is preparing your opening scene...";
 const SIDEBAR_PREF_KEY = "haunted-halls-sidebar-collapsed";
 const SIDEBAR_WIDTH = "320px";
+const COLLAPSED_TOOLBAR_WIDTH = "64px";
 const MOBILE_BREAKPOINT_QUERY = "(max-width: 767px)";
 
 function getUserFacingErrorMessage(status: number, fallback: string) {
@@ -680,39 +681,27 @@ export default function Home() {
         <div
           className={`relative h-full md:grid md:min-h-0 md:transition-[grid-template-columns,gap] md:duration-300 md:ease-in-out md:motion-reduce:transition-none ${
             isSidebarCollapsed
-              ? "md:grid-cols-[0px_minmax(0,1fr)]"
+              ? "md:grid-cols-[var(--collapsed-toolbar-width)_minmax(0,1fr)]"
               : "md:grid-cols-[var(--sidebar-width)_minmax(0,1fr)]"
           } ${isSidebarCollapsed ? "md:gap-0" : "md:gap-4"}`}
-          style={{ "--sidebar-width": SIDEBAR_WIDTH } as CSSProperties}
+          style={
+            {
+              "--sidebar-width": SIDEBAR_WIDTH,
+              "--collapsed-toolbar-width": COLLAPSED_TOOLBAR_WIDTH,
+            } as CSSProperties
+          }
         >
-          <div
-            className={`group absolute top-2 z-40 transition-[left] duration-300 ease-in-out motion-reduce:transition-none md:-top-2 ${
-              isMobileViewport
-                ? "left-3"
-                : isSidebarCollapsed
-                  ? "left-3"
-                  : "left-[calc(var(--sidebar-width)-0.625rem)]"
-            }`}
-          >
-            <button
-              type="button"
-              onClick={handleSidebarToggle}
-              aria-label={isSidebarVisible ? "Collapse sidebar" : "Expand sidebar"}
-              aria-expanded={isSidebarVisible}
-              aria-controls="campaign-sidebar"
-              aria-describedby="sidebar-toggle-tooltip"
-              className="flex h-7 w-7 items-center justify-center rounded-full border border-zinc-700 bg-zinc-950/95 text-zinc-400 shadow-lg transition-[border-color,color] duration-300 ease-in-out hover:border-zinc-500 hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#09090c] motion-reduce:transition-none"
-            >
-              {isSidebarVisible ? <PanelLeftClose className="h-3.5 w-3.5" aria-hidden="true" /> : <PanelLeftOpen className="h-3.5 w-3.5" aria-hidden="true" />}
-            </button>
-            <span
-              id="sidebar-toggle-tooltip"
-              role="tooltip"
-              className="pointer-events-none absolute left-1/2 top-full z-40 mt-2 -translate-x-1/2 whitespace-nowrap rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-1 text-xs font-medium text-zinc-100 opacity-0 shadow-lg transition group-hover:opacity-100"
-            >
-              {isSidebarVisible ? "Collapse sidebar" : "Expand sidebar"}
-            </span>
-          </div>
+          <CampaignToolbar
+            isCollapsed={isSidebarCollapsed}
+            isMobileViewport={isMobileViewport}
+            isSidebarVisible={isSidebarVisible}
+            onToggleSidebar={handleSidebarToggle}
+            onExpandSidebar={handleSidebarToggle}
+            onNewSession={handleNewSession}
+            isNewSessionDisabled={
+              isCreatingSession || isCreatingTransitionPending || isDeletingAllSessions
+            }
+          />
 
           <button
             type="button"
@@ -723,7 +712,7 @@ export default function Home() {
             }`}
           />
 
-          <SessionHistorySidebar
+          <CampaignSidebar
             id="campaign-sidebar"
             sessions={sessions}
             activeSessionId={activeSession?.id ?? ""}
@@ -734,19 +723,26 @@ export default function Home() {
             isCreating={isCreatingSession || isCreatingTransitionPending}
             isDeletingAll={isDeletingAllSessions}
             deletingSessionIds={deletingSessionIds}
+            onToggleSidebar={handleSidebarToggle}
+            isMobileViewport={isMobileViewport}
+            isSidebarVisible={isSidebarVisible}
             className={`min-w-0 overflow-hidden ${
               isSidebarCollapsed ? "md:pointer-events-none" : "md:pointer-events-auto"
             } ${
               isMobileDrawerOpen ? "pointer-events-auto" : "pointer-events-none md:pointer-events-auto"
             } absolute inset-y-0 left-0 z-30 w-[min(var(--sidebar-width),calc(100%-0.5rem))] max-w-none transform-gpu transition-transform duration-300 ease-in-out motion-reduce:transition-none ${
               isMobileDrawerOpen ? "translate-x-0" : "-translate-x-[calc(100%+1rem)]"
-            } md:relative md:inset-auto md:z-auto md:w-auto md:translate-x-0`}
+            } ${
+              isSidebarCollapsed
+                ? "md:absolute md:inset-y-0 md:left-0 md:z-30 md:w-[var(--sidebar-width)] md:-translate-x-[calc(100%+1rem)]"
+                : "md:relative md:inset-auto md:z-auto md:w-auto md:translate-x-0"
+            }`}
             contentClassName={`${
               isSidebarCollapsed ? "md:pointer-events-none md:-translate-x-3 md:opacity-0" : "md:translate-x-0 md:opacity-100"
             }`}
           />
 
-          <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[32px] border border-white/10 bg-slate-950/90 p-6 shadow-2xl shadow-black/20">
+          <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-6 shadow-2xl shadow-black/20">
             <header className="mb-6 flex items-center justify-between gap-4 rounded-3xl border border-white/10 bg-white/5 p-5">
               <div>
                 <p className="text-sm uppercase tracking-[0.28em] text-sky-300/80">Dungeon MUD</p>
