@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { CreateCampaignRequest, CreateCampaignResponse } from "@/types/chat";
-import { getEngineAuthHeaders, getEngineBaseUrl } from "@/lib/engine";
+import { getEngineAuthHeaders, getEngineBaseUrl, getTemporaryPlayerId } from "@/lib/engine";
+import { ensureAuthenticated } from "@/lib/route-auth";
 
 function isValidPlayerId(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0 && value.trim().toLowerCase() !== "anonymous";
@@ -8,9 +9,17 @@ function isValidPlayerId(value: unknown): value is string {
 
 export async function POST(request: Request) {
   try {
-    const body = (await request.json()) as Partial<CreateCampaignRequest>;
+    const { response: authResponse } = await ensureAuthenticated();
+    if (authResponse) {
+      return authResponse;
+    }
 
-    if (!isValidPlayerId(body.player_id)) {
+    const body = (await request.json()) as Partial<CreateCampaignRequest>;
+    const fallbackPlayerId = getTemporaryPlayerId();
+    const providedPlayerId = typeof body.player_id === "string" ? body.player_id.trim() : "";
+    const resolvedPlayerId = providedPlayerId || fallbackPlayerId;
+
+    if (!isValidPlayerId(resolvedPlayerId)) {
       return NextResponse.json(
         { error: "A valid player_id is required" },
         { status: 422 }
@@ -18,7 +27,7 @@ export async function POST(request: Request) {
     }
 
     const payload: CreateCampaignRequest = {
-      player_id: body.player_id.trim(),
+      player_id: resolvedPlayerId,
     };
 
     const response = await fetch(`${getEngineBaseUrl()}/api/campaign`, {

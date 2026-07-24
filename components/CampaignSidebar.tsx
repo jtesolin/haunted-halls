@@ -21,6 +21,7 @@ export default function CampaignSidebar({
   isCreating,
   isDeletingAll,
   deletingSessionIds,
+  isActionDisabled,
   onToggleSidebar,
   isMobileViewport,
   isSidebarVisible,
@@ -37,6 +38,7 @@ export default function CampaignSidebar({
   isCreating?: boolean;
   isDeletingAll?: boolean;
   deletingSessionIds?: string[];
+  isActionDisabled?: boolean;
   onToggleSidebar?: () => void;
   isMobileViewport?: boolean;
   isSidebarVisible?: boolean;
@@ -46,6 +48,7 @@ export default function CampaignSidebar({
 }) {
   const deletingIds = new Set(deletingSessionIds ?? []);
   const hasDeletableSessions = sessions.some((session) => !session.is_optimistic);
+  const disableActions = Boolean(isActionDisabled);
 
   return (
     <div id={id} className={`flex h-full w-full min-w-0 flex-col overflow-hidden ${className ?? ""}`}>
@@ -96,7 +99,7 @@ export default function CampaignSidebar({
                     type="button"
                     aria-label="Delete all campaigns"
                     onClick={onDeleteAllSessions}
-                    disabled={!hasDeletableSessions || isDeletingAll || isCreating}
+                    disabled={disableActions || !hasDeletableSessions || isDeletingAll || isCreating}
                     className={`inline-flex h-9 items-center justify-center rounded-lg border transition-[background-color,border-color,color] duration-300 ease-in-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400/70 disabled:cursor-not-allowed disabled:border-zinc-700 disabled:bg-transparent disabled:text-zinc-600 ${
                       isDeletingAll
                         ? "gap-2 border-rose-500/30 bg-rose-500/10 px-3 text-xs font-semibold text-rose-200"
@@ -140,7 +143,7 @@ export default function CampaignSidebar({
                     type="button"
                     aria-label="Create new campaign"
                     onClick={onNewSession}
-                    disabled={isCreating || isDeletingAll}
+                    disabled={disableActions || isCreating || isDeletingAll}
                     className={`inline-flex h-9 items-center justify-center rounded-lg bg-sky-500 text-sm font-semibold text-white transition-[background-color,border-color,color] duration-300 ease-in-out hover:bg-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70 disabled:cursor-not-allowed disabled:bg-slate-600 ${
                       isCreating ? "gap-2 px-3" : "gap-1.5 px-3"
                     }`}
@@ -189,7 +192,7 @@ export default function CampaignSidebar({
                     <button
                       type="button"
                       onClick={() => onSelectSession(session.id)}
-                      disabled={session.is_optimistic || isDeleting || isDeletingAll}
+                      disabled={disableActions || session.is_optimistic || isDeleting || isDeletingAll}
                       className={`w-full rounded-3xl px-4 py-4 pr-12 text-left transition ${
                         session.id === activeSessionId
                           ? "bg-slate-800 text-white ring-1 ring-sky-500/30"
@@ -218,7 +221,7 @@ export default function CampaignSidebar({
                         event.stopPropagation();
                         onDeleteSession(session.id);
                       }}
-                      disabled={session.is_optimistic || isDeleting || isDeletingAll}
+                      disabled={disableActions || session.is_optimistic || isDeleting || isDeletingAll}
                       className="absolute right-3 top-3 inline-flex h-8 w-8 items-center justify-center rounded-full border border-transparent bg-transparent text-zinc-500 opacity-0 transition hover:border-rose-400/50 hover:bg-rose-500/10 hover:text-rose-300 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400/60 disabled:cursor-not-allowed disabled:opacity-30 group-hover:opacity-100 group-focus-within:opacity-100"
                     >
                       {isDeleting ? (

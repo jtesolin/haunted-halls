@@ -1,4 +1,5 @@
 const DEFAULT_ENGINE_BASE_URL = "http://localhost:8000";
+const DEFAULT_TEMP_PLAYER_ID = "player-1";
 
 export function getEngineBaseUrl() {
   return process.env.ENGINE_BASE_URL?.trim() || DEFAULT_ENGINE_BASE_URL;
@@ -20,4 +21,10 @@ export function getEngineAuthHeaders(includeJsonContentType = false) {
 export function getMaxInputCharacters() {
   const parsed = Number.parseInt(process.env.MAX_INPUT_CHARACTERS ?? "2000", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 2000;
+}
+
+export function getTemporaryPlayerId() {
+  // Temporary bridge while the engine contract still expects a player_id field.
+  const value = process.env.TEMP_PLAYER_ID?.trim();
+  return value || DEFAULT_TEMP_PLAYER_ID;
 }

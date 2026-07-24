@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { ChatRequest, ChatResponse } from "@/types/chat";
-import { getEngineAuthHeaders, getEngineBaseUrl, getMaxInputCharacters } from "@/lib/engine";
+import { getEngineAuthHeaders, getEngineBaseUrl, getMaxInputCharacters, getTemporaryPlayerId } from "@/lib/engine";
+import { ensureAuthenticated } from "@/lib/route-auth";
 
 function isValidPlayerId(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0 && value.trim().toLowerCase() !== "anonymous";
@@ -8,9 +9,15 @@ function isValidPlayerId(value: unknown): value is string {
 
 export async function POST(request: Request) {
   try {
+    const { response: authResponse } = await ensureAuthenticated();
+    if (authResponse) {
+      return authResponse;
+    }
+
     const body = (await request.json()) as Partial<ChatRequest>;
     const message = typeof body.message === "string" ? body.message : "";
-    const playerId = typeof body.player_id === "string" ? body.player_id.trim() : "";
+    const providedPlayerId = typeof body.player_id === "string" ? body.player_id.trim() : "";
+    const playerId = providedPlayerId || getTemporaryPlayerId();
     const maxInputCharacters = getMaxInputCharacters();
 
     if (!message.trim()) {
@@ -24,7 +31,7 @@ export async function POST(request: Request) {
       );
     }
 
-    if (!isValidPlayerId(body.player_id)) {
+    if (!isValidPlayerId(playerId)) {
       return NextResponse.json(
         { error: "A valid player_id is required" },
         { status: 422 }

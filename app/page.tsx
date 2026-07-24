@@ -1,6 +1,8 @@
 "use client";
 
+import Image from "next/image";
 import { useCallback, useEffect, useMemo, useState, useTransition, type CSSProperties } from "react";
+import { signIn, signOut, useSession } from "next-auth/react";
 import ChatInput from "@/components/ChatInput";
 import CampaignSidebar from "@/components/CampaignSidebar";
 import CampaignToolbar from "@/components/CampaignToolbar";
@@ -19,17 +21,39 @@ const SIDEBAR_PREF_KEY = "haunted-halls-sidebar-collapsed";
 const SIDEBAR_WIDTH = "320px";
 const COLLAPSED_TOOLBAR_WIDTH = "64px";
 const MOBILE_BREAKPOINT_QUERY = "(max-width: 767px)";
+const GENERIC_SIGN_IN_ERROR = "Sign-in failed. Please try again.";
+// Temporary fallback while engine routes still require player_id in request payloads.
+const TEMPORARY_PLAYER_ID = "player-1";
+
+function getSafeCallbackPath(candidate: string): string {
+  if (typeof window === "undefined") {
+    return "/";
+  }
+
+  try {
+    const current = new URL(window.location.href);
+    const target = new URL(candidate, current.origin);
+
+    if (target.origin !== current.origin) {
+      return "/";
+    }
+
+    return `${target.pathname}${target.search}${target.hash}`;
+  } catch {
+    return "/";
+  }
+}
 
 function getUserFacingErrorMessage(status: number, fallback: string) {
   switch (status) {
     case 401:
-      return "The server rejected the request because the shared API token is missing or invalid.";
+      return "You must sign in before sending commands.";
     case 400:
       return "The message could not be sent. It may be empty, too long, or the campaign is no longer active.";
     case 404:
-      return "The requested campaign or character could not be found for this player.";
+      return "The requested campaign or character could not be found.";
     case 422:
-      return "Please provide a valid player identifier and try again.";
+      return "The request could not be completed. Please try again.";
     case 429:
       return "The hall is rate limiting requests right now. Please wait a moment and try again.";
     case 502:
@@ -84,11 +108,18 @@ function createLoadingNarratorMessage(): ChatMessage {
 }
 
 export default function Home() {
+  const { data: session, status: authStatus } = useSession();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState("");
   const [messageText, setMessageText] = useState("");
-  const [playerId, setPlayerId] = useState("player-1");
-  const [playerIdError, setPlayerIdError] = useState("");
+  const [authError, setAuthError] = useState(() => {
+    if (typeof window === "undefined") {
+      return "";
+    }
+
+    const url = new URL(window.location.href);
+    return url.searchParams.get("error") ? GENERIC_SIGN_IN_ERROR : "";
+  });
   const [requestError, setRequestError] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
@@ -106,6 +137,12 @@ export default function Home() {
 
   const hasMessages = activeSession ? activeSession.messages.length > 0 : false;
   const isSidebarVisible = isMobileViewport ? isMobileDrawerOpen : !isSidebarCollapsed;
+  const isAuthLoading = authStatus === "loading";
+  const isAuthenticated = authStatus === "authenticated";
+  const disableGameActions = isAuthLoading || !isAuthenticated;
+  const userDisplayName = session?.user?.name?.trim() || session?.user?.email?.trim() || "Signed in";
+  const userEmail = session?.user?.email?.trim() || null;
+  const userImage = session?.user?.image?.trim() || null;
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -162,19 +199,47 @@ export default function Home() {
     return () => window.removeEventListener("keydown", handleEscape);
   }, [isMobileDrawerOpen, isMobileViewport]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const url = new URL(window.location.href);
+    if (!url.searchParams.get("error")) {
+      return;
+    }
+
+    url.searchParams.delete("error");
+    const query = url.searchParams.toString();
+    window.history.replaceState({}, "", `${url.pathname}${query ? `?${query}` : ""}${url.hash}`);
+  }, []);
+
+  useEffect(() => {
+    if (isAuthLoading) {
+      return;
+    }
+
+    if (!isAuthenticated) {
+      queueMicrotask(() => {
+        setSessions([]);
+        setActiveSessionId("");
+        setMessageText("");
+        setRequestError("");
+        setIsSending(false);
+        setIsCreatingSession(false);
+        setDeletingSessionIds([]);
+        setIsDeletingAllSessions(false);
+      });
+    }
+  }, [isAuthenticated, isAuthLoading]);
+
   const createAndHydrateSession = useCallback(async () => {
-    const normalizedPlayerId = playerId.trim();
+    const normalizedPlayerId = TEMPORARY_PLAYER_ID;
 
-    if (isCreatingSession) {
+    if (isCreatingSession || !isAuthenticated) {
       return;
     }
 
-    if (!normalizedPlayerId || normalizedPlayerId.toLowerCase() === "anonymous") {
-      setPlayerIdError("Please enter a real player identifier before creating a campaign.");
-      return;
-    }
-
-    setPlayerIdError("");
     setRequestError("");
     setIsCreatingSession(true);
 
@@ -250,11 +315,11 @@ export default function Home() {
     } finally {
       setIsCreatingSession(false);
     }
-  }, [isCreatingSession, playerId]);
+  }, [isAuthenticated, isCreatingSession]);
 
   useEffect(() => {
-    const normalizedPlayerId = playerId.trim();
-    if (!normalizedPlayerId || normalizedPlayerId.toLowerCase() === "anonymous") {
+    const normalizedPlayerId = TEMPORARY_PLAYER_ID;
+    if (!isAuthenticated || isAuthLoading) {
       return;
     }
 
@@ -309,8 +374,7 @@ export default function Home() {
         if (latestCampaign?.campaign_id) {
           void loadCampaignConversation(
             latestCampaign.campaign_id,
-            latestCampaign.campaign_id,
-            normalizedPlayerId
+            latestCampaign.campaign_id
           );
         }
       } catch {
@@ -322,13 +386,11 @@ export default function Home() {
     };
 
     void loadCampaignSummaries();
-  }, [createAndHydrateSession, playerId]);
+  }, [createAndHydrateSession, isAuthenticated, isAuthLoading]);
 
-  async function loadCampaignConversation(sessionId: string, campaignId: string, currentPlayerId: string) {
+  async function loadCampaignConversation(sessionId: string, campaignId: string) {
     try {
-      const response = await fetch(
-        `/api/campaign/${encodeURIComponent(campaignId)}?player_id=${encodeURIComponent(currentPlayerId)}`
-      );
+      const response = await fetch(`/api/campaign/${encodeURIComponent(campaignId)}`);
       if (!response.ok) {
         return;
       }
@@ -371,11 +433,8 @@ export default function Home() {
     }
   }
 
-  async function deleteCampaignForPlayer(campaignId: string, currentPlayerId: string) {
-    const response = await fetch(
-      `/api/campaign/${encodeURIComponent(campaignId)}?player_id=${encodeURIComponent(currentPlayerId)}`,
-      { method: "DELETE" }
-    );
+  async function deleteCampaignForPlayer(campaignId: string) {
+    const response = await fetch(`/api/campaign/${encodeURIComponent(campaignId)}`, { method: "DELETE" });
 
     if (!response.ok && response.status !== 404) {
       const result = await response.json().catch(() => ({}));
@@ -388,12 +447,20 @@ export default function Home() {
   }
 
   const handleNewSession = () => {
+    if (!isAuthenticated) {
+      return;
+    }
+
     startCreateTransition(() => {
       void createAndHydrateSession();
     });
   };
 
   const handleSelectSession = async (id: string) => {
+    if (!isAuthenticated) {
+      return;
+    }
+
     const selectedSession = sessions.find((session) => session.id === id);
     setActiveSessionId(id);
     setMessageText("");
@@ -410,7 +477,7 @@ export default function Home() {
       return;
     }
 
-    await loadCampaignConversation(id, selectedSession.campaign_id, playerId.trim());
+    await loadCampaignConversation(id, selectedSession.campaign_id);
   };
 
   const handleSidebarToggle = () => {
@@ -427,7 +494,7 @@ export default function Home() {
   };
 
   const handleDeleteSession = async (id: string) => {
-    if (isDeletingAllSessions) {
+    if (isDeletingAllSessions || !isAuthenticated) {
       return;
     }
 
@@ -441,13 +508,6 @@ export default function Home() {
       return;
     }
 
-    const normalizedPlayerId = playerId.trim();
-    if (!normalizedPlayerId || normalizedPlayerId.toLowerCase() === "anonymous") {
-      setPlayerIdError("Please enter a real player identifier before deleting campaigns.");
-      return;
-    }
-
-    setPlayerIdError("");
     setRequestError("");
     setDeletingSessionIds((current) => (current.includes(id) ? current : [...current, id]));
     setSessions((current) => current.filter((session) => session.id !== id));
@@ -455,7 +515,7 @@ export default function Home() {
 
     try {
       if (sessionToDelete.campaign_id) {
-        await deleteCampaignForPlayer(sessionToDelete.campaign_id, normalizedPlayerId);
+        await deleteCampaignForPlayer(sessionToDelete.campaign_id);
       }
     } catch (error) {
       setSessions((current) => sortSessionsByRecency([sessionToDelete, ...current]));
@@ -466,7 +526,7 @@ export default function Home() {
   };
 
   const handleDeleteAllSessions = async () => {
-    if (isDeletingAllSessions) {
+    if (isDeletingAllSessions || !isAuthenticated) {
       return;
     }
 
@@ -480,13 +540,6 @@ export default function Home() {
       return;
     }
 
-    const normalizedPlayerId = playerId.trim();
-    if (!normalizedPlayerId || normalizedPlayerId.toLowerCase() === "anonymous") {
-      setPlayerIdError("Please enter a real player identifier before deleting campaigns.");
-      return;
-    }
-
-    setPlayerIdError("");
     setRequestError("");
     setIsDeletingAllSessions(true);
     setDeletingSessionIds(deletableSessions.map((session) => session.id));
@@ -501,7 +554,7 @@ export default function Home() {
           }
 
           try {
-            await deleteCampaignForPlayer(session.campaign_id, normalizedPlayerId);
+            await deleteCampaignForPlayer(session.campaign_id);
           } catch {
             failedIds.add(session.id);
           }
@@ -526,14 +579,9 @@ export default function Home() {
 
   const handleSendMessage = async () => {
     const trimmed = messageText.trim();
-    const normalizedPlayerId = playerId.trim();
+    const normalizedPlayerId = TEMPORARY_PLAYER_ID;
 
-    if (!trimmed || isSending || !activeSession) {
-      return;
-    }
-
-    if (!normalizedPlayerId || normalizedPlayerId.toLowerCase() === "anonymous") {
-      setPlayerIdError("Please enter a real player identifier before sending.");
+    if (!trimmed || isSending || !activeSession || !isAuthenticated) {
       return;
     }
 
@@ -542,7 +590,6 @@ export default function Home() {
       return;
     }
 
-    setPlayerIdError("");
     setRequestError("");
 
     const userMessage: ChatMessage = {
@@ -675,6 +722,28 @@ export default function Home() {
     }
   };
 
+  const handleSignIn = async () => {
+    setAuthError("");
+
+    try {
+      const callbackUrl = getSafeCallbackPath(window.location.href);
+      await signIn("google", { callbackUrl });
+    } catch {
+      setAuthError(GENERIC_SIGN_IN_ERROR);
+    }
+  };
+
+  const handleSignOut = async () => {
+    setAuthError("");
+    setRequestError("");
+
+    try {
+      await signOut({ callbackUrl: "/" });
+    } catch {
+      setAuthError("Unable to sign out right now. Please try again.");
+    }
+  };
+
   return (
     <div className="h-screen overflow-hidden bg-[#09090c] text-white">
       <div className="h-full w-full px-4 py-6 sm:px-6 lg:px-8">
@@ -699,7 +768,7 @@ export default function Home() {
             onExpandSidebar={handleSidebarToggle}
             onNewSession={handleNewSession}
             isNewSessionDisabled={
-              isCreatingSession || isCreatingTransitionPending || isDeletingAllSessions
+              disableGameActions || isCreatingSession || isCreatingTransitionPending || isDeletingAllSessions
             }
           />
 
@@ -723,6 +792,7 @@ export default function Home() {
             isCreating={isCreatingSession || isCreatingTransitionPending}
             isDeletingAll={isDeletingAllSessions}
             deletingSessionIds={deletingSessionIds}
+            isActionDisabled={disableGameActions}
             onToggleSidebar={handleSidebarToggle}
             isMobileViewport={isMobileViewport}
             isSidebarVisible={isSidebarVisible}
@@ -748,24 +818,63 @@ export default function Home() {
                 <p className="text-sm uppercase tracking-[0.28em] text-sky-300/80">Dungeon MUD</p>
                 <h1 className="mt-2 text-3xl font-semibold text-white">Chat with the haunted halls</h1>
               </div>
-              <div className="flex flex-col gap-2">
-                <label htmlFor="player-id" className="text-xs uppercase tracking-[0.24em] text-zinc-400">
-                  Player ID
-                </label>
-                <input
-                  id="player-id"
-                  value={playerId}
-                  onChange={(event) => {
-                    setPlayerId(event.target.value);
-                    if (playerIdError) {
-                      setPlayerIdError("");
-                    }
-                  }}
-                  placeholder="Enter a real player identifier"
-                  className="rounded-2xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none transition focus:border-sky-500/60"
-                />
-                {playerIdError ? <p className="text-xs text-rose-400">{playerIdError}</p> : null}
-                {requestError ? <p className="text-xs text-amber-300">{requestError}</p> : null}
+              <div className="w-[18rem] shrink-0">
+                <div role="status" aria-live="polite" className="rounded-2xl border border-white/10 bg-black/35 p-3">
+                  {isAuthLoading ? (
+                    <p className="text-sm text-zinc-300">Checking sign-in...</p>
+                  ) : isAuthenticated ? (
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex min-w-0 items-center gap-2">
+                        {userImage ? (
+                          <Image
+                            src={userImage}
+                            alt="Signed-in profile"
+                            width={32}
+                            height={32}
+                            className="h-8 w-8 rounded-full border border-white/20"
+                          />
+                        ) : (
+                          <div className="flex h-8 w-8 items-center justify-center rounded-full border border-white/20 bg-zinc-800 text-xs text-zinc-300">
+                            {userDisplayName.charAt(0).toUpperCase()}
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-zinc-100">{userDisplayName}</p>
+                          {userEmail ? <p className="truncate text-xs text-zinc-400">{userEmail}</p> : null}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleSignOut}
+                        className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg border border-white/15 px-2.5 text-xs font-semibold text-zinc-200 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70"
+                        aria-label="Sign out"
+                      >
+                        Sign out
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm text-zinc-300">Sign in to play</p>
+                      <button
+                        type="button"
+                        onClick={handleSignIn}
+                        className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg bg-sky-500 px-3 text-xs font-semibold text-white transition hover:bg-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70"
+                        aria-label="Sign in with Google"
+                      >
+                        Sign in with Google
+                      </button>
+                    </div>
+                  )}
+                </div>
+                {authError ? <p className="mt-2 text-xs text-rose-400" aria-live="polite">{authError}</p> : null}
+                {requestError ? <p className="mt-2 text-xs text-amber-300" aria-live="polite">{requestError}</p> : null}
+                <p className="sr-only" aria-live="polite">
+                  {isAuthLoading
+                    ? "Checking sign-in"
+                    : isAuthenticated
+                      ? "Signed in"
+                      : "Signed out"}
+                </p>
               </div>
               <div className="rounded-3xl bg-white/5 px-4 py-3 text-sm text-zinc-300">
                 {activeSession ? activeSession.messages.length : 0} message{activeSession?.messages.length === 1 ? "" : "s"}
@@ -774,7 +883,16 @@ export default function Home() {
 
             <div className="flex h-full min-h-0 flex-col gap-6">
               <div className="flex-1 min-h-0 overflow-hidden rounded-3xl border border-white/10 bg-black/40 p-4">
-                {hasMessages ? (
+                {isAuthLoading ? (
+                  <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-zinc-400">
+                    <p className="max-w-xl text-lg">Checking sign-in...</p>
+                  </div>
+                ) : !isAuthenticated ? (
+                  <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-zinc-400">
+                    <p className="max-w-xl text-lg">Sign in to start or continue a campaign.</p>
+                    <p className="text-sm">You must sign in before sending commands.</p>
+                  </div>
+                ) : hasMessages ? (
                   <ConversationView messages={activeSession?.messages ?? []} />
                 ) : (
                   <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-zinc-400">
@@ -790,13 +908,13 @@ export default function Home() {
                   onChange={setMessageText}
                   onSend={handleSendMessage}
                   disabled={
+                    disableGameActions ||
                     isSending ||
                     messageText.trim().length === 0 ||
                     messageText.trim().length > MAX_INPUT_CHARACTERS ||
-                    isCreatingSession ||
-                    !playerId.trim() ||
-                    playerId.trim().toLowerCase() === "anonymous"
+                    isCreatingSession
                   }
+                  disabledPlaceholder={isAuthLoading ? "Checking sign-in..." : "Sign in to send a command"}
                 />
               </div>
             </div>

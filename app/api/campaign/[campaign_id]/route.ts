@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { getEngineAuthHeaders, getEngineBaseUrl } from "@/lib/engine";
+import { getEngineAuthHeaders, getEngineBaseUrl, getTemporaryPlayerId } from "@/lib/engine";
+import { ensureAuthenticated } from "@/lib/route-auth";
 
 function isValidPlayerId(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0 && value.trim().toLowerCase() !== "anonymous";
@@ -7,8 +8,13 @@ function isValidPlayerId(value: unknown): value is string {
 
 export async function GET(request: Request, { params }: { params: Promise<{ campaign_id: string }> }) {
   try {
+    const { response: authResponse } = await ensureAuthenticated();
+    if (authResponse) {
+      return authResponse;
+    }
+
     const { campaign_id } = await params;
-    const playerId = new URL(request.url).searchParams.get("player_id")?.trim() ?? "";
+    const playerId = new URL(request.url).searchParams.get("player_id")?.trim() || getTemporaryPlayerId();
 
     if (!campaign_id?.trim()) {
       return NextResponse.json({ error: "campaign_id is required" }, { status: 400 });
@@ -50,8 +56,13 @@ export async function GET(request: Request, { params }: { params: Promise<{ camp
 
 export async function DELETE(request: Request, { params }: { params: Promise<{ campaign_id: string }> }) {
   try {
+    const { response: authResponse } = await ensureAuthenticated();
+    if (authResponse) {
+      return authResponse;
+    }
+
     const { campaign_id } = await params;
-    const playerId = new URL(request.url).searchParams.get("player_id")?.trim() ?? "";
+    const playerId = new URL(request.url).searchParams.get("player_id")?.trim() || getTemporaryPlayerId();
 
     if (!campaign_id?.trim()) {
       return NextResponse.json({ error: "campaign_id is required" }, { status: 400 });

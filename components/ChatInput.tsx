@@ -7,11 +7,13 @@ export default function ChatInput({
   onChange,
   onSend,
   disabled,
+  disabledPlaceholder,
 }: {
   value: string;
   onChange: (value: string) => void;
   onSend: () => void;
   disabled?: boolean;
+  disabledPlaceholder?: string;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [isOverflowing, setIsOverflowing] = useState(false);
@@ -44,6 +46,8 @@ export default function ChatInput({
           id="mud-input"
           ref={textareaRef}
           value={value}
+          disabled={disabled}
+          aria-disabled={disabled}
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
@@ -54,9 +58,9 @@ export default function ChatInput({
               onSend();
             }
           }}
-          placeholder="Type a command or message..."
+          placeholder={disabled ? (disabledPlaceholder ?? "Sign in to send a command") : "Type a command or message..."}
           rows={1}
-          className={`min-h-[3rem] w-full resize-none rounded-2xl border border-white/10 bg-zinc-900 px-4 py-3 text-sm leading-6 text-white outline-none transition focus:border-sky-500/70 focus:ring-1 focus:ring-sky-500/40 max-h-[25vh] ${
+          className={`min-h-[3rem] w-full resize-none rounded-2xl border border-white/10 bg-zinc-900 px-4 py-3 text-sm leading-6 text-white outline-none transition focus:border-sky-500/70 focus:ring-1 focus:ring-sky-500/40 disabled:cursor-not-allowed disabled:opacity-60 max-h-[25vh] ${
             isOverflowing
               ? "overflow-y-auto custom-scrollbar"
               : "overflow-y-hidden"

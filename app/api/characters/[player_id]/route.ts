@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { getEngineAuthHeaders, getEngineBaseUrl } from "@/lib/engine";
+import { getEngineAuthHeaders, getEngineBaseUrl, getTemporaryPlayerId } from "@/lib/engine";
+import { ensureAuthenticated } from "@/lib/route-auth";
 
 function isValidPlayerId(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0 && value.trim().toLowerCase() !== "anonymous";
@@ -7,7 +8,13 @@ function isValidPlayerId(value: unknown): value is string {
 
 export async function GET(_request: Request, { params }: { params: Promise<{ player_id: string }> }) {
   try {
-    const { player_id } = await params;
+    const { response: authResponse } = await ensureAuthenticated();
+    if (authResponse) {
+      return authResponse;
+    }
+
+    await params;
+    const player_id = getTemporaryPlayerId();
 
     if (!isValidPlayerId(player_id)) {
       return NextResponse.json(
