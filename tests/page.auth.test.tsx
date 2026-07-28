@@ -73,6 +73,8 @@ describe("home auth gating", () => {
 
     expect(screen.getAllByText("player@example.com").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Enter your command" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Create new campaign" })).toBeEnabled();
   });
 

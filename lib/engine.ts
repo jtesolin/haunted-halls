@@ -1,21 +1,111 @@
+import { NextResponse } from "next/server";
+
 const DEFAULT_ENGINE_BASE_URL = "http://localhost:8000";
 const DEFAULT_TEMP_PLAYER_ID = "player-1";
+const MIN_INTERNAL_ENGINE_SERVICE_TOKEN_LENGTH = 64;
+const INTERNAL_ENGINE_SERVICE_TOKEN_PLACEHOLDERS = new Set([
+  "replace-with-internal-engine-token",
+  "generate-with-openssl-do-not-commit",
+]);
+
+export class InternalEngineConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InternalEngineConfigurationError";
+  }
+}
+
+export class InternalEngineOriginError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InternalEngineOriginError";
+  }
+}
 
 export function getEngineBaseUrl() {
   return process.env.ENGINE_BASE_URL?.trim() || DEFAULT_ENGINE_BASE_URL;
 }
 
-export function getEngineAuthHeaders(includeJsonContentType = false) {
-  const token = process.env.INTERNAL_API_TOKEN?.trim();
+export function getInternalEngineServiceToken() {
+  const token = process.env.INTERNAL_ENGINE_SERVICE_TOKEN?.trim();
 
   if (!token) {
-    throw new Error("INTERNAL_API_TOKEN is not configured");
+    throw new InternalEngineConfigurationError("INTERNAL_ENGINE_SERVICE_TOKEN is not configured");
   }
 
-  return {
-    Authorization: `Bearer ${token}`,
-    ...(includeJsonContentType ? { "Content-Type": "application/json" } : {}),
-  };
+  if (
+    token.length < MIN_INTERNAL_ENGINE_SERVICE_TOKEN_LENGTH ||
+    INTERNAL_ENGINE_SERVICE_TOKEN_PLACEHOLDERS.has(token)
+  ) {
+    throw new InternalEngineConfigurationError(
+      "INTERNAL_ENGINE_SERVICE_TOKEN must be at least 32 bytes of random entropy"
+    );
+  }
+
+  return token;
+}
+
+function createEngineHeaders(headers?: HeadersInit) {
+  const requestHeaders = new Headers(headers);
+  requestHeaders.delete("authorization");
+  requestHeaders.set("Authorization", `Bearer ${getInternalEngineServiceToken()}`);
+  return requestHeaders;
+}
+
+function resolveEngineUrl(input: string | URL) {
+  const engineBaseUrl = getEngineBaseUrl();
+  const url = input instanceof URL ? new URL(input.toString()) : new URL(input, engineBaseUrl);
+
+  if (url.origin !== new URL(engineBaseUrl).origin) {
+    throw new InternalEngineOriginError(
+      "Refusing to send internal credentials to a non-engine origin"
+    );
+  }
+
+  return url;
+}
+
+export async function fetchEngine(input: string | URL, init: RequestInit = {}) {
+  return fetch(resolveEngineUrl(input), {
+    ...init,
+    headers: createEngineHeaders(init.headers),
+  });
+}
+
+export async function respondWithEngineError(
+  response: Response,
+  context: string,
+  fallbackError: string
+) {
+  if (response.status === 401 || response.status === 403) {
+    console.error(`${context}: engine rejected internal service authentication`, {
+      status: response.status,
+    });
+    return NextResponse.json({ error: fallbackError }, { status: 502 });
+  }
+
+  const text = await response.text();
+  return NextResponse.json(
+    { error: "Backend request failed", details: text },
+    { status: response.status }
+  );
+}
+
+export function isInternalEngineRequestError(
+  error: unknown
+): error is InternalEngineConfigurationError | InternalEngineOriginError {
+  return error instanceof InternalEngineConfigurationError || error instanceof InternalEngineOriginError;
+}
+
+export function respondWithInternalEngineError(context: string, error: unknown) {
+  console.error(
+    `${context}: ${error instanceof Error ? error.message : "internal engine request failed"}`
+  );
+
+  return NextResponse.json(
+    { error: "Backend service unavailable" },
+    { status: 503 }
+  );
 }
 
 export function getMaxInputCharacters() {

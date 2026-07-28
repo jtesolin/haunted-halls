@@ -54,6 +54,15 @@ If you run the app on a different port, update `NEXTAUTH_URL` and register the m
 - Session strategy is stateless JWT managed by NextAuth cookies.
 - No Google tokens are stored in browser storage.
 
+## Internal Engine Token
+
+- Generate the shared service token with `openssl rand -hex 32`.
+- Set `INTERNAL_ENGINE_SERVICE_TOKEN` in the Next.js environment file and the engine `.env` file to the exact same value.
+- Restart both servers after changing the token.
+- Next.js is the only public application service; the FastAPI engine is intended to have no public ingress.
+- Network isolation and the shared bearer token are complementary controls, not substitutes.
+- To verify the protection, call the engine directly without the token and expect `401`, then call the same flow through Next.js and expect success.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

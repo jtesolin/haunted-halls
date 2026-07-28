@@ -1,6 +1,13 @@
 import { NextResponse } from "next/server";
 import type { ChatRequest, ChatResponse } from "@/types/chat";
-import { getEngineAuthHeaders, getEngineBaseUrl, getMaxInputCharacters, getTemporaryPlayerId } from "@/lib/engine";
+import {
+  fetchEngine,
+  isInternalEngineRequestError,
+  respondWithEngineError,
+  respondWithInternalEngineError,
+  getMaxInputCharacters,
+  getTemporaryPlayerId,
+} from "@/lib/engine";
 import { ensureAuthenticated } from "@/lib/route-auth";
 
 function isValidPlayerId(value: unknown): value is string {
@@ -45,25 +52,25 @@ export async function POST(request: Request) {
       player_id: playerId,
     };
 
-    const response = await fetch(`${getEngineBaseUrl()}/api/chat`, {
+    const response = await fetchEngine("/api/chat", {
       method: "POST",
       headers: {
-        ...getEngineAuthHeaders(true),
+        "Content-Type": "application/json",
       },
       body: JSON.stringify(payload),
     });
 
     if (!response.ok) {
-      const text = await response.text();
-      return NextResponse.json(
-        { error: "Backend request failed", details: text },
-        { status: response.status }
-      );
+      return await respondWithEngineError(response, "chat proxy", "Backend service unavailable");
     }
 
     const data: ChatResponse = await response.json();
     return NextResponse.json(data);
   } catch (error) {
+    if (isInternalEngineRequestError(error)) {
+      return respondWithInternalEngineError("chat proxy", error);
+    }
+
     return NextResponse.json(
       { error: "Unable to proxy chat request", details: (error as Error).message },
       { status: 500 }

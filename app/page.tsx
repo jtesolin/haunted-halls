@@ -140,6 +140,20 @@ export default function Home() {
   const isAuthLoading = authStatus === "loading";
   const isAuthenticated = authStatus === "authenticated";
   const disableGameActions = isAuthLoading || !isAuthenticated;
+  const isInputLocked = disableGameActions || isSending || isCreatingSession;
+  const isSendDisabled =
+    isInputLocked ||
+    messageText.trim().length === 0 ||
+    messageText.trim().length > MAX_INPUT_CHARACTERS;
+  const inputDisabledPlaceholder = isAuthLoading
+    ? "Checking sign-in..."
+    : !isAuthenticated
+      ? "Sign in to send a command"
+      : isCreatingSession
+        ? "Preparing campaign..."
+        : isSending
+          ? "Waiting for narrator response..."
+          : "Command input unavailable";
   const userDisplayName = session?.user?.name?.trim() || session?.user?.email?.trim() || "Signed in";
   const userEmail = session?.user?.email?.trim() || null;
   const userImage = session?.user?.image?.trim() || null;
@@ -907,14 +921,9 @@ export default function Home() {
                   value={messageText}
                   onChange={setMessageText}
                   onSend={handleSendMessage}
-                  disabled={
-                    disableGameActions ||
-                    isSending ||
-                    messageText.trim().length === 0 ||
-                    messageText.trim().length > MAX_INPUT_CHARACTERS ||
-                    isCreatingSession
-                  }
-                  disabledPlaceholder={isAuthLoading ? "Checking sign-in..." : "Sign in to send a command"}
+                  inputDisabled={isInputLocked}
+                  sendDisabled={isSendDisabled}
+                  disabledPlaceholder={inputDisabledPlaceholder}
                 />
               </div>
             </div>

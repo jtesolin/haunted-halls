@@ -1,5 +1,11 @@
 import { NextResponse } from "next/server";
-import { getEngineAuthHeaders, getEngineBaseUrl, getTemporaryPlayerId } from "@/lib/engine";
+import {
+  fetchEngine,
+  isInternalEngineRequestError,
+  respondWithEngineError,
+  respondWithInternalEngineError,
+  getTemporaryPlayerId,
+} from "@/lib/engine";
 import { ensureAuthenticated } from "@/lib/route-auth";
 
 function isValidPlayerId(value: unknown): value is string {
@@ -27,26 +33,25 @@ export async function GET(request: Request, { params }: { params: Promise<{ camp
       );
     }
 
-    const url = new URL(`${getEngineBaseUrl()}/api/campaign/${encodeURIComponent(campaign_id)}`);
-    url.searchParams.set("player_id", playerId);
-
-    const response = await fetch(url, {
-      headers: {
-        ...getEngineAuthHeaders(),
-      },
-    });
+    const response = await fetchEngine(
+      `/api/campaign/${encodeURIComponent(campaign_id)}?player_id=${encodeURIComponent(playerId)}`
+    );
 
     if (!response.ok) {
-      const text = await response.text();
-      return NextResponse.json(
-        { error: "Backend request failed", details: text },
-        { status: response.status }
+      return await respondWithEngineError(
+        response,
+        "campaign read proxy",
+        "Backend service unavailable"
       );
     }
 
     const data = await response.json();
     return NextResponse.json(data);
   } catch (error) {
+    if (isInternalEngineRequestError(error)) {
+      return respondWithInternalEngineError("campaign read proxy", error);
+    }
+
     return NextResponse.json(
       { error: "Unable to proxy campaign request", details: (error as Error).message },
       { status: 500 }
@@ -75,26 +80,27 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ c
       );
     }
 
-    const url = new URL(`${getEngineBaseUrl()}/api/campaign/${encodeURIComponent(campaign_id)}`);
-    url.searchParams.set("player_id", playerId);
-
-    const response = await fetch(url, {
-      method: "DELETE",
-      headers: {
-        ...getEngineAuthHeaders(),
-      },
-    });
+    const response = await fetchEngine(
+      `/api/campaign/${encodeURIComponent(campaign_id)}?player_id=${encodeURIComponent(playerId)}`,
+      {
+        method: "DELETE",
+      }
+    );
 
     if (!response.ok) {
-      const text = await response.text();
-      return NextResponse.json(
-        { error: "Backend request failed", details: text },
-        { status: response.status }
+      return await respondWithEngineError(
+        response,
+        "campaign delete proxy",
+        "Backend service unavailable"
       );
     }
 
     return new Response(null, { status: 204 });
   } catch (error) {
+    if (isInternalEngineRequestError(error)) {
+      return respondWithInternalEngineError("campaign delete proxy", error);
+    }
+
     return NextResponse.json(
       { error: "Unable to proxy delete campaign request", details: (error as Error).message },
       { status: 500 }

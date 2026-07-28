@@ -6,13 +6,15 @@ export default function ChatInput({
   value,
   onChange,
   onSend,
-  disabled,
+  inputDisabled,
+  sendDisabled,
   disabledPlaceholder,
 }: {
   value: string;
   onChange: (value: string) => void;
   onSend: () => void;
-  disabled?: boolean;
+  inputDisabled?: boolean;
+  sendDisabled?: boolean;
   disabledPlaceholder?: string;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -46,8 +48,8 @@ export default function ChatInput({
           id="mud-input"
           ref={textareaRef}
           value={value}
-          disabled={disabled}
-          aria-disabled={disabled}
+          disabled={inputDisabled}
+          aria-disabled={inputDisabled}
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
@@ -58,7 +60,7 @@ export default function ChatInput({
               onSend();
             }
           }}
-          placeholder={disabled ? (disabledPlaceholder ?? "Sign in to send a command") : "Type a command or message..."}
+          placeholder={inputDisabled ? (disabledPlaceholder ?? "Command input unavailable") : "Type a command or message..."}
           rows={1}
           className={`min-h-[3rem] w-full resize-none rounded-2xl border border-white/10 bg-zinc-900 px-4 py-3 text-sm leading-6 text-white outline-none transition focus:border-sky-500/70 focus:ring-1 focus:ring-sky-500/40 disabled:cursor-not-allowed disabled:opacity-60 max-h-[25vh] ${
             isOverflowing
@@ -68,7 +70,7 @@ export default function ChatInput({
         />
         <button
           type="submit"
-          disabled={disabled}
+          disabled={sendDisabled}
           className="inline-flex h-12 shrink-0 items-center justify-center rounded-2xl bg-sky-500 px-5 text-sm font-semibold text-white transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-600"
         >
           Send

@@ -19,3 +19,6 @@ lint:
 
 clean:
 	rm -rf .next
+
+test:
+	npm run test

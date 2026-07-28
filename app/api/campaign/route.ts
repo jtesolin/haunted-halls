@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import type { CreateCampaignRequest, CreateCampaignResponse } from "@/types/chat";
-import { getEngineAuthHeaders, getEngineBaseUrl, getTemporaryPlayerId } from "@/lib/engine";
+import {
+  fetchEngine,
+  isInternalEngineRequestError,
+  respondWithEngineError,
+  respondWithInternalEngineError,
+  getTemporaryPlayerId,
+} from "@/lib/engine";
 import { ensureAuthenticated } from "@/lib/route-auth";
 
 function isValidPlayerId(value: unknown): value is string {
@@ -30,25 +36,29 @@ export async function POST(request: Request) {
       player_id: resolvedPlayerId,
     };
 
-    const response = await fetch(`${getEngineBaseUrl()}/api/campaign`, {
+    const response = await fetchEngine("/api/campaign", {
       method: "POST",
       headers: {
-        ...getEngineAuthHeaders(true),
+        "Content-Type": "application/json",
       },
       body: JSON.stringify(payload),
     });
 
     if (!response.ok) {
-      const text = await response.text();
-      return NextResponse.json(
-        { error: "Backend request failed", details: text },
-        { status: response.status }
+      return await respondWithEngineError(
+        response,
+        "campaign create proxy",
+        "Backend service unavailable"
       );
     }
 
     const data: CreateCampaignResponse = await response.json();
     return NextResponse.json(data, { status: 201 });
   } catch (error) {
+    if (isInternalEngineRequestError(error)) {
+      return respondWithInternalEngineError("campaign create proxy", error);
+    }
+
     return NextResponse.json(
       { error: "Unable to proxy create campaign request", details: (error as Error).message },
       { status: 500 }

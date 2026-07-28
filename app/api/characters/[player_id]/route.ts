@@ -1,5 +1,11 @@
 import { NextResponse } from "next/server";
-import { getEngineAuthHeaders, getEngineBaseUrl, getTemporaryPlayerId } from "@/lib/engine";
+import {
+  fetchEngine,
+  isInternalEngineRequestError,
+  respondWithEngineError,
+  respondWithInternalEngineError,
+  getTemporaryPlayerId,
+} from "@/lib/engine";
 import { ensureAuthenticated } from "@/lib/route-auth";
 
 function isValidPlayerId(value: unknown): value is string {
@@ -23,23 +29,23 @@ export async function GET(_request: Request, { params }: { params: Promise<{ pla
       );
     }
 
-    const response = await fetch(`${getEngineBaseUrl()}/api/characters/${encodeURIComponent(player_id)}`, {
-      headers: {
-        ...getEngineAuthHeaders(),
-      },
-    });
+    const response = await fetchEngine(`/api/characters/${encodeURIComponent(player_id)}`);
 
     if (!response.ok) {
-      const text = await response.text();
-      return NextResponse.json(
-        { error: "Backend request failed", details: text },
-        { status: response.status }
+      return await respondWithEngineError(
+        response,
+        "characters list proxy",
+        "Backend service unavailable"
       );
     }
 
     const data = await response.json();
     return NextResponse.json(data);
   } catch (error) {
+    if (isInternalEngineRequestError(error)) {
+      return respondWithInternalEngineError("characters list proxy", error);
+    }
+
     return NextResponse.json(
       { error: "Unable to proxy characters request", details: (error as Error).message },
       { status: 500 }
