@@ -52,13 +52,12 @@ export default function ChatInput({
           aria-disabled={inputDisabled}
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              if (event.shiftKey) {
-                return;
-              }
-              event.preventDefault();
-              onSend();
+            if (event.key !== "Enter" || event.shiftKey) {
+              return;
             }
+
+            event.preventDefault();
+            onSend();
           }}
           placeholder={inputDisabled ? (disabledPlaceholder ?? "Command input unavailable") : "Type a command or message..."}
           rows={1}
