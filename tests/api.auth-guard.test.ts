@@ -66,7 +66,7 @@ describe("BFF auth guard", () => {
   });
 
   it("adds the internal bearer token for authenticated chat requests and strips browser authorization", async () => {
-    vi.mocked(getServerSession).mockResolvedValue({} as never);
+    vi.mocked(getServerSession).mockResolvedValue({ internalUserId: "user_1" } as never);
     vi.mocked(global.fetch).mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -105,7 +105,7 @@ describe("BFF auth guard", () => {
   });
 
   it("sanitizes internal engine auth failures before they reach the browser", async () => {
-    vi.mocked(getServerSession).mockResolvedValue({} as never);
+    vi.mocked(getServerSession).mockResolvedValue({ internalUserId: "user_1" } as never);
     vi.mocked(global.fetch).mockResolvedValue(
       new Response("missing service credential", {
         status: 401,

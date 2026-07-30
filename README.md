@@ -53,6 +53,11 @@ If you run the app on a different port, update `NEXTAUTH_URL` and register the m
 - Authentication uses Auth.js/NextAuth with Google OpenID Connect scopes: `openid email profile`.
 - Session strategy is stateless JWT managed by NextAuth cookies.
 - No Google tokens are stored in browser storage.
+- After successful Google authentication, Next.js resolves an internal Haunted Halls user by calling the private FastAPI endpoint `POST /internal/auth/users/resolve` with the existing internal service credential.
+- FastAPI owns the internal user record and identity keying. Users are keyed by canonical OIDC issuer + provider subject, while email/display name/avatar are mutable profile fields.
+- Internal user resolution runs during initial sign-in and the returned internal user ID is stored in the server-managed Auth.js token/session for reuse.
+- Existing development sessions created before this flow may lack an internal user ID; sign out and sign back in to refresh those sessions.
+- Campaign ownership and `player_id` migration are future phases.
 
 ## Internal Engine Token
 

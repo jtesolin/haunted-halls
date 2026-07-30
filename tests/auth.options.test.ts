@@ -24,4 +24,9 @@ describe("auth options", () => {
     expect(safe).toBe("https://haunted-halls.example/campaign");
     expect(unsafe).toBe("https://haunted-halls.example");
   });
+
+  it("exposes jwt and session callbacks for internal user resolution", () => {
+    expect(authOptions.callbacks?.jwt).toBeTypeOf("function");
+    expect(authOptions.callbacks?.session).toBeTypeOf("function");
+  });
 });
