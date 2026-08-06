@@ -3,19 +3,20 @@
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/engine", () => ({
-  fetchEngine: vi.fn(),
+  fetchEngineAsService: vi.fn(),
+  INTERNAL_ENGINE_USER_ID_HEADER: "X-Haunted-Halls-User-Id",
   InternalEngineConfigurationError: class InternalEngineConfigurationError extends Error {},
   InternalEngineOriginError: class InternalEngineOriginError extends Error {},
 }));
 
 import type { AdapterUser } from "next-auth/adapters";
 import { authOptions } from "@/lib/auth";
+import { INTERNAL_ENGINE_USER_ID_HEADER, fetchEngineAsService } from "@/lib/engine";
 import {
   buildGoogleIdentityProfile,
   CANONICAL_GOOGLE_ISSUER,
   resolveInternalUserId,
 } from "@/lib/internal-user-resolution";
-import { fetchEngine } from "@/lib/engine";
 
 describe("internal user resolution", () => {
   const callbackUser = {
@@ -42,8 +43,8 @@ describe("internal user resolution", () => {
     expect(identity.email).toBe("player@example.com");
   });
 
-  it("uses the centralized fetchEngine client and sends only normalized identity fields", async () => {
-    vi.mocked(fetchEngine).mockResolvedValue(
+  it("uses the centralized service-only engine client and sends only normalized identity fields", async () => {
+    vi.mocked(fetchEngineAsService).mockResolvedValue(
       new Response(JSON.stringify({ user_id: "user_abc" }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -61,9 +62,10 @@ describe("internal user resolution", () => {
     });
 
     expect(userId).toBe("user_abc");
-    expect(fetchEngine).toHaveBeenCalledTimes(1);
-    const [, init] = vi.mocked(fetchEngine).mock.calls[0];
+    expect(fetchEngineAsService).toHaveBeenCalledTimes(1);
+    const [, init] = vi.mocked(fetchEngineAsService).mock.calls[0];
     const body = JSON.parse(String(init?.body));
+    const headers = new Headers(init?.headers);
 
     expect(body).toEqual({
       identity_provider: "google",
@@ -79,10 +81,11 @@ describe("internal user resolution", () => {
     expect(Object.keys(body)).not.toContain("refresh_token");
     expect(Object.keys(body)).not.toContain("id_token");
     expect(Object.keys(body)).not.toContain("profile");
+    expect(headers.get(INTERNAL_ENGINE_USER_ID_HEADER)).toBeNull();
   });
 
   it("resolves once on initial google login and reuses user id on later jwt reads", async () => {
-    vi.mocked(fetchEngine).mockResolvedValue(
+    vi.mocked(fetchEngineAsService).mockResolvedValue(
       new Response(JSON.stringify({ user_id: "user_once" }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -111,7 +114,7 @@ describe("internal user resolution", () => {
     });
 
     expect(first.internalUserId).toBe("user_once");
-    expect(fetchEngine).toHaveBeenCalledTimes(1);
+    expect(fetchEngineAsService).toHaveBeenCalledTimes(1);
 
     const second = await jwt({
       token: first,
@@ -124,11 +127,11 @@ describe("internal user resolution", () => {
     });
 
     expect(second.internalUserId).toBe("user_once");
-    expect(fetchEngine).toHaveBeenCalledTimes(1);
+    expect(fetchEngineAsService).toHaveBeenCalledTimes(1);
   });
 
   it("fails closed when internal resolution fails during sign-in", async () => {
-    vi.mocked(fetchEngine).mockResolvedValue(new Response("down", { status: 503 }));
+    vi.mocked(fetchEngineAsService).mockResolvedValue(new Response("down", { status: 503 }));
 
     const jwt = authOptions.callbacks?.jwt;
     if (!jwt) {

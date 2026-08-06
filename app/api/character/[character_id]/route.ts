@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import {
-  fetchEngine,
+  fetchEngineAsUser,
   isInternalEngineRequestError,
   respondWithEngineError,
   respondWithInternalEngineError,
@@ -14,9 +14,14 @@ function isValidPlayerId(value: unknown): value is string {
 
 export async function GET(request: Request, { params }: { params: Promise<{ character_id: string }> }) {
   try {
-    const { response: authResponse } = await ensureAuthenticated();
+    const { response: authResponse, internalUserId } = await ensureAuthenticated();
     if (authResponse) {
       return authResponse;
+    }
+
+    if (!internalUserId) {
+      console.error("character read proxy: missing internal user context after authentication");
+      return NextResponse.json({ error: "Authentication required" }, { status: 401 });
     }
 
     const { character_id } = await params;
@@ -33,8 +38,9 @@ export async function GET(request: Request, { params }: { params: Promise<{ char
       );
     }
 
-    const response = await fetchEngine(
-      `/api/character/${encodeURIComponent(character_id)}?player_id=${encodeURIComponent(playerId)}`
+    const response = await fetchEngineAsUser(
+      `/api/character/${encodeURIComponent(character_id)}?player_id=${encodeURIComponent(playerId)}`,
+      internalUserId
     );
 
     if (!response.ok) {

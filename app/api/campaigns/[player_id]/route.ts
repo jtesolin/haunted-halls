@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import {
-  fetchEngine,
+  fetchEngineAsUser,
   isInternalEngineRequestError,
   respondWithEngineError,
   respondWithInternalEngineError,
@@ -14,9 +14,14 @@ function isValidPlayerId(value: unknown): value is string {
 
 export async function GET(_request: Request, { params }: { params: Promise<{ player_id: string }> }) {
   try {
-    const { response: authResponse } = await ensureAuthenticated();
+    const { response: authResponse, internalUserId } = await ensureAuthenticated();
     if (authResponse) {
       return authResponse;
+    }
+
+    if (!internalUserId) {
+      console.error("campaigns list proxy: missing internal user context after authentication");
+      return NextResponse.json({ error: "Authentication required" }, { status: 401 });
     }
 
     await params;
@@ -29,7 +34,10 @@ export async function GET(_request: Request, { params }: { params: Promise<{ pla
       );
     }
 
-    const response = await fetchEngine(`/api/campaigns/${encodeURIComponent(player_id)}`);
+    const response = await fetchEngineAsUser(
+      `/api/campaigns/${encodeURIComponent(player_id)}`,
+      internalUserId
+    );
 
     if (!response.ok) {
       return await respondWithEngineError(

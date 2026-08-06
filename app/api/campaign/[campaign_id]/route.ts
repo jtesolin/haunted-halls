@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import {
-  fetchEngine,
+  fetchEngineAsUser,
   isInternalEngineRequestError,
   respondWithEngineError,
   respondWithInternalEngineError,
@@ -14,9 +14,14 @@ function isValidPlayerId(value: unknown): value is string {
 
 export async function GET(request: Request, { params }: { params: Promise<{ campaign_id: string }> }) {
   try {
-    const { response: authResponse } = await ensureAuthenticated();
+    const { response: authResponse, internalUserId } = await ensureAuthenticated();
     if (authResponse) {
       return authResponse;
+    }
+
+    if (!internalUserId) {
+      console.error("campaign read proxy: missing internal user context after authentication");
+      return NextResponse.json({ error: "Authentication required" }, { status: 401 });
     }
 
     const { campaign_id } = await params;
@@ -33,8 +38,9 @@ export async function GET(request: Request, { params }: { params: Promise<{ camp
       );
     }
 
-    const response = await fetchEngine(
-      `/api/campaign/${encodeURIComponent(campaign_id)}?player_id=${encodeURIComponent(playerId)}`
+    const response = await fetchEngineAsUser(
+      `/api/campaign/${encodeURIComponent(campaign_id)}?player_id=${encodeURIComponent(playerId)}`,
+      internalUserId
     );
 
     if (!response.ok) {
@@ -61,9 +67,14 @@ export async function GET(request: Request, { params }: { params: Promise<{ camp
 
 export async function DELETE(request: Request, { params }: { params: Promise<{ campaign_id: string }> }) {
   try {
-    const { response: authResponse } = await ensureAuthenticated();
+    const { response: authResponse, internalUserId } = await ensureAuthenticated();
     if (authResponse) {
       return authResponse;
+    }
+
+    if (!internalUserId) {
+      console.error("campaign delete proxy: missing internal user context after authentication");
+      return NextResponse.json({ error: "Authentication required" }, { status: 401 });
     }
 
     const { campaign_id } = await params;
@@ -80,8 +91,9 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ c
       );
     }
 
-    const response = await fetchEngine(
+    const response = await fetchEngineAsUser(
       `/api/campaign/${encodeURIComponent(campaign_id)}?player_id=${encodeURIComponent(playerId)}`,
+      internalUserId,
       {
         method: "DELETE",
       }

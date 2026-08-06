@@ -1,5 +1,5 @@
 import {
-  fetchEngine,
+  fetchEngineAsService,
   InternalEngineConfigurationError,
   InternalEngineOriginError,
 } from "@/lib/engine";
@@ -128,7 +128,7 @@ export function buildGoogleIdentityProfile(input: {
 
 export async function resolveInternalUserId(identity: IdentityProfile): Promise<string> {
   try {
-    const response = await fetchEngine(INTERNAL_RESOLVE_PATH, {
+    const response = await fetchEngineAsService(INTERNAL_RESOLVE_PATH, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

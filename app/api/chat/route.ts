@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { ChatRequest, ChatResponse } from "@/types/chat";
 import {
-  fetchEngine,
+  fetchEngineAsUser,
   isInternalEngineRequestError,
   respondWithEngineError,
   respondWithInternalEngineError,
@@ -16,9 +16,14 @@ function isValidPlayerId(value: unknown): value is string {
 
 export async function POST(request: Request) {
   try {
-    const { response: authResponse } = await ensureAuthenticated();
+    const { response: authResponse, internalUserId } = await ensureAuthenticated();
     if (authResponse) {
       return authResponse;
+    }
+
+    if (!internalUserId) {
+      console.error("chat proxy: missing internal user context after authentication");
+      return NextResponse.json({ error: "Authentication required" }, { status: 401 });
     }
 
     const body = (await request.json()) as Partial<ChatRequest>;
@@ -52,7 +57,7 @@ export async function POST(request: Request) {
       player_id: playerId,
     };
 
-    const response = await fetchEngine("/api/chat", {
+    const response = await fetchEngineAsUser("/api/chat", internalUserId, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

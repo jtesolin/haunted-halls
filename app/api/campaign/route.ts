@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { CreateCampaignRequest, CreateCampaignResponse } from "@/types/chat";
 import {
-  fetchEngine,
+  fetchEngineAsUser,
   isInternalEngineRequestError,
   respondWithEngineError,
   respondWithInternalEngineError,
@@ -15,9 +15,14 @@ function isValidPlayerId(value: unknown): value is string {
 
 export async function POST(request: Request) {
   try {
-    const { response: authResponse } = await ensureAuthenticated();
+    const { response: authResponse, internalUserId } = await ensureAuthenticated();
     if (authResponse) {
       return authResponse;
+    }
+
+    if (!internalUserId) {
+      console.error("campaign create proxy: missing internal user context after authentication");
+      return NextResponse.json({ error: "Authentication required" }, { status: 401 });
     }
 
     const body = (await request.json()) as Partial<CreateCampaignRequest>;
@@ -36,7 +41,7 @@ export async function POST(request: Request) {
       player_id: resolvedPlayerId,
     };
 
-    const response = await fetchEngine("/api/campaign", {
+    const response = await fetchEngineAsUser("/api/campaign", internalUserId, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

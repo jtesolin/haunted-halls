@@ -18,7 +18,16 @@ function unauthenticatedResponse() {
 export async function requireAuthenticatedUser() {
   const session = await getServerSession(authOptions);
 
-  if (!session || typeof session.internalUserId !== "string" || !session.internalUserId.trim()) {
+  if (!session) {
+    return {
+      session: null,
+      internalUserId: null,
+      response: unauthenticatedResponse(),
+    };
+  }
+
+  if (typeof session.internalUserId !== "string" || !session.internalUserId.trim()) {
+    console.error("authenticated session is missing internal user context");
     return {
       session: null,
       internalUserId: null,
@@ -28,12 +37,12 @@ export async function requireAuthenticatedUser() {
 
   return {
     session: session as AuthenticatedSession,
-    internalUserId: session.internalUserId,
+    internalUserId: session.internalUserId.trim(),
     response: null,
   };
 }
 
 export async function ensureAuthenticated() {
-  const { session, response } = await requireAuthenticatedUser();
-  return { session, response };
+  const { session, internalUserId, response } = await requireAuthenticatedUser();
+  return { session, internalUserId, response };
 }

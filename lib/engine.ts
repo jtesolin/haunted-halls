@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 const DEFAULT_ENGINE_BASE_URL = "http://localhost:8000";
 const DEFAULT_TEMP_PLAYER_ID = "player-1";
 const MIN_INTERNAL_ENGINE_SERVICE_TOKEN_LENGTH = 64;
+export const INTERNAL_ENGINE_USER_ID_HEADER = "X-Haunted-Halls-User-Id";
 const INTERNAL_ENGINE_SERVICE_TOKEN_PLACEHOLDERS = new Set([
   "replace-with-internal-engine-token",
   "generate-with-openssl-do-not-commit",
@@ -19,6 +20,13 @@ export class InternalEngineOriginError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "InternalEngineOriginError";
+  }
+}
+
+export class InternalEngineUserContextError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InternalEngineUserContextError";
   }
 }
 
@@ -45,10 +53,32 @@ export function getInternalEngineServiceToken() {
   return token;
 }
 
-function createEngineHeaders(headers?: HeadersInit) {
+function createServiceHeaders(headers?: HeadersInit) {
   const requestHeaders = new Headers(headers);
   requestHeaders.delete("authorization");
+  requestHeaders.delete(INTERNAL_ENGINE_USER_ID_HEADER);
   requestHeaders.set("Authorization", `Bearer ${getInternalEngineServiceToken()}`);
+  return requestHeaders;
+}
+
+function createPublicHeaders(headers?: HeadersInit) {
+  const requestHeaders = new Headers(headers);
+  requestHeaders.delete("authorization");
+  requestHeaders.delete(INTERNAL_ENGINE_USER_ID_HEADER);
+  return requestHeaders;
+}
+
+function normalizeInternalUserId(internalUserId: string) {
+  const normalized = internalUserId.trim();
+  if (!normalized) {
+    throw new InternalEngineUserContextError("internal user context is missing");
+  }
+  return normalized;
+}
+
+function createUserScopedHeaders(internalUserId: string, headers?: HeadersInit) {
+  const requestHeaders = createServiceHeaders(headers);
+  requestHeaders.set(INTERNAL_ENGINE_USER_ID_HEADER, normalizeInternalUserId(internalUserId));
   return requestHeaders;
 }
 
@@ -65,12 +95,32 @@ function resolveEngineUrl(input: string | URL) {
   return url;
 }
 
-export async function fetchEngine(input: string | URL, init: RequestInit = {}) {
+export async function fetchEngineAsService(input: string | URL, init: RequestInit = {}) {
   return fetch(resolveEngineUrl(input), {
     ...init,
-    headers: createEngineHeaders(init.headers),
+    headers: createServiceHeaders(init.headers),
   });
 }
+
+export async function fetchEngineAsUser(
+  input: string | URL,
+  internalUserId: string,
+  init: RequestInit = {}
+) {
+  return fetch(resolveEngineUrl(input), {
+    ...init,
+    headers: createUserScopedHeaders(internalUserId, init.headers),
+  });
+}
+
+export async function fetchEnginePublic(input: string | URL, init: RequestInit = {}) {
+  return fetch(resolveEngineUrl(input), {
+    ...init,
+    headers: createPublicHeaders(init.headers),
+  });
+}
+
+export const fetchEngine = fetchEngineAsService;
 
 export async function respondWithEngineError(
   response: Response,
@@ -78,7 +128,7 @@ export async function respondWithEngineError(
   fallbackError: string
 ) {
   if (response.status === 401 || response.status === 403) {
-    console.error(`${context}: engine rejected internal service authentication`, {
+    console.error(`${context}: engine rejected authenticated internal request context`, {
       status: response.status,
     });
     return NextResponse.json({ error: fallbackError }, { status: 502 });
@@ -93,8 +143,12 @@ export async function respondWithEngineError(
 
 export function isInternalEngineRequestError(
   error: unknown
-): error is InternalEngineConfigurationError | InternalEngineOriginError {
-  return error instanceof InternalEngineConfigurationError || error instanceof InternalEngineOriginError;
+): error is InternalEngineConfigurationError | InternalEngineOriginError | InternalEngineUserContextError {
+  return (
+    error instanceof InternalEngineConfigurationError ||
+    error instanceof InternalEngineOriginError ||
+    error instanceof InternalEngineUserContextError
+  );
 }
 
 export function respondWithInternalEngineError(context: string, error: unknown) {
