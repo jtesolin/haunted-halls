@@ -15,6 +15,24 @@ function unauthenticatedResponse() {
   return NextResponse.json({ error: "Authentication required" }, { status: 401 });
 }
 
+function forbiddenResponse() {
+  return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+}
+
+function getAllowedAppOrigin(request: Request) {
+  const configuredOrigin = process.env.NEXTAUTH_URL?.trim();
+
+  if (configuredOrigin) {
+    try {
+      return new URL(configuredOrigin).origin;
+    } catch {
+      console.error("configured NEXTAUTH_URL is not a valid origin");
+    }
+  }
+
+  return new URL(request.url).origin;
+}
+
 export async function requireAuthenticatedUser() {
   const session = await getServerSession(authOptions);
 
@@ -45,4 +63,31 @@ export async function requireAuthenticatedUser() {
 export async function ensureAuthenticated() {
   const { session, internalUserId, response } = await requireAuthenticatedUser();
   return { session, internalUserId, response };
+}
+
+export function ensureAllowedMutationOrigin(request: Request, context: string) {
+  const originHeader = request.headers.get("origin");
+
+  if (!originHeader) {
+    return null;
+  }
+
+  let requestOrigin = "";
+
+  try {
+    requestOrigin = new URL(originHeader).origin;
+  } catch {
+    console.warn(`${context}: rejected mutation request with invalid Origin header`);
+    return forbiddenResponse();
+  }
+
+  const allowedOrigin = getAllowedAppOrigin(request);
+  if (requestOrigin !== allowedOrigin) {
+    console.warn(`${context}: rejected cross-origin mutation request`, {
+      origin: requestOrigin,
+    });
+    return forbiddenResponse();
+  }
+
+  return null;
 }

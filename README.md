@@ -57,12 +57,17 @@ If you run the app on a different port, update `NEXTAUTH_URL` and register the m
 - For user-scoped BFF requests, Next.js requires an authenticated Auth.js session with a resolved internal user ID and propagates that ID to FastAPI via `X-Haunted-Halls-User-Id`.
 - User-scoped engine calls also include the existing service bearer credential; FastAPI trusts the user ID header only after service authentication succeeds.
 - Browser-supplied identity headers are ignored and overwritten server-side.
+- Browser-controlled identity inputs such as `user_id`, `owner_user_id`, `player_id`, email, provider subject hints, browser `Authorization`, and browser-supplied trusted-user headers are never authoritative.
 - FastAPI owns the internal user record and identity keying. Users are keyed by canonical OIDC issuer + provider subject, while email/display name/avatar are mutable profile fields.
 - Internal user resolution runs during initial sign-in and the returned internal user ID is stored in the server-managed Auth.js token/session for reuse.
 - Existing development sessions created before this flow may lack an internal user ID; sign out and sign back in to refresh those sessions.
 - Campaign ownership is persisted server-side in the FastAPI engine and comes from the trusted authenticated internal user context; the browser never supplies campaign ownership.
 - FastAPI enforces domain authorization. Users can only list, read, update, delete, or play campaigns they own. Cross-user access and nonexistent resources both return `404`. Child resources (turns, events, memories) inherit authorization through their campaign. Legacy unowned campaigns are inaccessible through normal user APIs.
 - Browser request payloads and query parameters do not carry account identity. User identity is derived from Auth.js session state and propagated internally as trusted server context only.
+- Stateful BFF routes validate same-origin `Origin` headers when present, while keeping GET requests side-effect free.
+- Unexpected internal auth/context failures are sanitized before reaching the browser, and generic `404` behavior is preserved for missing, cross-user, and legacy unowned campaign resources.
+- Chat authorization and quota checks complete before turns, events, memories, summaries, or model-usage records are persisted.
+- Semantic and summary memory retrieval stay scoped to an already-authorized campaign before prompt assembly.
 
 ## Internal Engine Token
 
@@ -72,6 +77,14 @@ If you run the app on a different port, update `NEXTAUTH_URL` and register the m
 - Next.js is the only public application service; the FastAPI engine is intended to have no public ingress.
 - Network isolation and the shared bearer token are complementary controls, not substitutes.
 - To verify the protection, call the engine directly without the token and expect `401`, then call the same flow through Next.js and expect success.
+
+## Local Security Verification
+
+- `npm run test -- tests/api.auth-guard.test.ts`
+- `npm run test`
+- `npm run typecheck`
+- `npm run lint`
+- `npm run build`
 
 ## Learn More
 

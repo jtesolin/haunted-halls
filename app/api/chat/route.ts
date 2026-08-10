@@ -5,15 +5,21 @@ import {
   isInternalEngineRequestError,
   respondWithEngineError,
   respondWithInternalEngineError,
+  respondWithUnexpectedProxyError,
   getMaxInputCharacters,
 } from "@/lib/engine";
-import { ensureAuthenticated } from "@/lib/route-auth";
+import { ensureAllowedMutationOrigin, ensureAuthenticated } from "@/lib/route-auth";
 
 export async function POST(request: Request) {
   try {
     const { response: authResponse, internalUserId } = await ensureAuthenticated();
     if (authResponse) {
       return authResponse;
+    }
+
+    const originResponse = ensureAllowedMutationOrigin(request, "chat proxy");
+    if (originResponse) {
+      return originResponse;
     }
 
     if (!internalUserId) {
@@ -61,9 +67,6 @@ export async function POST(request: Request) {
       return respondWithInternalEngineError("chat proxy", error);
     }
 
-    return NextResponse.json(
-      { error: "Unable to proxy chat request", details: (error as Error).message },
-      { status: 500 }
-    );
+    return respondWithUnexpectedProxyError("chat proxy");
   }
 }

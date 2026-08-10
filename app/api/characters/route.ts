@@ -4,6 +4,7 @@ import {
   isInternalEngineRequestError,
   respondWithEngineError,
   respondWithInternalEngineError,
+  respondWithUnexpectedProxyError,
 } from "@/lib/engine";
 import { ensureAuthenticated } from "@/lib/route-auth";
 
@@ -36,9 +37,6 @@ export async function GET() {
       return respondWithInternalEngineError("characters list proxy", error);
     }
 
-    return NextResponse.json(
-      { error: "Unable to proxy characters request", details: (error as Error).message },
-      { status: 500 }
-    );
+    return respondWithUnexpectedProxyError("characters list proxy");
   }
 }

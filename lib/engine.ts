@@ -133,10 +133,37 @@ export async function respondWithEngineError(
     return NextResponse.json({ error: fallbackError }, { status: 502 });
   }
 
-  const text = await response.text();
+  let detail: string | null = null;
+
+  try {
+    const payload = (await response.json()) as { detail?: unknown; error?: unknown };
+    if (typeof payload.detail === "string" && payload.detail.trim()) {
+      detail = payload.detail.trim();
+    } else if (typeof payload.error === "string" && payload.error.trim()) {
+      detail = payload.error.trim();
+    }
+  } catch {
+    detail = null;
+  }
+
+  if (response.status === 404) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  if (response.status === 400 || response.status === 422 || response.status === 429) {
+    return NextResponse.json(
+      { error: detail ?? "Backend request failed" },
+      { status: response.status }
+    );
+  }
+
+  console.error(`${context}: engine request failed`, {
+    status: response.status,
+  });
+
   return NextResponse.json(
-    { error: "Backend request failed", details: text },
-    { status: response.status }
+    { error: "Backend request failed" },
+    { status: response.status >= 500 ? 502 : response.status }
   );
 }
 
@@ -158,6 +185,15 @@ export function respondWithInternalEngineError(context: string, error: unknown) 
   return NextResponse.json(
     { error: "Backend service unavailable" },
     { status: 503 }
+  );
+}
+
+export function respondWithUnexpectedProxyError(context: string) {
+  console.error(`${context}: unexpected proxy failure`);
+
+  return NextResponse.json(
+    { error: "Unable to process request" },
+    { status: 500 }
   );
 }
 

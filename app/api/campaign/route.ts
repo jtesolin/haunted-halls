@@ -5,14 +5,20 @@ import {
   isInternalEngineRequestError,
   respondWithEngineError,
   respondWithInternalEngineError,
+  respondWithUnexpectedProxyError,
 } from "@/lib/engine";
-import { ensureAuthenticated } from "@/lib/route-auth";
+import { ensureAllowedMutationOrigin, ensureAuthenticated } from "@/lib/route-auth";
 
-export async function POST() {
+export async function POST(request: Request) {
   try {
     const { response: authResponse, internalUserId } = await ensureAuthenticated();
     if (authResponse) {
       return authResponse;
+    }
+
+    const originResponse = ensureAllowedMutationOrigin(request, "campaign create proxy");
+    if (originResponse) {
+      return originResponse;
     }
 
     if (!internalUserId) {
@@ -45,9 +51,6 @@ export async function POST() {
       return respondWithInternalEngineError("campaign create proxy", error);
     }
 
-    return NextResponse.json(
-      { error: "Unable to proxy create campaign request", details: (error as Error).message },
-      { status: 500 }
-    );
+    return respondWithUnexpectedProxyError("campaign create proxy");
   }
 }

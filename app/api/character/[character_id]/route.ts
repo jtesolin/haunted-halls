@@ -4,6 +4,7 @@ import {
   isInternalEngineRequestError,
   respondWithEngineError,
   respondWithInternalEngineError,
+  respondWithUnexpectedProxyError,
 } from "@/lib/engine";
 import { ensureAuthenticated } from "@/lib/route-auth";
 
@@ -45,9 +46,6 @@ export async function GET(_request: Request, { params }: { params: Promise<{ cha
       return respondWithInternalEngineError("character read proxy", error);
     }
 
-    return NextResponse.json(
-      { error: "Unable to proxy character request", details: (error as Error).message },
-      { status: 500 }
-    );
+    return respondWithUnexpectedProxyError("character read proxy");
   }
 }

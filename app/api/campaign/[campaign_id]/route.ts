@@ -4,8 +4,9 @@ import {
   isInternalEngineRequestError,
   respondWithEngineError,
   respondWithInternalEngineError,
+  respondWithUnexpectedProxyError,
 } from "@/lib/engine";
-import { ensureAuthenticated } from "@/lib/route-auth";
+import { ensureAllowedMutationOrigin, ensureAuthenticated } from "@/lib/route-auth";
 
 export async function GET(_request: Request, { params }: { params: Promise<{ campaign_id: string }> }) {
   try {
@@ -45,18 +46,20 @@ export async function GET(_request: Request, { params }: { params: Promise<{ cam
       return respondWithInternalEngineError("campaign read proxy", error);
     }
 
-    return NextResponse.json(
-      { error: "Unable to proxy campaign request", details: (error as Error).message },
-      { status: 500 }
-    );
+    return respondWithUnexpectedProxyError("campaign read proxy");
   }
 }
 
-export async function DELETE(_request: Request, { params }: { params: Promise<{ campaign_id: string }> }) {
+export async function DELETE(request: Request, { params }: { params: Promise<{ campaign_id: string }> }) {
   try {
     const { response: authResponse, internalUserId } = await ensureAuthenticated();
     if (authResponse) {
       return authResponse;
+    }
+
+    const originResponse = ensureAllowedMutationOrigin(request, "campaign delete proxy");
+    if (originResponse) {
+      return originResponse;
     }
 
     if (!internalUserId) {
@@ -92,9 +95,6 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
       return respondWithInternalEngineError("campaign delete proxy", error);
     }
 
-    return NextResponse.json(
-      { error: "Unable to proxy delete campaign request", details: (error as Error).message },
-      { status: 500 }
-    );
+    return respondWithUnexpectedProxyError("campaign delete proxy");
   }
 }

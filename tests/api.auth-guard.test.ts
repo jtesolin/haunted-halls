@@ -53,7 +53,11 @@ describe("BFF auth guard", () => {
   it("returns 401 and skips FastAPI for unauthenticated campaign creation", async () => {
     vi.mocked(getServerSession).mockResolvedValue(null);
 
-    const response = await postCampaign();
+    const response = await postCampaign(
+      new Request("http://localhost:3000/api/campaign", {
+        method: "POST",
+      })
+    );
     const body = await response.json();
 
     expect(response.status).toBe(401);
@@ -147,6 +151,90 @@ describe("BFF auth guard", () => {
     expect(body.error).toBe("Backend service unavailable");
     expect(JSON.stringify(body)).not.toContain("missing service credential");
     expect(JSON.stringify(body)).not.toContain(TEST_INTERNAL_ENGINE_SERVICE_TOKEN);
+  });
+
+  it("returns a generic 404 for missing or unauthorized campaign reads", async () => {
+    vi.mocked(getServerSession).mockResolvedValue({ internalUserId: "user_0123456789abcdef0123456789abcdef" } as never);
+    vi.mocked(global.fetch).mockResolvedValue(
+      new Response(JSON.stringify({ detail: "Campaign not found" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    const response = await getCampaign(new Request("http://localhost:3000/api/campaign/campaign-1"), {
+      params: Promise.resolve({ campaign_id: "campaign-1" }),
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(404);
+    expect(body).toEqual({ error: "Not found" });
+  });
+
+  it("allows same-origin chat mutations", async () => {
+    vi.mocked(getServerSession).mockResolvedValue({ internalUserId: "user_0123456789abcdef0123456789abcdef" } as never);
+    vi.mocked(global.fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({ reply: "ok", campaign_id: "campaign-1", turn_id: "turn-1" }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }
+      )
+    );
+
+    const response = await postChat(
+      new Request("http://localhost:3000/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Origin: "http://localhost:3000",
+        },
+        body: JSON.stringify({ message: "look" }),
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows local mutation requests without an Origin header", async () => {
+    vi.mocked(getServerSession).mockResolvedValue({ internalUserId: "user_0123456789abcdef0123456789abcdef" } as never);
+    vi.mocked(global.fetch).mockResolvedValue(
+      new Response(JSON.stringify({ campaign_id: "campaign-1", name: "X", messages: [], truncated: false }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    const response = await postCampaign(
+      new Request("http://localhost:3000/api/campaign", {
+        method: "POST",
+      })
+    );
+
+    expect(response.status).toBe(201);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects cross-origin mutation requests before contacting FastAPI", async () => {
+    vi.mocked(getServerSession).mockResolvedValue({ internalUserId: "user_0123456789abcdef0123456789abcdef" } as never);
+
+    const response = await postChat(
+      new Request("http://localhost:3000/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Origin: "https://evil.example",
+        },
+        body: JSON.stringify({ message: "look" }),
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(body).toEqual({ error: "Forbidden" });
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it("uses trusted session identity for campaign requests and ignores query/body identity hints", async () => {

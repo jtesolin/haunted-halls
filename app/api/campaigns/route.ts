@@ -4,6 +4,7 @@ import {
   isInternalEngineRequestError,
   respondWithEngineError,
   respondWithInternalEngineError,
+  respondWithUnexpectedProxyError,
 } from "@/lib/engine";
 import { ensureAuthenticated } from "@/lib/route-auth";
 
@@ -36,9 +37,6 @@ export async function GET() {
       return respondWithInternalEngineError("campaigns list proxy", error);
     }
 
-    return NextResponse.json(
-      { error: "Unable to proxy campaigns request", details: (error as Error).message },
-      { status: 500 }
-    );
+    return respondWithUnexpectedProxyError("campaigns list proxy");
   }
 }
