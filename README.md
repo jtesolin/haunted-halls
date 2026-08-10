@@ -61,7 +61,8 @@ If you run the app on a different port, update `NEXTAUTH_URL` and register the m
 - Internal user resolution runs during initial sign-in and the returned internal user ID is stored in the server-managed Auth.js token/session for reuse.
 - Existing development sessions created before this flow may lack an internal user ID; sign out and sign back in to refresh those sessions.
 - Campaign ownership is persisted server-side in the FastAPI engine and comes from the trusted authenticated internal user context; the browser never supplies campaign ownership.
-- Campaign ownership enforcement and `player_id` removal are future phases.
+- **Phase 2B (current):** FastAPI enforces domain authorization. Users can only list, read, update, delete, or play campaigns they own. Cross-user access and nonexistent resources both return `404`. Child resources (turns, events, memories) inherit authorization through their campaign. Legacy unowned campaigns are inaccessible through normal user APIs. `player_id` has no security authority; it is a legacy game field only.
+- Phase 2C will remove the remaining legacy `player_id` identity mechanism.
 
 ## Internal Engine Token
 
