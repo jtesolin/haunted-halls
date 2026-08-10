@@ -5,15 +5,10 @@ import {
   isInternalEngineRequestError,
   respondWithEngineError,
   respondWithInternalEngineError,
-  getTemporaryPlayerId,
 } from "@/lib/engine";
 import { ensureAuthenticated } from "@/lib/route-auth";
 
-function isValidPlayerId(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0 && value.trim().toLowerCase() !== "anonymous";
-}
-
-export async function POST(request: Request) {
+export async function POST() {
   try {
     const { response: authResponse, internalUserId } = await ensureAuthenticated();
     if (authResponse) {
@@ -25,21 +20,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Authentication required" }, { status: 401 });
     }
 
-    const body = (await request.json()) as Partial<CreateCampaignRequest>;
-    const fallbackPlayerId = getTemporaryPlayerId();
-    const providedPlayerId = typeof body.player_id === "string" ? body.player_id.trim() : "";
-    const resolvedPlayerId = providedPlayerId || fallbackPlayerId;
-
-    if (!isValidPlayerId(resolvedPlayerId)) {
-      return NextResponse.json(
-        { error: "A valid player_id is required" },
-        { status: 422 }
-      );
-    }
-
-    const payload: CreateCampaignRequest = {
-      player_id: resolvedPlayerId,
-    };
+    const payload: CreateCampaignRequest = {};
 
     const response = await fetchEngineAsUser("/api/campaign", internalUserId, {
       method: "POST",

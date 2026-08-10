@@ -53,13 +53,7 @@ describe("BFF auth guard", () => {
   it("returns 401 and skips FastAPI for unauthenticated campaign creation", async () => {
     vi.mocked(getServerSession).mockResolvedValue(null);
 
-    const request = new Request("http://localhost:3000/api/campaign", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
-
-    const response = await postCampaign(request);
+    const response = await postCampaign();
     const body = await response.json();
 
     expect(response.status).toBe(401);
@@ -90,7 +84,7 @@ describe("BFF auth guard", () => {
         Authorization: "Bearer browser-token",
         [INTERNAL_ENGINE_USER_ID_HEADER]: "user_browser_supplied",
       },
-      body: JSON.stringify({ message: "look", player_id: "player-1", internal_user_id: "user_body_supplied" }),
+      body: JSON.stringify({ message: "look", internal_user_id: "user_body_supplied" }),
     });
 
     const response = await postChat(request);
@@ -120,7 +114,7 @@ describe("BFF auth guard", () => {
     const request = new Request("http://localhost:3000/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: "look", player_id: "player-1" }),
+      body: JSON.stringify({ message: "look" }),
     });
 
     const response = await postChat(request);
@@ -143,7 +137,7 @@ describe("BFF auth guard", () => {
     const request = new Request("http://localhost:3000/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: "look", player_id: "player-1" }),
+      body: JSON.stringify({ message: "look" }),
     });
 
     const response = await postChat(request);
@@ -158,14 +152,14 @@ describe("BFF auth guard", () => {
   it("uses trusted session identity for campaign requests and ignores query/body identity hints", async () => {
     vi.mocked(getServerSession).mockResolvedValue({ internalUserId: "user_0123456789abcdef0123456789abcdef" } as never);
     vi.mocked(global.fetch).mockResolvedValue(
-      new Response(JSON.stringify({ campaign_id: "campaign-1", player_id: "player-1", name: "X", messages: [], truncated: false }), {
+      new Response(JSON.stringify({ campaign_id: "campaign-1", name: "X", messages: [], truncated: false }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       })
     );
 
     const request = new Request(
-      "http://localhost:3000/api/campaign/campaign-1?player_id=player-1&internal_user_id=user_query_supplied",
+      "http://localhost:3000/api/campaign/campaign-1?internal_user_id=user_query_supplied",
       {
         method: "GET",
         headers: {
@@ -183,4 +177,5 @@ describe("BFF auth guard", () => {
     const headers = new Headers(init?.headers);
     expect(headers.get(INTERNAL_ENGINE_USER_ID_HEADER)).toBe("user_0123456789abcdef0123456789abcdef");
   });
+
 });

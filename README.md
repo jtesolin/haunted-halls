@@ -56,13 +56,13 @@ If you run the app on a different port, update `NEXTAUTH_URL` and register the m
 - After successful Google authentication, Next.js resolves an internal Haunted Halls user by calling the private FastAPI endpoint `POST /internal/auth/users/resolve` with the existing internal service credential.
 - For user-scoped BFF requests, Next.js requires an authenticated Auth.js session with a resolved internal user ID and propagates that ID to FastAPI via `X-Haunted-Halls-User-Id`.
 - User-scoped engine calls also include the existing service bearer credential; FastAPI trusts the user ID header only after service authentication succeeds.
-- Browser-supplied identity headers are ignored and overwritten server-side. Browser payload/query `player_id` remains legacy game input and is not trusted authentication identity.
+- Browser-supplied identity headers are ignored and overwritten server-side.
 - FastAPI owns the internal user record and identity keying. Users are keyed by canonical OIDC issuer + provider subject, while email/display name/avatar are mutable profile fields.
 - Internal user resolution runs during initial sign-in and the returned internal user ID is stored in the server-managed Auth.js token/session for reuse.
 - Existing development sessions created before this flow may lack an internal user ID; sign out and sign back in to refresh those sessions.
 - Campaign ownership is persisted server-side in the FastAPI engine and comes from the trusted authenticated internal user context; the browser never supplies campaign ownership.
-- **Phase 2B (current):** FastAPI enforces domain authorization. Users can only list, read, update, delete, or play campaigns they own. Cross-user access and nonexistent resources both return `404`. Child resources (turns, events, memories) inherit authorization through their campaign. Legacy unowned campaigns are inaccessible through normal user APIs. `player_id` has no security authority; it is a legacy game field only.
-- Phase 2C will remove the remaining legacy `player_id` identity mechanism.
+- FastAPI enforces domain authorization. Users can only list, read, update, delete, or play campaigns they own. Cross-user access and nonexistent resources both return `404`. Child resources (turns, events, memories) inherit authorization through their campaign. Legacy unowned campaigns are inaccessible through normal user APIs.
+- Browser request payloads and query parameters do not carry account identity. User identity is derived from Auth.js session state and propagated internally as trusted server context only.
 
 ## Internal Engine Token
 

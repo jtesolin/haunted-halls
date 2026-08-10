@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 
 const DEFAULT_ENGINE_BASE_URL = "http://localhost:8000";
-const DEFAULT_TEMP_PLAYER_ID = "player-1";
 const MIN_INTERNAL_ENGINE_SERVICE_TOKEN_LENGTH = 64;
 export const INTERNAL_ENGINE_USER_ID_HEADER = "X-Haunted-Halls-User-Id";
 const INTERNAL_ENGINE_SERVICE_TOKEN_PLACEHOLDERS = new Set([
@@ -165,10 +164,4 @@ export function respondWithInternalEngineError(context: string, error: unknown) 
 export function getMaxInputCharacters() {
   const parsed = Number.parseInt(process.env.MAX_INPUT_CHARACTERS ?? "2000", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 2000;
-}
-
-export function getTemporaryPlayerId() {
-  // Temporary bridge while the engine contract still expects a player_id field.
-  const value = process.env.TEMP_PLAYER_ID?.trim();
-  return value || DEFAULT_TEMP_PLAYER_ID;
 }

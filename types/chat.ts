@@ -2,7 +2,6 @@ export interface ChatRequest {
   message: string;
   campaign_id?: string | null;
   character_id?: string | null;
-  player_id: string;
 }
 
 export interface ChatResponse {
@@ -11,9 +10,7 @@ export interface ChatResponse {
   turn_id: string;
 }
 
-export interface CreateCampaignRequest {
-  player_id: string;
-}
+export type CreateCampaignRequest = Record<string, never>;
 
 export type ChatRole = "user" | "assistant";
 
@@ -28,7 +25,6 @@ export interface ChatSession {
   id: string;
   title: string;
   campaign_id?: string;
-  player_id?: string;
   last_message?: string | null;
   updated_at: number;
   conversation_loaded: boolean;
@@ -44,7 +40,6 @@ export interface CampaignSummary {
 
 export interface CampaignMessageEntry {
   turn_id: string;
-  player_id: string;
   role: ChatRole;
   content: string;
   created_at: string;
@@ -54,7 +49,6 @@ export interface CampaignDetailsResponse {
   campaign_id: string;
   name: string;
   description: string | null;
-  player_id: string | null;
   messages: CampaignMessageEntry[];
   truncated: boolean;
 }

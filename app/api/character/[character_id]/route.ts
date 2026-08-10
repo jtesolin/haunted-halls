@@ -4,15 +4,10 @@ import {
   isInternalEngineRequestError,
   respondWithEngineError,
   respondWithInternalEngineError,
-  getTemporaryPlayerId,
 } from "@/lib/engine";
 import { ensureAuthenticated } from "@/lib/route-auth";
 
-function isValidPlayerId(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0 && value.trim().toLowerCase() !== "anonymous";
-}
-
-export async function GET(request: Request, { params }: { params: Promise<{ character_id: string }> }) {
+export async function GET(_request: Request, { params }: { params: Promise<{ character_id: string }> }) {
   try {
     const { response: authResponse, internalUserId } = await ensureAuthenticated();
     if (authResponse) {
@@ -25,21 +20,13 @@ export async function GET(request: Request, { params }: { params: Promise<{ char
     }
 
     const { character_id } = await params;
-    const playerId = new URL(request.url).searchParams.get("player_id")?.trim() || getTemporaryPlayerId();
 
     if (!character_id?.trim()) {
       return NextResponse.json({ error: "character_id is required" }, { status: 400 });
     }
 
-    if (!isValidPlayerId(playerId)) {
-      return NextResponse.json(
-        { error: "A valid player_id query parameter is required" },
-        { status: 422 }
-      );
-    }
-
     const response = await fetchEngineAsUser(
-      `/api/character/${encodeURIComponent(character_id)}?player_id=${encodeURIComponent(playerId)}`,
+      `/api/character/${encodeURIComponent(character_id)}`,
       internalUserId
     );
 

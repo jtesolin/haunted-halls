@@ -22,8 +22,6 @@ const SIDEBAR_WIDTH = "320px";
 const COLLAPSED_TOOLBAR_WIDTH = "64px";
 const MOBILE_BREAKPOINT_QUERY = "(max-width: 767px)";
 const GENERIC_SIGN_IN_ERROR = "Sign-in failed. Please try again.";
-// Temporary fallback while engine routes still require player_id in request payloads.
-const TEMPORARY_PLAYER_ID = "player-1";
 
 function getSafeCallbackPath(candidate: string): string {
   if (typeof window === "undefined") {
@@ -66,14 +64,12 @@ function getUserFacingErrorMessage(status: number, fallback: string) {
 function createSession(
   title: string,
   campaignId?: string,
-  playerId?: string,
   lastMessage?: string | null
 ): ChatSession {
   return {
     id: campaignId ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     title,
     campaign_id: campaignId,
-    player_id: playerId,
     last_message: lastMessage,
     updated_at: Date.now(),
     conversation_loaded: false,
@@ -248,8 +244,6 @@ export default function Home() {
   }, [isAuthenticated, isAuthLoading]);
 
   const createAndHydrateSession = useCallback(async () => {
-    const normalizedPlayerId = TEMPORARY_PLAYER_ID;
-
     if (isCreatingSession || !isAuthenticated) {
       return;
     }
@@ -260,7 +254,7 @@ export default function Home() {
     const optimisticSessionId = `optimistic-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const loadingNarratorMessage = createLoadingNarratorMessage();
     const optimisticSession: ChatSession = {
-      ...createSession("New adventure", optimisticSessionId, normalizedPlayerId, OPENING_LOADING_TEXT),
+      ...createSession("New adventure", optimisticSessionId, OPENING_LOADING_TEXT),
       id: optimisticSessionId,
       title: "New adventure",
       last_message: OPENING_LOADING_TEXT,
@@ -277,7 +271,7 @@ export default function Home() {
       const response = await fetch("/api/campaign", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ player_id: normalizedPlayerId }),
+        body: JSON.stringify({}),
       });
 
       if (!response.ok) {
@@ -303,7 +297,7 @@ export default function Home() {
 
       const newestMessage = hydratedMessages[hydratedMessages.length - 1];
       const nextSession: ChatSession = {
-        ...createSession(campaign.name || fallbackTitle, campaign.campaign_id, campaign.player_id ?? normalizedPlayerId),
+        ...createSession(campaign.name || fallbackTitle, campaign.campaign_id),
         title: campaign.name || fallbackTitle,
         messages: hydratedMessages,
         last_message: newestMessage?.text ?? null,
@@ -332,14 +326,13 @@ export default function Home() {
   }, [isAuthenticated, isCreatingSession]);
 
   useEffect(() => {
-    const normalizedPlayerId = TEMPORARY_PLAYER_ID;
     if (!isAuthenticated || isAuthLoading) {
       return;
     }
 
     const loadCampaignSummaries = async () => {
       try {
-        const response = await fetch(`/api/campaigns/${encodeURIComponent(normalizedPlayerId)}`);
+        const response = await fetch("/api/campaigns");
         if (!response.ok) {
           return;
         }
@@ -364,13 +357,12 @@ export default function Home() {
               ? {
                   ...existingSession,
                   title: campaign.name || existingSession.title,
-                  player_id: existingSession.player_id ?? normalizedPlayerId,
                   last_message: campaign.last_message,
                   updated_at: existingSession.updated_at,
                   conversation_loaded: existingSession.conversation_loaded,
                 }
               : {
-                  ...createSession(campaign.name, campaign.campaign_id, normalizedPlayerId, campaign.last_message),
+                  ...createSession(campaign.name, campaign.campaign_id, campaign.last_message),
                   updated_at: now - index,
                 };
           });
@@ -434,7 +426,6 @@ export default function Home() {
             ? {
                 ...session,
                 title: campaign.name || session.title,
-                player_id: campaign.player_id ?? session.player_id,
                 messages: conversationMessages,
                 updated_at: Date.now(),
                 conversation_loaded: true,
@@ -593,7 +584,6 @@ export default function Home() {
 
   const handleSendMessage = async () => {
     const trimmed = messageText.trim();
-    const normalizedPlayerId = TEMPORARY_PLAYER_ID;
 
     if (!trimmed || isSending || !activeSession || !isAuthenticated) {
       return;
@@ -646,7 +636,6 @@ export default function Home() {
           message: trimmed,
           campaign_id: activeSession.campaign_id ?? null,
           character_id: null,
-          player_id: normalizedPlayerId,
         }),
       });
 

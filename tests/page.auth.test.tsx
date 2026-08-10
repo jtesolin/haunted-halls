@@ -68,7 +68,7 @@ describe("home auth gating", () => {
     render(<Home />);
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith("/api/campaigns/player-1");
+      expect(global.fetch).toHaveBeenCalledWith("/api/campaigns");
     });
 
     expect(screen.getAllByText("player@example.com").length).toBeGreaterThan(0);

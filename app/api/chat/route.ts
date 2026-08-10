@@ -6,13 +6,8 @@ import {
   respondWithEngineError,
   respondWithInternalEngineError,
   getMaxInputCharacters,
-  getTemporaryPlayerId,
 } from "@/lib/engine";
 import { ensureAuthenticated } from "@/lib/route-auth";
-
-function isValidPlayerId(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0 && value.trim().toLowerCase() !== "anonymous";
-}
 
 export async function POST(request: Request) {
   try {
@@ -26,10 +21,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Authentication required" }, { status: 401 });
     }
 
-    const body = (await request.json()) as Partial<ChatRequest>;
+    const body = (await request.json()) as Record<string, unknown>;
     const message = typeof body.message === "string" ? body.message : "";
-    const providedPlayerId = typeof body.player_id === "string" ? body.player_id.trim() : "";
-    const playerId = providedPlayerId || getTemporaryPlayerId();
     const maxInputCharacters = getMaxInputCharacters();
 
     if (!message.trim()) {
@@ -43,18 +36,10 @@ export async function POST(request: Request) {
       );
     }
 
-    if (!isValidPlayerId(playerId)) {
-      return NextResponse.json(
-        { error: "A valid player_id is required" },
-        { status: 422 }
-      );
-    }
-
     const payload: ChatRequest = {
       message,
       campaign_id: typeof body.campaign_id === "string" && body.campaign_id.trim().length > 0 ? body.campaign_id : null,
       character_id: typeof body.character_id === "string" && body.character_id.trim().length > 0 ? body.character_id : null,
-      player_id: playerId,
     };
 
     const response = await fetchEngineAsUser("/api/chat", internalUserId, {
