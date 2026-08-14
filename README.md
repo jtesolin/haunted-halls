@@ -1,5 +1,13 @@
 This is the public-facing Next.js Backend-for-Frontend for Haunted Halls.
 
+## Project Status
+
+Canonical project status for the two-repo system lives in the engine repository:
+
+- [../haunted-halls-engine/docs/project-status.md](../haunted-halls-engine/docs/project-status.md)
+
+This avoids duplicating roadmap and architecture status across both repositories.
+
 ## Getting Started
 
 1. Install dependencies:

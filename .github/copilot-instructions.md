@@ -24,6 +24,9 @@
 - Do not silently change public behavior or API contracts.
 - Do not add dependencies when the existing stack is sufficient.
 - Never commit secrets or real credentials.
+- After making repository changes, update the canonical two-repo status document when needed: `../haunted-halls-engine/docs/project-status.md`.
+- Do not change `Last synchronized (planning memory sync)` unless the user explicitly confirms they performed that planning-memory synchronization.
+- Treat project-status updates as part of normal completion for architecture, behavior, roadmap, or phase-progress changes.
 - Use verified commands:
   - `npm run dev`
   - `npm run lint`
