@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Home from "@/app/page";
+import ChatInput from "@/components/ChatInput";
 import { signIn, signOut, useSession } from "next-auth/react";
 
 vi.mock("next-auth/react", () => ({
@@ -119,5 +120,292 @@ describe("home auth gating", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Sign in with Google" }));
     expect(signIn).toHaveBeenCalledWith("google", expect.objectContaining({ callbackUrl: "/" }));
+  });
+
+  it("keeps the composer enabled and focused while a narration request is in flight", async () => {
+    vi.mocked(useSession).mockReturnValue({
+      data: {
+        user: { name: "Player One", email: "player@example.com", image: null },
+        expires: "2099-01-01T00:00:00.000Z",
+      },
+      status: "authenticated",
+      update: vi.fn(),
+    });
+
+    let resolveCampaignRequest: ((value: Response) => void) | undefined;
+    const campaignRequest = new Promise<Response>((resolve) => {
+      resolveCampaignRequest = resolve;
+    });
+    let resolveChatRequest: ((value: Response) => void) | undefined;
+    const chatRequest = new Promise<Response>((resolve) => {
+      resolveChatRequest = resolve;
+    });
+
+    vi.mocked(global.fetch).mockImplementation((input: RequestInfo | URL) => {
+      if (String(input) === "/api/campaigns") {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        );
+      }
+
+      if (String(input) === "/api/campaign") {
+        return campaignRequest;
+      }
+
+      if (String(input) === "/api/chat") {
+        return chatRequest;
+      }
+
+      return Promise.resolve(
+        new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+      );
+    });
+
+    render(<Home />);
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith("/api/campaigns");
+    });
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith("/api/campaign", expect.anything());
+    });
+
+    resolveCampaignRequest?.(
+      new Response(JSON.stringify({
+        campaign_id: "campaign-123",
+        name: "The Lost Crypt",
+        description: null,
+        messages: [],
+        truncated: false,
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("textbox", { name: "Enter your command" })).toBeEnabled();
+    });
+
+    const textarea = screen.getByRole("textbox", { name: "Enter your command" });
+    textarea.focus();
+    fireEvent.change(textarea, { target: { value: "look around" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(screen.getAllByText("look around").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("The narrator is responding...").length).toBeGreaterThan(0);
+    });
+
+    expect(textarea).toBeEnabled();
+    expect(textarea).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+
+    fireEvent.change(textarea, { target: { value: "go north" } });
+    expect(textarea).toHaveValue("go north");
+    fireEvent.keyDown(textarea, { key: "Enter", code: "Enter" });
+
+    expect(
+      vi.mocked(global.fetch).mock.calls.filter(([input]) => String(input) === "/api/chat")
+    ).toHaveLength(1);
+    expect(textarea).toHaveValue("go north");
+
+    resolveChatRequest?.(
+      new Response(JSON.stringify({ reply: "The hall answers." }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByText("The hall answers.").length).toBeGreaterThan(0);
+    });
+
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+    expect(textarea).toHaveValue("go north");
+    expect(textarea).toHaveFocus();
+  });
+
+  it("removes the temporary loading narrator message on chat failure", async () => {
+    vi.mocked(useSession).mockReturnValue({
+      data: {
+        user: { name: "Player One", email: "player@example.com", image: null },
+        expires: "2099-01-01T00:00:00.000Z",
+      },
+      status: "authenticated",
+      update: vi.fn(),
+    });
+
+    let resolveCampaignRequest: ((value: Response) => void) | undefined;
+    const campaignRequest = new Promise<Response>((resolve) => {
+      resolveCampaignRequest = resolve;
+    });
+    let resolveChatRequest: ((value: Response) => void) | undefined;
+    const chatRequest = new Promise<Response>((resolve) => {
+      resolveChatRequest = resolve;
+    });
+
+    vi.mocked(global.fetch).mockImplementation((input: RequestInfo | URL) => {
+      if (String(input) === "/api/campaigns") {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        );
+      }
+
+      if (String(input) === "/api/campaign") {
+        return campaignRequest;
+      }
+
+      if (String(input) === "/api/chat") {
+        return chatRequest;
+      }
+
+      return Promise.resolve(
+        new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+      );
+    });
+
+    render(<Home />);
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith("/api/campaigns");
+    });
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith("/api/campaign", expect.anything());
+    });
+
+    resolveCampaignRequest?.(
+      new Response(JSON.stringify({
+        campaign_id: "campaign-123",
+        name: "The Lost Crypt",
+        description: null,
+        messages: [],
+        truncated: false,
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("textbox", { name: "Enter your command" })).toBeEnabled();
+    });
+
+    const textarea = screen.getByRole("textbox", { name: "Enter your command" });
+    fireEvent.change(textarea, { target: { value: "look around" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(screen.getAllByText("The narrator is responding...").length).toBeGreaterThan(0);
+    });
+
+    resolveChatRequest?.(
+      new Response(JSON.stringify({ error: "The hall failed." }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    await waitFor(() => {
+      expect(screen.queryAllByText("The narrator is responding...")).toHaveLength(0);
+    });
+  });
+
+  it("keeps the opening-scene loading indicator and Shift+Enter newline behavior intact", async () => {
+    vi.mocked(useSession).mockReturnValue({
+      data: {
+        user: { name: "Player One", email: "player@example.com", image: null },
+        expires: "2099-01-01T00:00:00.000Z",
+      },
+      status: "authenticated",
+      update: vi.fn(),
+    });
+
+    let resolveCampaignRequest: ((value: Response) => void) | undefined;
+    const campaignRequest = new Promise<Response>((resolve) => {
+      resolveCampaignRequest = resolve;
+    });
+
+    vi.mocked(global.fetch).mockImplementation((input: RequestInfo | URL) => {
+      if (String(input) === "/api/campaigns") {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        );
+      }
+
+      if (String(input) === "/api/campaign") {
+        return campaignRequest;
+      }
+
+      return Promise.resolve(
+        new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+      );
+    });
+
+    render(<Home />);
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith("/api/campaigns");
+    });
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith("/api/campaign", expect.anything());
+    });
+
+    expect(screen.getAllByText("Loading opening...").length).toBeGreaterThan(0);
+
+    const onSend = vi.fn();
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <ChatInput value="line one" onChange={onChange} onSend={onSend} sendDisabled={true} />
+    );
+
+    const textarea = screen.getAllByRole("textbox").at(-1) as HTMLTextAreaElement;
+    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: true, code: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+
+    rerender(
+      <ChatInput value="line one" onChange={onChange} onSend={onSend} sendDisabled={false} />
+    );
+    fireEvent.keyDown(screen.getAllByRole("textbox").at(-1) as HTMLTextAreaElement, {
+      key: "Enter",
+      shiftKey: true,
+      code: "Enter",
+    });
+    expect(onSend).not.toHaveBeenCalled();
+
+    resolveCampaignRequest?.(
+      new Response(JSON.stringify({
+        campaign_id: "campaign-123",
+        name: "The Lost Crypt",
+        description: null,
+        messages: [],
+        truncated: false,
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
   });
 });

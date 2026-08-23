@@ -1,13 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-
-type ChatMessage = {
-  id: string;
-  role: "user" | "assistant";
-  text: string;
-  is_loading?: boolean;
-};
+import type { ChatMessage } from "@/types/chat";
 
 export default function ConversationView({ messages }: { messages: ChatMessage[] }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -33,9 +27,11 @@ export default function ConversationView({ messages }: { messages: ChatMessage[]
                 : "self-start bg-white/5 text-zinc-200"
             }`}
           >
-            <p className="whitespace-pre-wrap break-words">{message.text}</p>
+            {!message.is_loading ? <p className="whitespace-pre-wrap break-words">{message.text}</p> : null}
             {message.is_loading ? (
-              <p className="mt-2 animate-pulse text-xs uppercase tracking-[0.14em] text-zinc-400">Loading opening...</p>
+              <p className="mt-2 animate-pulse text-xs uppercase tracking-[0.14em] text-zinc-400">
+                {message.loading_text ?? "Loading..."}
+              </p>
             ) : null}
           </div>
         ))}
