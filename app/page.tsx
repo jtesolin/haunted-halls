@@ -595,14 +595,8 @@ export default function Home() {
       return;
     }
 
-    const loadingMessageId = `loading-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const loadingNarratorMessage: ChatMessage = {
-      id: loadingMessageId,
-      role: "assistant",
-      text: NARRATOR_LOADING_TEXT,
-      is_loading: true,
-      loading_text: NARRATOR_LOADING_TEXT,
-    };
+    const loadingNarratorMessage = createLoadingNarratorMessage(NARRATOR_LOADING_TEXT);
+    const loadingMessageId = loadingNarratorMessage.id;
 
     setRequestError("");
 

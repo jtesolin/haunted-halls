@@ -5,6 +5,7 @@ import type { ChatMessage } from "@/types/chat";
 
 export default function ConversationView({ messages }: { messages: ChatMessage[] }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const latestMessage = messages[messages.length - 1];
 
   useEffect(() => {
     const element = containerRef.current;
@@ -13,7 +14,7 @@ export default function ConversationView({ messages }: { messages: ChatMessage[]
     }
 
     element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
-  }, [messages.length]);
+  }, [latestMessage?.id, latestMessage?.text, messages.length]);
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto pr-2 custom-scrollbar" ref={containerRef}>

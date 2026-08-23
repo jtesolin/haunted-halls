@@ -384,6 +384,8 @@ describe("home auth gating", () => {
     fireEvent.keyDown(textarea, { key: "Enter", shiftKey: true, code: "Enter" });
     expect(onSend).not.toHaveBeenCalled();
     expect(onChange).not.toHaveBeenCalled();
+    fireEvent.keyDown(textarea, { key: "Enter", code: "Enter" });
+    expect(textarea).toHaveValue("line one");
 
     rerender(
       <ChatInput value="line one" onChange={onChange} onSend={onSend} sendDisabled={false} />

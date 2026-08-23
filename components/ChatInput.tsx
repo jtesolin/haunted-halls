@@ -63,11 +63,15 @@ export default function ChatInput({
           aria-disabled={inputDisabled}
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key !== "Enter" || event.shiftKey || sendDisabled) {
+            if (event.key !== "Enter" || event.shiftKey) {
               return;
             }
 
             event.preventDefault();
+            if (sendDisabled) {
+              return;
+            }
+
             onSend();
             focusTextarea();
           }}
