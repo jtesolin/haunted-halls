@@ -14,12 +14,23 @@ export type CreateCampaignRequest = Record<string, never>;
 
 export type ChatRole = "user" | "assistant";
 
+export type ChatDeliveryState = "pending" | "failed";
+export type ChatFailureCategory = "rejected" | "ambiguous";
+
+export interface ChatFailure {
+  message: string;
+  retryable: boolean;
+  category: ChatFailureCategory;
+}
+
 export interface ChatMessage {
   id: string;
   role: ChatRole;
   text: string;
   is_loading?: boolean;
   loading_text?: string;
+  delivery_state?: ChatDeliveryState;
+  failure?: ChatFailure;
 }
 
 export interface ChatSession {

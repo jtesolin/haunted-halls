@@ -410,4 +410,102 @@ describe("home auth gating", () => {
       })
     );
   });
+
+  it("keeps a 429 failure on the player message and retries without changing the draft", async () => {
+    vi.mocked(useSession).mockReturnValue({
+      data: { user: { name: "Player One", email: "player@example.com", image: null }, expires: "2099-01-01T00:00:00.000Z" },
+      status: "authenticated",
+      update: vi.fn(),
+    });
+
+    let chatCalls = 0;
+    let resolveFirstChat: ((value: Response) => void) | undefined;
+    const firstChat = new Promise<Response>((resolve) => { resolveFirstChat = resolve; });
+    vi.mocked(global.fetch).mockImplementation((input: RequestInfo | URL) => {
+      if (String(input) === "/api/campaigns") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+      }
+      if (String(input) === "/api/campaign") {
+        return Promise.resolve(new Response(JSON.stringify({ campaign_id: "campaign-123", name: "The Lost Crypt", description: null, messages: [], truncated: false }), { status: 200 }));
+      }
+      if (String(input) === "/api/chat") {
+        chatCalls += 1;
+        return chatCalls === 1
+          ? firstChat
+          : chatCalls === 2
+            ? Promise.resolve(new Response(JSON.stringify({ error: "rate limited again" }), { status: 429 }))
+            : Promise.resolve(new Response(JSON.stringify({ reply: "The hall answers." }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
+    });
+
+    render(<Home />);
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledWith("/api/campaign", expect.anything()));
+    const textarea = await screen.findByRole("textbox", { name: "Enter your command" });
+    fireEvent.change(textarea, { target: { value: "search behind the bookshelf" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.change(textarea, { target: { value: "go north" } });
+
+    resolveFirstChat?.(new Response(JSON.stringify({ error: "rate limited" }), { status: 429 }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Retry sending/ })).toBeEnabled());
+    expect(screen.getAllByText("search behind the bookshelf")).toHaveLength(2);
+    expect(screen.queryByText("The narrator is responding...")).not.toBeInTheDocument();
+    expect(textarea).toHaveValue("go north");
+
+    fireEvent.click(screen.getByRole("button", { name: /Retry sending/ }));
+    expect(textarea).toHaveValue("go north");
+    await waitFor(() => expect(chatCalls).toBe(2));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Retry sending/ })).toBeEnabled());
+    expect(screen.getAllByText("search behind the bookshelf")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: /Retry sending/ }));
+    await waitFor(() => expect(chatCalls).toBe(3));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /Retry sending/ })).not.toBeInTheDocument());
+    expect(screen.getAllByText("search behind the bookshelf")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: /Retry sending/ })).not.toBeInTheDocument();
+    expect(chatCalls).toBe(3);
+    const chatRequestCalls = vi.mocked(global.fetch).mock.calls.filter(([input]) => String(input) === "/api/chat");
+    expect(chatRequestCalls[1]?.[1]).toEqual(expect.objectContaining({
+      body: expect.stringContaining('"message":"search behind the bookshelf"'),
+    }));
+  });
+
+  it("marks network and server failures as ambiguous without offering retry", async () => {
+    vi.mocked(useSession).mockReturnValue({
+      data: { user: { name: "Player One", email: "player@example.com", image: null }, expires: "2099-01-01T00:00:00.000Z" },
+      status: "authenticated",
+      update: vi.fn(),
+    });
+
+    let chatCalls = 0;
+    vi.mocked(global.fetch).mockImplementation((input: RequestInfo | URL) => {
+      if (String(input) === "/api/campaigns") return Promise.resolve(new Response("[]", { status: 200 }));
+      if (String(input) === "/api/campaign") return Promise.resolve(new Response(JSON.stringify({ campaign_id: "campaign-123", name: "The Lost Crypt", description: null, messages: [], truncated: false }), { status: 200 }));
+      if (String(input) === "/api/chat") {
+        chatCalls += 1;
+        return chatCalls === 1
+          ? Promise.reject(new Error("connection lost"))
+          : Promise.resolve(new Response(JSON.stringify({ error: "bad request" }), { status: 400 }));
+      }
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    });
+
+    render(<Home />);
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledWith("/api/campaign", expect.anything()));
+    const textarea = await screen.findByRole("textbox", { name: "Enter your command" });
+    fireEvent.change(textarea, { target: { value: "open the iron door" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(screen.getByText("Delivery could not be confirmed. This action cannot be safely retried yet.")).toBeInTheDocument());
+    expect(screen.getAllByText("open the iron door")).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: /Retry sending/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("The narrator is responding...")).not.toBeInTheDocument();
+    fireEvent.change(textarea, { target: { value: "another command" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(screen.getByText("The message could not be sent. It may be empty, too long, or the campaign is no longer active.")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /Retry sending/ })).not.toBeInTheDocument();
+  });
 });

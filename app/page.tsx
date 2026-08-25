@@ -13,6 +13,7 @@ import type {
   ChatMessage,
   ChatSession,
   CreateCampaignResponse,
+  ChatFailure,
 } from "@/types/chat";
 
 const MAX_INPUT_CHARACTERS = 2000;
@@ -56,10 +57,14 @@ function getUserFacingErrorMessage(status: number, fallback: string) {
     case 429:
       return "The hall is rate limiting requests right now. Please wait a moment and try again.";
     case 502:
-      return "The AI service is temporarily unavailable. Please try again shortly.";
+      return "Delivery could not be confirmed. This action cannot be safely retried yet.";
     default:
       return fallback;
   }
+}
+
+function createChatFailure(message: string, category: ChatFailure["category"], retryable: boolean): ChatFailure {
+  return { message, category, retryable };
 }
 
 function createSession(
@@ -583,7 +588,128 @@ export default function Home() {
     }
   };
 
-  const handleSendMessage = async () => {
+  const sendChatMessage = async ({
+    sessionId,
+    campaignId,
+    messageId,
+    text,
+    loadingMessageId,
+  }: {
+    sessionId: string;
+    campaignId: string | null;
+    messageId: string;
+    text: string;
+    loadingMessageId: string;
+  }) => {
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: text, campaign_id: campaignId, character_id: null }),
+      });
+
+      if (!response.ok) {
+        const isKnownRejectedStatus = [400, 401, 404, 422, 429].includes(response.status);
+        const failure = isKnownRejectedStatus
+          ? createChatFailure(
+              getUserFacingErrorMessage(response.status, "The command was rejected."),
+              "rejected",
+              response.status === 429
+            )
+          : createChatFailure(
+              "Delivery could not be confirmed. This action cannot be safely retried yet.",
+              "ambiguous",
+              false
+            );
+
+        setSessions((currentSessions) =>
+          sortSessionsByRecency(
+            currentSessions.map((session) =>
+              session.id === sessionId
+                ? {
+                    ...session,
+                    last_message: text,
+                    updated_at: Date.now(),
+                    messages: session.messages
+                      .filter((message) => message.id !== loadingMessageId)
+                      .map((message) =>
+                        message.id === messageId
+                          ? { ...message, delivery_state: "failed" as const, failure }
+                          : message
+                      ),
+                  }
+                : session
+            )
+          )
+        );
+        return;
+      }
+
+      const result = await response.json();
+      const hallReply = typeof result?.reply === "string" ? result.reply : "The hall did not respond.";
+      const returnedCampaignId = typeof result?.campaign_id === "string" ? result.campaign_id : undefined;
+      const assistantMessage: ChatMessage = {
+        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        role: "assistant",
+        text: hallReply,
+      };
+
+      setSessions((currentSessions) =>
+        sortSessionsByRecency(
+          currentSessions.map((session) =>
+            session.id === sessionId
+              ? {
+                  ...session,
+                  campaign_id: session.campaign_id ?? returnedCampaignId,
+                  last_message: hallReply,
+                  updated_at: Date.now(),
+                  conversation_loaded: true,
+                  messages: session.messages
+                    .filter((message) => message.id !== loadingMessageId)
+                    .map((message) =>
+                      message.id === messageId
+                        ? { ...message, delivery_state: undefined, failure: undefined }
+                        : message
+                    )
+                    .concat(assistantMessage),
+                }
+              : session
+          )
+        )
+      );
+    } catch {
+      const failure = createChatFailure(
+        "Delivery could not be confirmed. This action cannot be safely retried yet.",
+        "ambiguous",
+        false
+      );
+
+      setSessions((currentSessions) =>
+        sortSessionsByRecency(
+          currentSessions.map((session) =>
+            session.id === sessionId
+              ? {
+                  ...session,
+                  last_message: text,
+                  updated_at: Date.now(),
+                  messages: session.messages
+                    .filter((message) => message.id !== loadingMessageId)
+                    .map((message) =>
+                      message.id === messageId
+                        ? { ...message, delivery_state: "failed" as const, failure }
+                        : message
+                    ),
+                }
+              : session
+          )
+        )
+      );
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const handleSendMessage = () => {
     const trimmed = messageText.trim();
 
     if (!trimmed || isSending || !activeSession || !isAuthenticated) {
@@ -595,23 +721,23 @@ export default function Home() {
       return;
     }
 
-    const loadingNarratorMessage = createLoadingNarratorMessage(NARRATOR_LOADING_TEXT);
-    const loadingMessageId = loadingNarratorMessage.id;
-
-    setRequestError("");
-
+    const sessionId = activeSession.id;
+    const campaignId = activeSession.campaign_id ?? null;
     const userMessage: ChatMessage = {
       id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
       role: "user",
       text: trimmed,
+      delivery_state: "pending",
     };
+    const loadingNarratorMessage = createLoadingNarratorMessage(NARRATOR_LOADING_TEXT);
 
+    setRequestError("");
     setMessageText("");
     setIsSending(true);
     setSessions((currentSessions) =>
       sortSessionsByRecency(
         currentSessions.map((session) => {
-          if (session.id !== activeSession.id) {
+          if (session.id !== sessionId) {
             return session;
           }
 
@@ -632,106 +758,58 @@ export default function Home() {
       )
     );
 
-    try {
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: trimmed,
-          campaign_id: activeSession.campaign_id ?? null,
-          character_id: null,
-        }),
-      });
+    void sendChatMessage({
+      sessionId,
+      campaignId,
+      messageId: userMessage.id,
+      text: trimmed,
+      loadingMessageId: loadingNarratorMessage.id,
+    });
+  };
 
-      if (!response.ok) {
-        const result = await response.json().catch(() => ({}));
-        const userMessage = getUserFacingErrorMessage(
-          response.status,
-          typeof result?.error === "string" ? result.error : "The hall did not respond."
-        );
-        setRequestError(userMessage);
-
-        const assistantMessage: ChatMessage = {
-          id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-          role: "assistant",
-          text: userMessage,
-        };
-
-        setSessions((currentSessions) =>
-          sortSessionsByRecency(
-            currentSessions.map((session) =>
-              session.id === activeSession.id
-                ? {
-                    ...session,
-                    last_message: userMessage,
-                    updated_at: Date.now(),
-                    conversation_loaded: true,
-                    messages: session.messages
-                      .filter((message) => message.id !== loadingMessageId)
-                      .concat(assistantMessage),
-                  }
-                : session
-            )
-          )
-        );
-        return;
-      }
-
-      const result = await response.json();
-      const hallReply = typeof result?.reply === "string" ? result.reply : "The hall did not respond.";
-      const returnedCampaignId = typeof result?.campaign_id === "string" ? result.campaign_id : undefined;
-
-      const assistantMessage: ChatMessage = {
-        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        role: "assistant",
-        text: hallReply,
-      };
-
-      setSessions((currentSessions) =>
-        sortSessionsByRecency(
-          currentSessions.map((session) =>
-            session.id === activeSession.id
-              ? {
-                  ...session,
-                  campaign_id: session.campaign_id ?? returnedCampaignId,
-                  last_message: hallReply,
-                  updated_at: Date.now(),
-                  conversation_loaded: true,
-                  messages: session.messages
-                    .filter((message) => message.id !== loadingMessageId)
-                    .concat(assistantMessage),
-                }
-              : session
-          )
-        )
-      );
-    } catch {
-      const assistantMessage: ChatMessage = {
-        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        role: "assistant",
-        text: "The hall cannot respond right now. Please try again later.",
-      };
-
-      setSessions((currentSessions) =>
-        sortSessionsByRecency(
-          currentSessions.map((session) =>
-            session.id === activeSession.id
-              ? {
-                  ...session,
-                  last_message: assistantMessage.text,
-                  updated_at: Date.now(),
-                  conversation_loaded: true,
-                  messages: session.messages
-                    .filter((message) => message.id !== loadingMessageId)
-                    .concat(assistantMessage),
-                }
-              : session
-          )
-        )
-      );
-    } finally {
-      setIsSending(false);
+  const handleRetryMessage = (messageId: string) => {
+    if (isSending || !activeSession || !isAuthenticated) {
+      return;
     }
+
+    const failedMessage = activeSession.messages.find(
+      (message) => message.id === messageId && message.role === "user" && message.failure?.retryable
+    );
+    if (!failedMessage) {
+      return;
+    }
+
+    const sessionId = activeSession.id;
+    const campaignId = activeSession.campaign_id ?? null;
+    const loadingNarratorMessage = createLoadingNarratorMessage(NARRATOR_LOADING_TEXT);
+
+    setRequestError("");
+    setIsSending(true);
+    setSessions((currentSessions) =>
+      currentSessions.map((session) =>
+        session.id === sessionId
+          ? {
+              ...session,
+              messages: [
+                ...session.messages.map((message) =>
+                  message.id === messageId
+                    ? { ...message, delivery_state: "pending" as const, failure: undefined }
+                    : message
+                ),
+                loadingNarratorMessage,
+              ],
+            }
+          : session
+      )
+    );
+
+    void sendChatMessage({
+      sessionId,
+      campaignId,
+      messageId,
+      text: failedMessage.text,
+      loadingMessageId: loadingNarratorMessage.id,
+    });
   };
 
   const handleSignIn = async () => {
@@ -905,7 +983,11 @@ export default function Home() {
                     <p className="text-sm">You must sign in before sending commands.</p>
                   </div>
                 ) : hasMessages ? (
-                  <ConversationView messages={activeSession?.messages ?? []} />
+                  <ConversationView
+                    messages={activeSession?.messages ?? []}
+                    onRetry={handleRetryMessage}
+                    retryDisabled={isSending}
+                  />
                 ) : (
                   <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-zinc-400">
                     <p className="max-w-xl text-lg">Your adventure begins when you send the first command.</p>
