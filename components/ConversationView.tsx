@@ -1,16 +1,11 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-
-type ChatMessage = {
-  id: string;
-  role: "user" | "assistant";
-  text: string;
-  is_loading?: boolean;
-};
+import type { ChatMessage } from "@/types/chat";
 
 export default function ConversationView({ messages }: { messages: ChatMessage[] }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const latestMessage = messages[messages.length - 1];
 
   useEffect(() => {
     const element = containerRef.current;
@@ -19,7 +14,7 @@ export default function ConversationView({ messages }: { messages: ChatMessage[]
     }
 
     element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
-  }, [messages.length]);
+  }, [latestMessage?.id, latestMessage?.text, messages.length]);
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto pr-2 custom-scrollbar" ref={containerRef}>
@@ -33,9 +28,11 @@ export default function ConversationView({ messages }: { messages: ChatMessage[]
                 : "self-start bg-white/5 text-zinc-200"
             }`}
           >
-            <p className="whitespace-pre-wrap break-words">{message.text}</p>
+            {!message.is_loading ? <p className="whitespace-pre-wrap break-words">{message.text}</p> : null}
             {message.is_loading ? (
-              <p className="mt-2 animate-pulse text-xs uppercase tracking-[0.14em] text-zinc-400">Loading opening...</p>
+              <p className="mt-2 animate-pulse text-xs uppercase tracking-[0.14em] text-zinc-400">
+                {message.loading_text ?? "Loading..."}
+              </p>
             ) : null}
           </div>
         ))}

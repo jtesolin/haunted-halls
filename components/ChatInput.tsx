@@ -32,12 +32,23 @@ export default function ChatInput({
     setIsOverflowing(textarea.scrollHeight > targetHeight);
   }, [value]);
 
+  const focusTextarea = () => {
+    queueMicrotask(() => {
+      textareaRef.current?.focus();
+    });
+  };
+
   return (
     <form
       className="rounded-3xl border border-white/10 bg-zinc-950/90 p-4 shadow-inner"
       onSubmit={(event) => {
         event.preventDefault();
+        if (sendDisabled) {
+          return;
+        }
+
         onSend();
+        focusTextarea();
       }}
     >
       <label htmlFor="mud-input" className="sr-only">
@@ -57,7 +68,12 @@ export default function ChatInput({
             }
 
             event.preventDefault();
+            if (sendDisabled) {
+              return;
+            }
+
             onSend();
+            focusTextarea();
           }}
           placeholder={inputDisabled ? (disabledPlaceholder ?? "Command input unavailable") : "Type a command or message..."}
           rows={1}

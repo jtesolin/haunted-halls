@@ -19,6 +19,7 @@ export interface ChatMessage {
   role: ChatRole;
   text: string;
   is_loading?: boolean;
+  loading_text?: string;
 }
 
 export interface ChatSession {

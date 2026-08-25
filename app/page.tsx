@@ -16,7 +16,8 @@ import type {
 } from "@/types/chat";
 
 const MAX_INPUT_CHARACTERS = 2000;
-const OPENING_LOADING_TEXT = "The narrator is preparing your opening scene...";
+const OPENING_LOADING_TEXT = "Loading opening...";
+const NARRATOR_LOADING_TEXT = "The narrator is responding...";
 const SIDEBAR_PREF_KEY = "haunted-halls-sidebar-collapsed";
 const SIDEBAR_WIDTH = "320px";
 const COLLAPSED_TOOLBAR_WIDTH = "64px";
@@ -94,12 +95,13 @@ function shouldAutonameSession(sessionTitle: string): boolean {
   return sessionTitle === "New adventure" || /^Adventure \d+$/.test(sessionTitle);
 }
 
-function createLoadingNarratorMessage(): ChatMessage {
+function createLoadingNarratorMessage(loadingText: string): ChatMessage {
   return {
     id: `loading-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     role: "assistant",
-    text: OPENING_LOADING_TEXT,
+    text: loadingText,
     is_loading: true,
+    loading_text: loadingText,
   };
 }
 
@@ -136,9 +138,10 @@ export default function Home() {
   const isAuthLoading = authStatus === "loading";
   const isAuthenticated = authStatus === "authenticated";
   const disableGameActions = isAuthLoading || !isAuthenticated;
-  const isInputLocked = disableGameActions || isSending || isCreatingSession;
+  const isInputLocked = disableGameActions || isCreatingSession;
   const isSendDisabled =
     isInputLocked ||
+    isSending ||
     messageText.trim().length === 0 ||
     messageText.trim().length > MAX_INPUT_CHARACTERS;
   const inputDisabledPlaceholder = isAuthLoading
@@ -147,9 +150,7 @@ export default function Home() {
       ? "Sign in to send a command"
       : isCreatingSession
         ? "Preparing campaign..."
-        : isSending
-          ? "Waiting for narrator response..."
-          : "Command input unavailable";
+        : "Command input unavailable";
   const userDisplayName = session?.user?.name?.trim() || session?.user?.email?.trim() || "Signed in";
   const userEmail = session?.user?.email?.trim() || null;
   const userImage = session?.user?.image?.trim() || null;
@@ -252,7 +253,7 @@ export default function Home() {
     setIsCreatingSession(true);
 
     const optimisticSessionId = `optimistic-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const loadingNarratorMessage = createLoadingNarratorMessage();
+    const loadingNarratorMessage = createLoadingNarratorMessage(OPENING_LOADING_TEXT);
     const optimisticSession: ChatSession = {
       ...createSession("New adventure", optimisticSessionId, OPENING_LOADING_TEXT),
       id: optimisticSessionId,
@@ -594,6 +595,9 @@ export default function Home() {
       return;
     }
 
+    const loadingNarratorMessage = createLoadingNarratorMessage(NARRATOR_LOADING_TEXT);
+    const loadingMessageId = loadingNarratorMessage.id;
+
     setRequestError("");
 
     const userMessage: ChatMessage = {
@@ -622,7 +626,7 @@ export default function Home() {
             last_message: trimmed,
             updated_at: Date.now(),
             conversation_loaded: true,
-            messages: [...session.messages, userMessage],
+            messages: [...session.messages, userMessage, loadingNarratorMessage],
           };
         })
       )
@@ -662,7 +666,9 @@ export default function Home() {
                     last_message: userMessage,
                     updated_at: Date.now(),
                     conversation_loaded: true,
-                    messages: [...session.messages, assistantMessage],
+                    messages: session.messages
+                      .filter((message) => message.id !== loadingMessageId)
+                      .concat(assistantMessage),
                   }
                 : session
             )
@@ -691,13 +697,14 @@ export default function Home() {
                   last_message: hallReply,
                   updated_at: Date.now(),
                   conversation_loaded: true,
-                  messages: [...session.messages, assistantMessage],
+                  messages: session.messages
+                    .filter((message) => message.id !== loadingMessageId)
+                    .concat(assistantMessage),
                 }
               : session
           )
         )
       );
-
     } catch {
       const assistantMessage: ChatMessage = {
         id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -714,7 +721,9 @@ export default function Home() {
                   last_message: assistantMessage.text,
                   updated_at: Date.now(),
                   conversation_loaded: true,
-                  messages: [...session.messages, assistantMessage],
+                  messages: session.messages
+                    .filter((message) => message.id !== loadingMessageId)
+                    .concat(assistantMessage),
                 }
               : session
           )
