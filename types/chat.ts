@@ -19,8 +19,11 @@ export type ChatFailureCategory = "rejected" | "ambiguous";
 
 export interface ChatFailure {
   message: string;
+  title?: string;
   retryable: boolean;
   category: ChatFailureCategory;
+  code?: string;
+  retry_at?: string;
 }
 
 export interface ChatMessage {

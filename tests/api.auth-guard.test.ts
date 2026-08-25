@@ -153,6 +153,30 @@ describe("BFF auth guard", () => {
     expect(JSON.stringify(body)).not.toContain(TEST_INTERNAL_ENGINE_SERVICE_TOKEN);
   });
 
+  it.each([
+    ["daily token", "daily_token_limit", "Daily token limit reached."],
+    ["daily request", "daily_request_limit", "Daily request limit reached."],
+  ])("preserves approved structured fields for %s errors", async (_label, code, detail) => {
+    vi.mocked(getServerSession).mockResolvedValue({ internalUserId: "user_0123456789abcdef0123456789abcdef" } as never);
+    vi.mocked(global.fetch).mockResolvedValue(
+      new Response(JSON.stringify({
+        detail: { detail, code, retryable: false, retry_at: "2026-08-26T00:00:00Z", internal_id: "do-not-leak" },
+        internal_detail: "do-not-leak",
+      }), { status: 429, headers: { "Content-Type": "application/json" } })
+    );
+
+    const response = await postChat(new Request("http://localhost:3000/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "look" }),
+    }));
+    const body = await response.json();
+
+    expect(response.status).toBe(429);
+    expect(body).toEqual({ error: detail, code, retryable: false, retry_at: "2026-08-26T00:00:00Z" });
+    expect(JSON.stringify(body)).not.toContain("do-not-leak");
+  });
+
   it("returns a generic 404 for missing or unauthorized campaign reads", async () => {
     vi.mocked(getServerSession).mockResolvedValue({ internalUserId: "user_0123456789abcdef0123456789abcdef" } as never);
     vi.mocked(global.fetch).mockResolvedValue(

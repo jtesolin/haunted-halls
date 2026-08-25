@@ -44,6 +44,7 @@ export default function ConversationView({
             ) : null}
             {message.failure ? (
               <div className="mt-2 border-t border-white/20 pt-2 text-xs leading-5 text-sky-100">
+                {message.failure.title ? <p className="font-semibold">{message.failure.title}</p> : null}
                 <p>{message.failure.message}</p>
                 {message.failure.retryable && onRetry ? (
                   <button

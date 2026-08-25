@@ -63,8 +63,114 @@ function getUserFacingErrorMessage(status: number, fallback: string) {
   }
 }
 
-function createChatFailure(message: string, category: ChatFailure["category"], retryable: boolean): ChatFailure {
-  return { message, category, retryable };
+function createChatFailure(
+  message: string,
+  category: ChatFailure["category"],
+  retryable: boolean,
+  details: Pick<ChatFailure, "title" | "code" | "retry_at"> = {}
+): ChatFailure {
+  return { message, category, retryable, ...details };
+}
+
+function formatLimitResetTime(retryAt: string | undefined, fallback: string): string {
+  if (!retryAt) {
+    return fallback;
+  }
+
+  const reset = new Date(retryAt);
+  if (Number.isNaN(reset.getTime())) {
+    return fallback;
+  }
+
+  const time = new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(reset);
+  const now = new Date();
+  const resetDate = `${reset.getFullYear()}-${reset.getMonth()}-${reset.getDate()}`;
+  const today = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`;
+  const tomorrow = new Date(now);
+  tomorrow.setDate(now.getDate() + 1);
+  const tomorrowDate = `${tomorrow.getFullYear()}-${tomorrow.getMonth()}-${tomorrow.getDate()}`;
+
+  if (resetDate === today) {
+    return `You can continue after ${time}.`;
+  }
+  if (resetDate === tomorrowDate) {
+    return `You can continue tomorrow at ${time}.`;
+  }
+
+  const date = new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(reset);
+  return `You can continue after ${date} at ${time}.`;
+}
+
+function formatDailyLimitMessage(retryAt: string | undefined, allowance: string, fallback: string): string {
+  const resetMessage = formatLimitResetTime(retryAt, fallback);
+  return resetMessage === fallback
+    ? fallback
+    : `You've used today's ${allowance} allowance. ${resetMessage}`;
+}
+
+function getChatFailure(status: number, payload: unknown): ChatFailure {
+  const response = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+  const code = typeof response.code === "string" ? response.code : undefined;
+  const retryAt = typeof response.retry_at === "string" ? response.retry_at : undefined;
+  const serverMessage = typeof response.error === "string" ? response.error : undefined;
+
+  switch (code) {
+    case "daily_token_limit":
+      return createChatFailure(
+        formatDailyLimitMessage(
+          retryAt,
+          "token",
+          "You've reached today's token limit. Please try again after the daily limit resets."
+        ),
+        "rejected",
+        false,
+        { title: "Daily limit reached", code, retry_at: retryAt }
+      );
+    case "daily_request_limit":
+      return createChatFailure(
+        formatDailyLimitMessage(
+          retryAt,
+          "request",
+          "You've reached today's request limit. Please try again after the daily limit resets."
+        ),
+        "rejected",
+        false,
+        { title: "Daily limit reached", code, retry_at: retryAt }
+      );
+    case "campaign_turn_limit":
+      return createChatFailure(
+        "This campaign has reached its maximum number of turns.",
+        "rejected",
+        false,
+        { title: "Campaign limit reached", code }
+      );
+    case "max_campaigns":
+      return createChatFailure(
+        "You've reached the maximum number of campaigns.",
+        "rejected",
+        false,
+        { title: "Campaign limit reached", code }
+      );
+    default: {
+      const explicitRetryable = response.retryable === true && Boolean(code);
+      const fallbackMessage = status === 429
+        ? serverMessage ?? "The request was rejected. Please try again later."
+        : getUserFacingErrorMessage(status, serverMessage ?? "The hall did not respond.");
+      return createChatFailure(
+        fallbackMessage,
+        "rejected",
+        explicitRetryable,
+        { code, retry_at: retryAt }
+      );
+    }
+  }
 }
 
 function createSession(
@@ -609,18 +715,14 @@ export default function Home() {
       });
 
       if (!response.ok) {
-        const isKnownRejectedStatus = [400, 401, 404, 422, 429].includes(response.status);
-        const failure = isKnownRejectedStatus
+        const result = await response.json().catch(() => ({}));
+        const failure = response.status >= 500
           ? createChatFailure(
-              getUserFacingErrorMessage(response.status, "The command was rejected."),
-              "rejected",
-              response.status === 429
-            )
-          : createChatFailure(
               "Delivery could not be confirmed. This action cannot be safely retried yet.",
               "ambiguous",
               false
-            );
+            )
+          : getChatFailure(response.status, result);
 
         setSessions((currentSessions) =>
           sortSessionsByRecency(
