@@ -12,6 +12,7 @@ const PUBLIC_ENGINE_ERROR_CODES = new Set([
   "daily_token_limit",
   "campaign_turn_limit",
   "max_campaigns",
+  "temporary_rate_limit",
 ]);
 
 export class InternalEngineConfigurationError extends Error {

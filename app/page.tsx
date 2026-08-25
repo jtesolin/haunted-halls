@@ -159,7 +159,7 @@ function getChatFailure(status: number, payload: unknown): ChatFailure {
         { title: "Campaign limit reached", code }
       );
     default: {
-      const explicitRetryable = response.retryable === true && Boolean(code);
+      const explicitRetryable = status === 429 && response.retryable === true && code === "temporary_rate_limit";
       const fallbackMessage = status === 429
         ? serverMessage ?? "The request was rejected. Please try again later."
         : getUserFacingErrorMessage(status, serverMessage ?? "The hall did not respond.");
