@@ -7,6 +7,13 @@ const INTERNAL_ENGINE_SERVICE_TOKEN_PLACEHOLDERS = new Set([
   "replace-with-internal-engine-token",
   "generate-with-openssl-do-not-commit",
 ]);
+const PUBLIC_ENGINE_ERROR_CODES = new Set([
+  "daily_request_limit",
+  "daily_token_limit",
+  "campaign_turn_limit",
+  "max_campaigns",
+  "temporary_rate_limit",
+]);
 
 export class InternalEngineConfigurationError extends Error {
   constructor(message: string) {
@@ -134,13 +141,42 @@ export async function respondWithEngineError(
   }
 
   let detail: string | null = null;
+  let code: string | null = null;
+  let retryable: boolean | null = null;
+  let retryAt: string | null = null;
 
   try {
-    const payload = (await response.json()) as { detail?: unknown; error?: unknown };
-    if (typeof payload.detail === "string" && payload.detail.trim()) {
-      detail = payload.detail.trim();
+    const payload = (await response.json()) as {
+      detail?: unknown;
+      error?: unknown;
+      code?: unknown;
+      retryable?: unknown;
+      retry_at?: unknown;
+    };
+    const structuredDetail = payload.detail && typeof payload.detail === "object"
+      ? payload.detail as Record<string, unknown>
+      : null;
+    const publicDetail = structuredDetail?.detail ?? payload.detail;
+
+    if (typeof publicDetail === "string" && publicDetail.trim()) {
+      detail = publicDetail.trim();
     } else if (typeof payload.error === "string" && payload.error.trim()) {
       detail = payload.error.trim();
+    }
+
+    const candidateCode = structuredDetail?.code ?? payload.code;
+    if (typeof candidateCode === "string" && PUBLIC_ENGINE_ERROR_CODES.has(candidateCode)) {
+      code = candidateCode;
+    }
+
+    const candidateRetryable = structuredDetail?.retryable ?? payload.retryable;
+    if (typeof candidateRetryable === "boolean" && code !== null) {
+      retryable = candidateRetryable;
+    }
+
+    const candidateRetryAt = structuredDetail?.retry_at ?? payload.retry_at;
+    if (typeof candidateRetryAt === "string" && code !== null && candidateRetryAt.trim()) {
+      retryAt = candidateRetryAt.trim();
     }
   } catch {
     detail = null;
@@ -151,8 +187,21 @@ export async function respondWithEngineError(
   }
 
   if (response.status === 400 || response.status === 422 || response.status === 429) {
+    const publicError: Record<string, string | boolean> = {
+      error: detail ?? "Backend request failed",
+    };
+    if (code !== null) {
+      publicError.code = code;
+    }
+    if (retryable !== null) {
+      publicError.retryable = retryable;
+    }
+    if (retryAt !== null) {
+      publicError.retry_at = retryAt;
+    }
+
     return NextResponse.json(
-      { error: detail ?? "Backend request failed" },
+      publicError,
       { status: response.status }
     );
   }
