@@ -105,7 +105,7 @@ The workflow validates the repository commands used in local development:
 - `npm test`
 - `npm run build`
 
-These checks run on the repo’s established Node 24.18.0 runtime and a standard GitHub-hosted Linux runner.
+These checks run on Node 24.18.0 (as configured in the workflow) and a standard GitHub-hosted Linux runner.
 
 ## Learn More
 
