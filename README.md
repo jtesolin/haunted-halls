@@ -94,6 +94,19 @@ If you run the app on a different port, update `NEXTAUTH_URL` and register the m
 - `npm run lint`
 - `npm run build`
 
+## CI
+
+GitHub Actions runs the frontend validation workflow on pull requests targeting `main`, on pushes to `main`, and manually via `workflow_dispatch`.
+
+The workflow validates the repository commands used in local development:
+
+- `npm run lint`
+- `npm run typecheck`
+- `npm test`
+- `npm run build`
+
+These checks run on the repo’s established Node 24.18.0 runtime and a standard GitHub-hosted Linux runner.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:
