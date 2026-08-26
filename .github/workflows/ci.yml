@@ -84,7 +84,7 @@ jobs:
     timeout-minutes: 20
     env:
       CI: true
-      NODE_ENV: test
+      NODE_ENV: production
       NEXTAUTH_SECRET: ci-nextauth-secret
       NEXTAUTH_URL: http://localhost:3000
       GOOGLE_CLIENT_ID: ci-google-client-id
