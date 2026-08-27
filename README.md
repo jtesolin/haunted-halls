@@ -105,6 +105,25 @@ The workflow validates the repository commands used in local development:
 - `npm test`
 - `npm run build`
 
+CI also builds the production Docker image as `Frontend / Docker Build`; it does not push the image.
+
+## Local Docker Stack
+
+The frontend repository owns the local Compose configuration and builds the sibling engine repository from `../haunted-halls-engine`.
+
+Build and start both services:
+
+```bash
+docker compose build
+docker compose up -d
+```
+
+The frontend is available at [http://localhost:3000](http://localhost:3000). View logs with `docker compose logs -f`, stop the stack with `docker compose down`, and rebuild after source changes with `docker compose up -d --build`.
+
+Compose connects the BFF to FastAPI at `http://engine:8000` and injects the same local-only service token into both containers. Set `INTERNAL_ENGINE_SERVICE_TOKEN` in `.env` to replace the documented development default before testing authenticated flows. Google sign-in still requires real local OAuth settings; Compose does not bypass authentication.
+
+SQLite is stored in the Docker-managed `engine-data` volume. `docker compose down` and image rebuilds preserve it. To intentionally reset local data, run `docker compose down -v` before starting the stack again.
+
 These checks run on Node 24.18.0 (as configured in the workflow) and a standard GitHub-hosted Linux runner.
 
 ## Learn More

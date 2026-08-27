@@ -107,3 +107,14 @@ jobs:
 
       - name: Build application
         run: npm run build
+
+  docker-build:
+    name: Frontend / Docker Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Build Docker image
+        run: docker build --tag haunted-halls:ci .
