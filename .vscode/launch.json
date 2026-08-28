@@ -11,6 +11,7 @@
       "remoteRoot": "/app",
       "sourceMaps": true,
       "restart": true,
+      "autoAttachChildProcesses": false,
       "skipFiles": ["<node_internals>/**"]
     },
     {
@@ -18,7 +19,8 @@
       "type": "chrome",
       "request": "launch",
       "url": "http://localhost:3000",
-      "webRoot": "${workspaceFolder}"
+      "webRoot": "${workspaceFolder}",
+      "browserLaunchLocation": "ui"
     }
   ]
 }
