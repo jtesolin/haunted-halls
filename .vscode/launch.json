@@ -1,0 +1,26 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Attach: Haunted Halls Frontend (Docker)",
+      "type": "node",
+      "request": "attach",
+      "address": "localhost",
+      "port": 9229,
+      "localRoot": "${workspaceFolder}",
+      "remoteRoot": "/app",
+      "sourceMaps": true,
+      "restart": true,
+      "autoAttachChildProcesses": false,
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "Debug: Haunted Halls Client (Chrome)",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:3000",
+      "webRoot": "${workspaceFolder}",
+      "browserLaunchLocation": "ui"
+    }
+  ]
+}

@@ -14,6 +14,26 @@ RUN GOOGLE_CLIENT_ID=build-only-google-client-id \
 	NEXTAUTH_SECRET=build-only-nextauth-secret \
 	npm run build
 
+# Local-only development/debug stage. Must stay before `runner` so plain
+# `docker build` and CI keep producing the production image by default.
+FROM node:24.18.0-bookworm-slim AS development
+
+ENV NODE_ENV=development
+ENV HOSTNAME=0.0.0.0
+ENV PORT=3000
+
+WORKDIR /app
+COPY --from=dependencies --chown=node:node /app/node_modules ./node_modules
+COPY --chown=node:node . .
+
+# `node` is uid 1000, matching the typical WSL developer uid, so bind-mounted
+# source stays writable from both sides.
+RUN mkdir -p /app/.next && chown -R node:node /app
+
+USER node
+EXPOSE 3000 9229
+CMD ["npm", "run", "dev", "--", "--hostname", "0.0.0.0", "--inspect=0.0.0.0:9229"]
+
 FROM node:24.18.0-bookworm-slim AS runner
 
 ENV NODE_ENV=production

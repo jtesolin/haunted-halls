@@ -1,0 +1,34 @@
+# Local debugging override. Use with the base file:
+#   docker compose -f docker-compose.yml -f docker-compose.debug.yml up
+#
+# Only development differences belong here; shared configuration stays in
+# docker-compose.yml. Debug startup commands come from the `debug`/`development`
+# Dockerfile stages so image and Compose definitions cannot drift.
+services:
+  engine:
+    build:
+      target: debug
+    image: haunted-halls-engine:debug
+    volumes:
+      - ../haunted-halls-engine/app:/app/app:ro
+    ports:
+      # debugpy listens without --wait-for-client, so the container starts and
+      # becomes healthy whether or not VS Code is attached.
+      - "127.0.0.1:5678:5678"
+
+  frontend:
+    build:
+      target: development
+    image: haunted-halls-frontend:debug
+    environment:
+      NODE_ENV: development
+    volumes:
+      - ./:/app
+      # Anonymous volumes keep container-installed dependencies and build output
+      # from being hidden by the host bind mount.
+      - /app/node_modules
+    ports:
+      - "127.0.0.1:9229:9229"
+    healthcheck:
+      # First request compiles routes on demand in dev mode.
+      start_period: 90s
