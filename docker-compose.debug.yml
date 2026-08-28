@@ -27,7 +27,6 @@ services:
       # Anonymous volumes keep container-installed dependencies and build output
       # from being hidden by the host bind mount.
       - /app/node_modules
-      - /app/.next
     ports:
       - "127.0.0.1:9229:9229"
     healthcheck:
