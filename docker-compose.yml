@@ -3,6 +3,8 @@ services:
     build:
       context: ../haunted-halls-engine
       dockerfile: Dockerfile
+      target: runner
+    image: haunted-halls-engine:local
     # Engine-local runtime configuration (OpenAI settings, model settings, etc.)
     # is read from the host at runtime and is never baked into the image.
     env_file:
@@ -25,6 +27,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: runner
+    image: haunted-halls-frontend:local
     depends_on:
       engine:
         condition: service_healthy

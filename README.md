@@ -131,6 +131,55 @@ The images are environment-agnostic; local configuration is injected at containe
 
 Compose values declared under `environment:` take precedence over `env_file:`, so `DATABASE_URL` stays pinned to the container SQLite path and `INTERNAL_ENGINE_SERVICE_TOKEN` always comes from the frontend `.env`, keeping both services in agreement. Without a valid `OPENAI_API_KEY` or `AI_ENABLED=true` in the engine `.env`, the engine responds with stub narration.
 
+### Make Targets
+
+The frontend repository owns the Compose lifecycle; each target is a thin wrapper over the Docker command shown next to it.
+
+| Target | Command |
+| --- | --- |
+| `make docker-build` | `docker compose build` |
+| `make docker-up` | `docker compose up -d` |
+| `make docker-down` | `docker compose down` |
+| `make docker-logs` | `docker compose logs -f` |
+| `make docker-ps` | `docker compose ps` |
+| `make docker-config` | `docker compose config` |
+| `make debug-build` | `docker compose -f docker-compose.yml -f docker-compose.debug.yml build` |
+| `make debug-up` | `docker compose -f docker-compose.yml -f docker-compose.debug.yml up` |
+| `make debug-down` | `docker compose -f docker-compose.yml -f docker-compose.debug.yml down` |
+| `make debug-logs` | `docker compose -f docker-compose.yml -f docker-compose.debug.yml logs -f` |
+| `make debug-config` | `docker compose -f docker-compose.yml -f docker-compose.debug.yml config` |
+| `make docker-reset-db` | `docker compose down -v` — **destructive**, deletes the SQLite volume |
+
+`make docker-down` and `make debug-down` never remove volumes; only `make docker-reset-db` does.
+
+### Local Debugging
+
+[docker-compose.debug.yml](docker-compose.debug.yml) layers development-only settings on top of the base file: debug Dockerfile stages, source bind mounts, and debugger ports. Everything else (environment, engine URL, auth, health checks, SQLite volume) stays in [docker-compose.yml](docker-compose.yml).
+
+Start the debug stack:
+
+```bash
+make debug-up
+# docker compose -f docker-compose.yml -f docker-compose.debug.yml up
+```
+
+Then attach the debuggers from VS Code's Run and Debug view:
+
+- **Attach: Haunted Halls Frontend (Docker)** — Node inspector on `127.0.0.1:9229`, mapping `${workspaceFolder}` to `/app`. Use it for server components, route handlers, and other BFF code.
+- **Attach: Haunted Halls Engine (Docker)** — `debugpy` on `127.0.0.1:5678`, defined in the engine repository's `.vscode/launch.json`.
+
+Both debuggers listen without blocking startup, so containers become healthy before you attach, and you can attach or detach at any time. Because the repositories are separate VS Code folders, attach each configuration from its own folder rather than through a compound configuration. Client-side React code is debugged with browser dev tools or the **Debug: Haunted Halls Client (Chrome)** configuration; the Node debugger only covers server-side code.
+
+Debugger ports bind to `127.0.0.1` and exist only in the debug override, never in the production image or the normal stack.
+
+Frontend source edits hot-reload through the bind mount, so rebuilds are not needed for ordinary changes. Engine source is bind-mounted read-only and runs without Uvicorn reload (subprocess reloading makes breakpoints unreliable), so restart the engine container to pick up Python changes:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.debug.yml restart engine
+```
+
+Run `make debug-build` after Dockerfile or dependency changes. The normal and debug stacks use distinct image tags (`:local` and `:debug`) so they never reuse each other's images.
+
 SQLite is stored in the Docker-managed `engine-data` volume. `docker compose down` and image rebuilds preserve it. To intentionally reset local data, run `docker compose down -v` before starting the stack again.
 
 These checks run on Node 24.18.0 (as configured in the workflow) and a standard GitHub-hosted Linux runner.
