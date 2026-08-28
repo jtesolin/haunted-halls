@@ -60,7 +60,7 @@ debug-build:
 	$(DEBUG_COMPOSE) build
 
 debug-up:
-	$(DEBUG_COMPOSE) up
+	$(DEBUG_COMPOSE) up --build
 
 debug-down:
 	$(DEBUG_COMPOSE) down
