@@ -3,10 +3,15 @@ services:
     build:
       context: ../haunted-halls-engine
       dockerfile: Dockerfile
+    # Engine-local runtime configuration (OpenAI settings, model settings, etc.)
+    # is read from the host at runtime and is never baked into the image.
+    env_file:
+      - path: ../haunted-halls-engine/.env
+        required: false
+    # Values below are Compose-specific and intentionally override the engine .env.
     environment:
       DATABASE_URL: sqlite:////app/data/haunted_halls.db
       INTERNAL_ENGINE_SERVICE_TOKEN: ${INTERNAL_ENGINE_SERVICE_TOKEN:-local-compose-token-change-me-00000000000000000000000000000000000000}
-      AI_ENABLED: "false"
     volumes:
       - engine-data:/app/data
     healthcheck:

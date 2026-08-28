@@ -122,6 +122,15 @@ The frontend is available at [http://localhost:3000](http://localhost:3000). Vie
 
 Compose connects the BFF to FastAPI at `http://engine:8000` and injects the same local-only service token into both containers. Set `INTERNAL_ENGINE_SERVICE_TOKEN` in `.env` to replace the documented development default before testing authenticated flows. Google sign-in still requires real local OAuth settings; Compose does not bypass authentication.
 
+### Runtime Configuration
+
+The images are environment-agnostic; local configuration is injected at container runtime from two host files that are never copied into the images:
+
+- `haunted-halls/.env` — frontend and Compose-level configuration (`INTERNAL_ENGINE_SERVICE_TOKEN`, NextAuth, Google OAuth, ports).
+- `haunted-halls-engine/.env` — engine-local runtime configuration such as `OPENAI_API_KEY`, `AI_ENABLED`, and `DEFAULT_MODEL_NAME`, loaded through Compose `env_file` (optional; the stack still starts without it).
+
+Compose values declared under `environment:` take precedence over `env_file:`, so `DATABASE_URL` stays pinned to the container SQLite path and `INTERNAL_ENGINE_SERVICE_TOKEN` always comes from the frontend `.env`, keeping both services in agreement. Without a valid `OPENAI_API_KEY` or `AI_ENABLED=true` in the engine `.env`, the engine responds with stub narration.
+
 SQLite is stored in the Docker-managed `engine-data` volume. `docker compose down` and image rebuilds preserve it. To intentionally reset local data, run `docker compose down -v` before starting the stack again.
 
 These checks run on Node 24.18.0 (as configured in the workflow) and a standard GitHub-hosted Linux runner.
