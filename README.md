@@ -205,7 +205,7 @@ docker compose -f docker-compose.yml -f docker-compose.debug.yml restart engine
 
 Run `make debug-build` after Dockerfile or dependency changes. The normal and debug stacks use distinct image tags (`:local` and `:debug`) so they never reuse each other's images.
 
-SQLite is stored in the Docker-managed `engine-data` volume. `docker compose down` and image rebuilds preserve it. To intentionally reset local data, run `docker compose down -v` before starting the stack again.
+PostgreSQL data persists in the Docker-managed `postgres-data` volume. `docker compose down` preserves it across restarts and image rebuilds. To intentionally reset local data, run `docker compose down -v` or `make docker-reset-db` before starting the stack again.
 
 These checks run on Node 24.18.0 (as configured in the workflow) and a standard GitHub-hosted Linux runner.
 
