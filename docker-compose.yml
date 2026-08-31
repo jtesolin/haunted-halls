@@ -1,4 +1,36 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-haunted_halls}
+      POSTGRES_USER: ${POSTGRES_USER:-haunted_halls}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-haunted_halls_local}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER:-haunted_halls}"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 5
+
+  migrate:
+    build:
+      context: ../haunted-halls-engine
+      dockerfile: Dockerfile
+      target: runner
+    image: haunted-halls-engine:local
+    env_file:
+      - path: ../haunted-halls-engine/.env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-haunted_halls}:${POSTGRES_PASSWORD:-haunted_halls_local}@postgres:5432/${POSTGRES_DB:-haunted_halls}
+      INTERNAL_ENGINE_SERVICE_TOKEN: ${INTERNAL_ENGINE_SERVICE_TOKEN:-local-compose-token-change-me-00000000000000000000000000000000000000}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+
   engine:
     build:
       context: ../haunted-halls-engine
@@ -12,10 +44,11 @@ services:
         required: false
     # Values below are Compose-specific and intentionally override the engine .env.
     environment:
-      DATABASE_URL: sqlite:////app/data/haunted_halls.db
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-haunted_halls}:${POSTGRES_PASSWORD:-haunted_halls_local}@postgres:5432/${POSTGRES_DB:-haunted_halls}
       INTERNAL_ENGINE_SERVICE_TOKEN: ${INTERNAL_ENGINE_SERVICE_TOKEN:-local-compose-token-change-me-00000000000000000000000000000000000000}
-    volumes:
-      - engine-data:/app/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
       interval: 10s
@@ -49,4 +82,4 @@ services:
       retries: 5
 
 volumes:
-  engine-data:
+  postgres-data:

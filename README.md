@@ -118,9 +118,16 @@ docker compose build
 docker compose up -d
 ```
 
+The Compose stack includes:
+
+* **PostgreSQL 16** — persistent database service with health check.
+* **Migrate** — one-shot service that runs `alembic upgrade head` before the engine starts.
+* **Engine** — FastAPI application, depends on migration success.
+* **Frontend** — Next.js BFF, depends on engine health.
+
 The frontend is available at [http://localhost:3000](http://localhost:3000). View logs with `docker compose logs -f`, stop the stack with `docker compose down`, and rebuild after source changes with `docker compose up -d --build`.
 
-Compose connects the BFF to FastAPI at `http://engine:8000` and injects the same local-only service token into both containers. Set `INTERNAL_ENGINE_SERVICE_TOKEN` in `.env` to replace the documented development default before testing authenticated flows. Google sign-in still requires real local OAuth settings; Compose does not bypass authentication.
+Compose connects the BFF to FastAPI at `http://engine:8000` and injects the same local-only service token into both containers. PostgreSQL data persists across normal `docker compose down` / `docker compose up` cycles; use `make docker-reset-db` to destroy the database and start fresh. Set `INTERNAL_ENGINE_SERVICE_TOKEN` in `.env` to replace the documented development default before testing authenticated flows. Google sign-in still requires real local OAuth settings; Compose does not bypass authentication.
 
 ### Runtime Configuration
 
@@ -129,7 +136,7 @@ The images are environment-agnostic; local configuration is injected at containe
 - `haunted-halls/.env` — frontend and Compose-level configuration (`INTERNAL_ENGINE_SERVICE_TOKEN`, NextAuth, Google OAuth, ports).
 - `haunted-halls-engine/.env` — engine-local runtime configuration such as `OPENAI_API_KEY`, `AI_ENABLED`, and `DEFAULT_MODEL_NAME`, loaded through Compose `env_file` (optional; the stack still starts without it).
 
-Compose values declared under `environment:` take precedence over `env_file:`, so `DATABASE_URL` stays pinned to the container SQLite path and `INTERNAL_ENGINE_SERVICE_TOKEN` always comes from the frontend `.env`, keeping both services in agreement. Without a valid `OPENAI_API_KEY` or `AI_ENABLED=true` in the engine `.env`, the engine responds with stub narration.
+Compose values declared under `environment:` take precedence over `env_file:`, so `DATABASE_URL` is pinned to the PostgreSQL service connection string and `INTERNAL_ENGINE_SERVICE_TOKEN` always comes from the frontend `.env`, keeping both services in agreement. PostgreSQL credentials default to development-only values; see the `postgres` service in [docker-compose.yml](docker-compose.yml) for configuration options. Without a valid `OPENAI_API_KEY` or `AI_ENABLED=true` in the engine `.env`, the engine responds with stub narration.
 
 ### Make Targets
 
@@ -143,18 +150,36 @@ The frontend repository owns the Compose lifecycle; each target is a thin wrappe
 | `make docker-logs` | `docker compose logs -f` |
 | `make docker-ps` | `docker compose ps` |
 | `make docker-config` | `docker compose config` |
+| `make docker-migrate` | `docker compose run --rm migrate` |
 | `make debug-build` | `docker compose -f docker-compose.yml -f docker-compose.debug.yml build` |
 | `make debug-up` | `docker compose -f docker-compose.yml -f docker-compose.debug.yml up` |
 | `make debug-down` | `docker compose -f docker-compose.yml -f docker-compose.debug.yml down` |
 | `make debug-logs` | `docker compose -f docker-compose.yml -f docker-compose.debug.yml logs -f` |
 | `make debug-config` | `docker compose -f docker-compose.yml -f docker-compose.debug.yml config` |
-| `make docker-reset-db` | `docker compose down -v` — **destructive**, deletes the SQLite volume |
+| `make docker-reset-db` | `docker compose down -v` — **destructive**, deletes the PostgreSQL volume |
 
 `make docker-down` and `make debug-down` never remove volumes; only `make docker-reset-db` does.
 
+### Migration Service
+
+The `migrate` service is a one-shot container that runs before the engine starts:
+
+```bash
+alembic upgrade head
+```
+
+It uses the same engine image, configuration, and PostgreSQL connection as the running engine, ensuring migrations stay synchronized with application code. If migrations fail, the engine does not start and the Compose stack will not reach healthy status.
+
+To run migrations explicitly:
+
+```bash
+make docker-migrate
+# docker compose run --rm migrate
+```
+
 ### Local Debugging
 
-[docker-compose.debug.yml](docker-compose.debug.yml) layers development-only settings on top of the base file: debug Dockerfile stages, source bind mounts, and debugger ports. Everything else (environment, engine URL, auth, health checks, SQLite volume) stays in [docker-compose.yml](docker-compose.yml).
+[docker-compose.debug.yml](docker-compose.debug.yml) layers development-only settings on top of the base file: debug Dockerfile stages, source bind mounts, and debugger ports. Everything else (environment, engine URL, auth, PostgreSQL database, health checks) stays in [docker-compose.yml](docker-compose.yml).
 
 Start the debug stack:
 
