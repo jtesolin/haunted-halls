@@ -1,5 +1,5 @@
 .PHONY: help install dev build start lint typecheck test clean \
-	docker-build docker-up docker-down docker-logs docker-ps docker-config \
+	docker-build docker-up docker-down docker-logs docker-ps docker-config docker-migrate \
 	debug-build debug-up debug-down debug-logs debug-config \
 	docker-reset-db
 
@@ -10,9 +10,9 @@ DEBUG_COMPOSE = docker compose -f docker-compose.yml -f docker-compose.debug.yml
 
 help:
 	@echo "Local app:     install, dev, build, start, lint, typecheck, test, clean"
-	@echo "Compose stack: docker-build, docker-up, docker-down, docker-logs, docker-ps, docker-config"
+	@echo "Compose stack: docker-build, docker-up, docker-down, docker-logs, docker-ps, docker-config, docker-migrate"
 	@echo "Debug stack:   debug-build, debug-up, debug-down, debug-logs, debug-config"
-	@echo "Destructive:   docker-reset-db (deletes the persistent SQLite volume)"
+	@echo "Destructive:   docker-reset-db (deletes Compose volumes, including postgres-data)"
 
 install:
 	npm install
@@ -71,6 +71,9 @@ debug-logs:
 debug-config:
 	$(DEBUG_COMPOSE) config
 
-# Destructive: removes the engine-data volume and all local campaign data.
+docker-migrate:
+	$(COMPOSE) run --rm migrate
+
+# Destructive: removes Compose volumes (including postgres-data) and all local campaign data.
 docker-reset-db:
 	$(COMPOSE) down -v
