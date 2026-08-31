@@ -27,8 +27,9 @@ help:
 	@echo "  docker-ps         Show container status"
 	@echo "  docker-logs       Follow stack logs (postgres, migrate, engine, frontend)"
 	@echo "  docker-config     Render and validate Compose configuration"
-	@echo "  docker-migrate    Run one-shot migration service against existing PostgreSQL database"
+	@echo "  docker-migrate    Rebuild engine/migration image and run one-shot migration service"
 	@echo "                    Use after: pulling new migrations while stack is already running"
+	@echo "                    Rebuilds image from current local source; PostgreSQL/engine stay running"
 	@echo ""
 	@echo "Destructive:"
 	@echo "  docker-reset-db   DESTRUCTIVE: Stop stack and delete postgres-data volume"
@@ -99,7 +100,7 @@ debug-config:
 	$(DEBUG_COMPOSE) config
 
 docker-migrate:
-	$(COMPOSE) run --rm migrate
+	$(COMPOSE) run --rm --build migrate
 
 # Destructive: removes Compose volumes (including postgres-data) and all local campaign data.
 docker-reset-db:

@@ -150,7 +150,7 @@ The frontend repository owns the Compose lifecycle; each target is a thin wrappe
 | `make docker-logs` | `docker compose logs -f` |
 | `make docker-ps` | `docker compose ps` |
 | `make docker-config` | `docker compose config` |
-| `make docker-migrate` | `docker compose run --rm migrate` |
+| `make docker-migrate` | `docker compose run --rm --build migrate` |
 | `make debug-build` | `docker compose -f docker-compose.yml -f docker-compose.debug.yml build` |
 | `make debug-up` | `docker compose -f docker-compose.yml -f docker-compose.debug.yml up` |
 | `make debug-down` | `docker compose -f docker-compose.yml -f docker-compose.debug.yml down` |
@@ -174,7 +174,7 @@ To run migrations explicitly:
 
 ```bash
 make docker-migrate
-# docker compose run --rm migrate
+# docker compose run --rm --build migrate
 ```
 
 ### Local Debugging
