@@ -74,6 +74,6 @@ debug-config:
 docker-migrate:
 	$(COMPOSE) run --rm migrate
 
-# Destructive: removes the postgres-data volume and all local campaign data.
+# Destructive: removes Compose volumes (including postgres-data) and all local campaign data.
 docker-reset-db:
 	$(COMPOSE) down -v
