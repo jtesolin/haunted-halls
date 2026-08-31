@@ -156,7 +156,7 @@ The frontend repository owns the Compose lifecycle; each target is a thin wrappe
 | `make debug-down` | `docker compose -f docker-compose.yml -f docker-compose.debug.yml down` |
 | `make debug-logs` | `docker compose -f docker-compose.yml -f docker-compose.debug.yml logs -f` |
 | `make debug-config` | `docker compose -f docker-compose.yml -f docker-compose.debug.yml config` |
-| `make docker-reset-db` | `docker compose down -v` — **destructive**, deletes the PostgreSQL volume |
+| `make docker-reset-db` | `docker compose down -v` — **destructive**, deletes all Compose volumes (including `postgres-data`) |
 
 `make docker-down` and `make debug-down` never remove volumes; only `make docker-reset-db` does.
 

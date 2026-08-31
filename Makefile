@@ -12,7 +12,7 @@ help:
 	@echo "Local app:     install, dev, build, start, lint, typecheck, test, clean"
 	@echo "Compose stack: docker-build, docker-up, docker-down, docker-logs, docker-ps, docker-config, docker-migrate"
 	@echo "Debug stack:   debug-build, debug-up, debug-down, debug-logs, debug-config"
-	@echo "Destructive:   docker-reset-db (deletes the persistent PostgreSQL volume)"
+	@echo "Destructive:   docker-reset-db (deletes Compose volumes, including postgres-data)"
 
 install:
 	npm install
