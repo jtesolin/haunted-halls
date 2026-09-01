@@ -1,7 +1,11 @@
 variable "project_id" {
   description = "Existing Google Cloud project ID for Haunted Halls infrastructure."
   type        = string
-  default     = ""
+
+  validation {
+    condition     = length(trimspace(var.project_id)) > 0
+    error_message = "project_id must be provided."
+  }
 }
 
 variable "region" {
@@ -13,7 +17,11 @@ variable "region" {
 variable "state_bucket_name" {
   description = "Globally unique GCS bucket name used for remote Terraform state."
   type        = string
-  default     = "haunted-halls-tf-state"
+
+  validation {
+    condition     = length(trimspace(var.state_bucket_name)) > 0
+    error_message = "state_bucket_name must be provided."
+  }
 }
 
 variable "billing_account_id" {
@@ -26,6 +34,11 @@ variable "budget_amount" {
   description = "Monthly project budget in USD for the Haunted Halls cost guardrail."
   type        = string
   default     = "20"
+
+  validation {
+    condition     = length(trimspace(var.budget_amount)) > 0 && can(parseint(trimspace(var.budget_amount), 10)) && parseint(trimspace(var.budget_amount), 10) > 0
+    error_message = "budget_amount must be a positive integer value in USD per month."
+  }
 }
 
 variable "github_owner" {

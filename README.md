@@ -220,15 +220,19 @@ D4A creates a regional Artifact Registry repository in `us-east1` named `haunted
 
 ### Runtime and deployment identities
 
-Terraform creates the following service accounts:
+Terraform creates the following service-account account IDs:
 
-- `haunted-halls-frontend-runtime`
-- `haunted-halls-engine-runtime`
-- `haunted-halls-migration-runtime`
-- `haunted-halls-frontend-deployer`
-- `haunted-halls-engine-deployer`
+- runtime service accounts:
+  - `hh-frontend-runtime`
+  - `hh-engine-runtime`
+  - `hh-migration-runtime`
+- deployment service accounts:
+  - `hh-frontend-deployer`
+  - `hh-engine-deployer`
 
-The runtime identities are separated to support future Cloud Run workloads. The deployer identities are separate per repository and are bound to GitHub OIDC identity federation rather than JSON keys.
+These are the actual Google Cloud account IDs used by Terraform. Service account email addresses are created as `<account-id>@<project-id>.iam.gserviceaccount.com`.
+
+The runtime identities are separated to support future Cloud Run workloads. The deployer identities are separate per repository and are bound to GitHub OIDC identity federation rather than JSON keys. There is intentionally no separate migration deployer service account in this D4A design.
 
 ### GitHub Workload Identity Federation
 

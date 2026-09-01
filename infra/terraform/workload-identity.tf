@@ -4,6 +4,11 @@ resource "google_iam_workload_identity_pool" "github_actions" {
   description               = "OIDC federation for GitHub Actions deployments to the Haunted Halls project."
 }
 
+locals {
+  frontend_repository = "${var.github_owner}/${var.frontend_repo_name}"
+  engine_repository   = "${var.github_owner}/${var.engine_repo_name}"
+}
+
 resource "google_iam_workload_identity_pool_provider" "github" {
   workload_identity_pool_id          = google_iam_workload_identity_pool.github_actions.workload_identity_pool_id
   workload_identity_pool_provider_id = "github"
@@ -25,19 +30,19 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     issuer_uri = "https://token.actions.githubusercontent.com"
   }
 
-  attribute_condition = "attribute.repository_owner == \"jtesolin\" && (attribute.repository == \"jtesolin/haunted-halls\" || attribute.repository == \"jtesolin/haunted-halls-engine\") && attribute.ref == \"refs/heads/main\""
+  attribute_condition = "attribute.repository_owner == \"${var.github_owner}\" && (attribute.repository == \"${local.frontend_repository}\" || attribute.repository == \"${local.engine_repository}\") && attribute.ref == \"refs/heads/main\""
 }
 
 resource "google_service_account_iam_member" "frontend_repository_federation" {
   service_account_id = google_service_account.frontend_deployer.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github_actions.name}/attribute.repository/jtesolin/haunted-halls"
+  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github_actions.name}/attribute.repository/${local.frontend_repository}"
 }
 
 resource "google_service_account_iam_member" "engine_repository_federation" {
   service_account_id = google_service_account.engine_deployer.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github_actions.name}/attribute.repository/jtesolin/haunted-halls-engine"
+  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github_actions.name}/attribute.repository/${local.engine_repository}"
 }
 
 output "github_actions_workload_identity_pool_name" {

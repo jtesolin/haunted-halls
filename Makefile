@@ -103,7 +103,9 @@ tf-bootstrap-output:
 
 # The main Terraform state uses a GCS backend. Provide the bucket name and prefix as needed.
 tf-init:
-	terraform -chdir=$(TERRAFORM_DIR) init -backend-config="bucket=$${TF_STATE_BUCKET:-<state-bucket>}" -backend-config="prefix=haunted-halls"
+	@test -n "$${TF_STATE_BUCKET}" || \
+		(echo "ERROR: TF_STATE_BUCKET is required. Set it to the Terraform state bucket name."; exit 1)
+	terraform -chdir=$(TERRAFORM_DIR) init -backend-config="bucket=$${TF_STATE_BUCKET}" -backend-config="prefix=haunted-halls"
 
 tf-plan:
 	terraform -chdir=$(TERRAFORM_DIR) plan
