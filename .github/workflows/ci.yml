@@ -108,6 +108,34 @@ jobs:
       - name: Build application
         run: npm run build
 
+  terraform:
+    name: Frontend / Terraform Validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Terraform format check
+        run: terraform -chdir=infra/terraform/bootstrap fmt -check -recursive && terraform -chdir=infra/terraform fmt -check -recursive
+
+      - name: Terraform bootstrap static init
+        run: terraform -chdir=infra/terraform/bootstrap init -backend=false
+
+      - name: Terraform bootstrap validate
+        run: terraform -chdir=infra/terraform/bootstrap validate
+
+      - name: Terraform main static init
+        run: terraform -chdir=infra/terraform init -backend=false
+
+      - name: Terraform main validate
+        run: terraform -chdir=infra/terraform validate
+
   docker-build:
     name: Frontend / Docker Build
     runs-on: ubuntu-latest

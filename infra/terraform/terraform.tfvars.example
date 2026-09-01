@@ -1,0 +1,10 @@
+# Copy this file to terraform.tfvars and replace the placeholders before running Terraform.
+# This file is intentionally committed; real values remain local and uncommitted.
+
+project_id = "your-gcp-project-id"
+region = "us-east1"
+billing_account_id = "000000-000000-000000"
+budget_amount = "20"
+github_owner = "jtesolin"
+frontend_repo_name = "haunted-halls"
+engine_repo_name = "haunted-halls-engine"

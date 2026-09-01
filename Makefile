@@ -1,9 +1,12 @@
 .PHONY: help install dev build start lint typecheck test clean \
 	docker-build docker-up docker-down docker-logs docker-ps docker-config docker-migrate \
 	debug-build debug-up debug-down debug-logs debug-config \
-	docker-reset-db
+	docker-reset-db tf-fmt tf-validate tf-init tf-plan tf-apply tf-output \
+	tf-bootstrap-init tf-bootstrap-apply tf-bootstrap-output
 
 PORT ?= 3000
+TERRAFORM_DIR := infra/terraform
+TERRAFORM_BOOTSTRAP_DIR := infra/terraform/bootstrap
 
 COMPOSE = docker compose
 DEBUG_COMPOSE = docker compose -f docker-compose.yml -f docker-compose.debug.yml
@@ -18,6 +21,19 @@ help:
 	@echo "  typecheck         Run TypeScript type checking"
 	@echo "  test              Run Vitest test suite"
 	@echo "  clean             Remove .next build directory"
+	@echo ""
+	@echo "Terraform bootstrap (creates remote state bucket):"
+	@echo "  tf-bootstrap-init     terraform init in bootstrap configuration"
+	@echo "  tf-bootstrap-apply    terraform apply in bootstrap configuration"
+	@echo "  tf-bootstrap-output   terraform output in bootstrap configuration"
+	@echo ""
+	@echo "Main Terraform (GCP foundation):"
+	@echo "  tf-fmt              terraform fmt -check -recursive"
+	@echo "  tf-validate         terraform init -backend=false && terraform validate"
+	@echo "  tf-init             terraform init with GCS backend (requires bucket name)"
+	@echo "  tf-plan             terraform plan"
+	@echo "  tf-apply            terraform apply"
+	@echo "  tf-output           terraform output"
 	@echo ""
 	@echo "Docker Compose Stack (includes PostgreSQL, engine, frontend):"
 	@echo "  docker-build      Build Compose application images"
@@ -65,6 +81,40 @@ clean:
 
 test:
 	npm run test
+
+# Terraform: bootstrap creates the remote state bucket; main stack manages GCP resources.
+tf-fmt:
+	terraform -chdir=$(TERRAFORM_BOOTSTRAP_DIR) fmt -check -recursive && terraform -chdir=$(TERRAFORM_DIR) fmt -check -recursive
+
+# Static validation is credential-free: no GCP auth or apply is required.
+tf-validate:
+	terraform -chdir=$(TERRAFORM_BOOTSTRAP_DIR) init -backend=false && terraform -chdir=$(TERRAFORM_BOOTSTRAP_DIR) validate && \
+	terraform -chdir=$(TERRAFORM_DIR) init -backend=false && terraform -chdir=$(TERRAFORM_DIR) validate
+
+# Bootstrap flow: create the remote state bucket before configuring the main backend.
+tf-bootstrap-init:
+	terraform -chdir=$(TERRAFORM_BOOTSTRAP_DIR) init
+
+tf-bootstrap-apply:
+	terraform -chdir=$(TERRAFORM_BOOTSTRAP_DIR) apply
+
+tf-bootstrap-output:
+	terraform -chdir=$(TERRAFORM_BOOTSTRAP_DIR) output
+
+# The main Terraform state uses a GCS backend. Provide the bucket name and prefix as needed.
+tf-init:
+	@test -n "$${TF_STATE_BUCKET}" || \
+		(echo "ERROR: TF_STATE_BUCKET is required. Set it to the Terraform state bucket name."; exit 1)
+	terraform -chdir=$(TERRAFORM_DIR) init -backend-config="bucket=$${TF_STATE_BUCKET}" -backend-config="prefix=haunted-halls"
+
+tf-plan:
+	terraform -chdir=$(TERRAFORM_DIR) plan
+
+tf-apply:
+	terraform -chdir=$(TERRAFORM_DIR) apply
+
+tf-output:
+	terraform -chdir=$(TERRAFORM_DIR) output
 
 docker-build:
 	$(COMPOSE) build

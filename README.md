@@ -94,6 +94,191 @@ If you run the app on a different port, update `NEXTAUTH_URL` and register the m
 - `npm run lint`
 - `npm run build`
 
+## Infrastructure and D4A Foundation
+
+Haunted Halls now includes the first Terraform foundation for its planned Google Cloud deployment. This repository owns the shared GCP infrastructure for the browser-facing BFF and the internal engine deployment lifecycle. The D4A scope establishes a safe, reviewable control plane without creating billable Cloud Run or Cloud SQL resources yet.
+
+### D4A architecture
+
+```text
+GitHub Actions
+     |
+     | OIDC
+     v
+Workload Identity Pool
+     |
+     +--> frontend deployer
+     |       ^
+     |       |
+     |   haunted-halls repo
+     |
+     +--> engine deployer
+             ^
+             |
+       haunted-halls-engine repo
+```
+
+The eventual runtime architecture is:
+
+```text
+Internet
+   |
+   v
+Cloud Run — Next.js BFF
+   |
+   | authenticated service-to-service request
+   v
+Cloud Run — FastAPI Engine
+   |
+   v
+Cloud SQL — PostgreSQL
+```
+
+D4A establishes the shared foundation for that design without creating the runtime services or the database.
+
+### Local tools required
+
+- Terraform 1.9.x
+- Google Cloud CLI (`gcloud`)
+- Application Default Credentials configured for a developer account
+- An existing Google Cloud project with billing enabled
+
+### GCP project and billing prerequisites
+
+Before running Terraform locally, the developer must already have:
+
+- an existing Google Cloud project ID
+- a billing account that can be used for a budget guardrail
+- permission sufficient to create GCS state buckets and basic Terraform-managed resources in that project
+
+Set the target project with:
+
+```bash
+gcloud config set project <project-id>
+gcloud auth application-default login
+```
+
+Never use a downloaded JSON service-account key as the default local workflow.
+
+### Terraform state bootstrap
+
+Terraform remote state is stored in a Google Cloud Storage bucket. Because Terraform cannot create the bucket that it already expects to use as its backend, run the bootstrap configuration first:
+
+```bash
+cd infra/terraform/bootstrap
+terraform init
+terraform apply
+```
+
+Use the output bucket name in the main configuration:
+
+```bash
+cd ../
+terraform init \
+  -backend-config="bucket=<state-bucket>" \
+  -backend-config="prefix=haunted-halls"
+```
+
+The bootstrap configuration creates a bucket with:
+
+- uniform bucket-level access enabled
+- public access prevention enforced
+- versioning enabled
+- force_destroy disabled
+
+### Main Terraform workflow
+
+The main stack lives under `infra/terraform` and manages shared foundation resources. Start from the example variables file:
+
+```bash
+cp infra/terraform/terraform.tfvars.example infra/terraform/terraform.tfvars
+```
+
+Fill in placeholders such as:
+
+```hcl
+project_id = "your-project-id"
+region = "us-east1"
+billing_account_id = "000000-000000-000000"
+```
+
+The main configuration does not read the state bucket name from `terraform.tfvars`. The bootstrap configuration's `state_bucket_name` variable creates the bucket; the main configuration receives that already-created bucket through backend initialization instead:
+
+```bash
+TF_STATE_BUCKET=<actual-state-bucket> make tf-init
+```
+
+or equivalently:
+
+```bash
+terraform -chdir=infra/terraform init \
+  -backend-config="bucket=<actual-state-bucket>" \
+  -backend-config="prefix=haunted-halls"
+```
+
+You can retrieve the bucket name created by bootstrap with:
+
+```bash
+terraform -chdir=infra/terraform/bootstrap \
+  output -raw terraform_state_bucket_name
+```
+
+Then run:
+
+```bash
+make tf-fmt
+make tf-validate
+make tf-plan
+make tf-apply
+```
+
+The configuration intentionally does not deploy the app yet; it only provisions the shared platform foundation.
+The GCP service account IDs used by Terraform are intentionally short to meet Google Cloud account-id length limits, while each service account display name remains descriptive for future runtime and deployment ownership.
+### Artifact Registry
+
+D4A creates a regional Artifact Registry repository in `us-east1` named `haunted-halls`. The repository is suitable for future frontend and engine Docker images, and Terraform exposes the repository path for later CI/CD automation.
+
+### Runtime and deployment identities
+
+Terraform creates the following service-account account IDs:
+
+- runtime service accounts:
+  - `hh-frontend-runtime`
+  - `hh-engine-runtime`
+  - `hh-migration-runtime`
+- deployment service accounts:
+  - `hh-frontend-deployer`
+  - `hh-engine-deployer`
+
+These are the actual Google Cloud account IDs used by Terraform. Service account email addresses are created as `<account-id>@<project-id>.iam.gserviceaccount.com`.
+
+The runtime identities are separated to support future Cloud Run workloads. The deployer identities are separate per repository and are bound to GitHub OIDC identity federation rather than JSON keys. There is intentionally no separate migration deployer service account in this D4A design.
+
+### GitHub Workload Identity Federation
+
+The Terraform configuration creates a GitHub Actions workload identity pool and OIDC provider using `https://token.actions.githubusercontent.com`. The trust is constrained to the trusted GitHub owner namespace and repository/main-branch context:
+
+- `jtesolin/haunted-halls` -> frontend deployer
+- `jtesolin/haunted-halls-engine` -> engine deployer
+
+The trust model deliberately does not allow one repo to impersonate the other repo's deployment identity.
+
+### Budget guardrail
+
+D4A defines a project budget with a default monthly cap of `$20 USD` plus 50%, 90%, and 100% threshold alerts. The resource is managed as a billing budget and is skipped only when the billing account lacks permission or the necessary account-level setup is unavailable.
+
+### Security expectations
+
+This D4A foundation follows the security expectations for the project:
+
+- no JSON service-account keys committed
+- GitHub uses OIDC / Workload Identity Federation
+- separate runtime identities per workload type
+- separate frontend and engine deployment identities
+- GCS Terraform state remains out of Git
+- real `.tfvars` remains uncommitted
+- no application Cloud Run / Cloud SQL resources yet
+
 ## CI
 
 GitHub Actions runs the frontend validation workflow on pull requests targeting `main`, on pushes to `main`, and manually via `workflow_dispatch`.
@@ -106,6 +291,14 @@ The workflow validates the repository commands used in local development:
 - `npm run build`
 
 CI also builds the production Docker image as `Frontend / Docker Build`; it does not push the image.
+
+The workflow now includes a credential-free Terraform validation job that runs:
+
+- `terraform fmt -check -recursive`
+- `terraform init -backend=false`
+- `terraform validate`
+
+for both the bootstrap and main Terraform stacks.
 
 ## Local Docker Stack
 

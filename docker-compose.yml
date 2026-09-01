@@ -4,7 +4,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-haunted_halls}
       POSTGRES_USER: ${POSTGRES_USER:-haunted_halls}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-haunted_halls_local}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in haunted-halls/.env}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -24,7 +24,7 @@ services:
       - path: ../haunted-halls-engine/.env
         required: false
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-haunted_halls}:${POSTGRES_PASSWORD:-haunted_halls_local}@postgres:5432/${POSTGRES_DB:-haunted_halls}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-haunted_halls}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in haunted-halls/.env}@postgres:5432/${POSTGRES_DB:-haunted_halls}
       INTERNAL_ENGINE_SERVICE_TOKEN: ${INTERNAL_ENGINE_SERVICE_TOKEN:-local-compose-token-change-me-00000000000000000000000000000000000000}
     depends_on:
       postgres:
@@ -44,7 +44,7 @@ services:
         required: false
     # Values below are Compose-specific and intentionally override the engine .env.
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-haunted_halls}:${POSTGRES_PASSWORD:-haunted_halls_local}@postgres:5432/${POSTGRES_DB:-haunted_halls}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-haunted_halls}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in haunted-halls/.env}@postgres:5432/${POSTGRES_DB:-haunted_halls}
       INTERNAL_ENGINE_SERVICE_TOKEN: ${INTERNAL_ENGINE_SERVICE_TOKEN:-local-compose-token-change-me-00000000000000000000000000000000000000}
     depends_on:
       migrate:
