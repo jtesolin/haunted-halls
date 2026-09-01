@@ -359,12 +359,14 @@ Runtime identities receive `roles/secretmanager.secretAccessor` on only the secr
 
 ### Cloud SQL connectivity
 
-Cloud SQL enforces Cloud SQL Auth Proxy / Cloud SQL connector-only access:
+Cloud SQL intentionally has a public IPv4 address, restricted to Cloud SQL Auth Proxy / connector-only traffic:
 
-- `ipv4_enabled = true` (public IP exists for connector/proxy use only)
-- `connector_enforcement = "REQUIRED"` — direct PostgreSQL connections are rejected; only the Cloud SQL Auth Proxy or connector-based connections are accepted
-- no authorized public networks
+- `ipv4_enabled = true` — the instance has a public IP; this is the intended initial connectivity design, not an oversight
+- `connector_enforcement = "REQUIRED"` — direct PostgreSQL connections over that public IP are rejected; only the Cloud SQL Auth Proxy or connector-based connections are accepted
+- zero `authorized_networks` entries are configured, so no IP range is separately allowlisted for direct access
 - no direct PostgreSQL port exposure
+
+Private IP, Private Service Access, VPC connectors, PSC, or NAT are deliberately out of scope for D4B/D4C and may be evaluated later; introducing them now would materially expand the current staged architecture.
 
 This is compatible with the planned D4C Cloud Run Unix-socket Cloud SQL integration, which connects through the Cloud SQL Auth Proxy sidecar/connector rather than a direct TCP connection.
 
@@ -372,8 +374,9 @@ This is compatible with the planned D4C Cloud Run Unix-socket Cloud SQL integrat
 
 D4B requires:
 
-- **Terraform >= 1.10.0** for ephemeral resources
+- **Terraform >= 1.11.0** for write-only arguments (`password_wo`, `password_wo_version`, `secret_data_wo`, `secret_data_wo_version`)
 - **Google provider ~> 7.x** for reliable write-only secret support
+- **Random provider >= 3.7.0, < 4.0.0** — the `ephemeral "random_password"` resource requires Random provider 3.7.0 or newer
 
 CI updated to Terraform 1.11.0; local `.terraform.lock.hcl` locks the specific Google provider version. Run `terraform init -upgrade` to sync providers after a version constraint change.
 

@@ -21,6 +21,9 @@ resource "google_sql_database_instance" "postgres" {
       enabled = false
     }
 
+    # Public IPv4 is intentional for the initial Cloud Run/Cloud SQL connector path.
+    # connector_enforcement = "REQUIRED" above rejects direct database connections.
+    # No authorized_networks blocks are configured, so no IP range is allowlisted.
     ip_configuration {
       ipv4_enabled    = true
       private_network = null

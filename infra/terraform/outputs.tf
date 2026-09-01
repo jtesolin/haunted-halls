@@ -23,26 +23,26 @@ output "cloud_sql_database_username" {
 }
 
 output "secret_database_url_id" {
-  description = "Secret Manager secret ID for database URL (secret value not output)"
-  value       = google_secret_manager_secret.database_url.id
+  description = "Secret Manager secret_id for database URL (secret value not output)"
+  value       = google_secret_manager_secret.database_url.secret_id
 }
 
 output "secret_internal_service_token_id" {
-  description = "Secret Manager secret ID for internal service token (secret value not output)"
-  value       = google_secret_manager_secret.internal_service_token.id
+  description = "Secret Manager secret_id for internal service token (secret value not output)"
+  value       = google_secret_manager_secret.internal_service_token.secret_id
 }
 
 output "secret_nextauth_secret_id" {
-  description = "Secret Manager secret ID for NextAuth secret (secret value not output)"
-  value       = google_secret_manager_secret.nextauth_secret.id
+  description = "Secret Manager secret_id for NextAuth secret (secret value not output)"
+  value       = google_secret_manager_secret.nextauth_secret.secret_id
 }
 
 output "secret_openai_api_key_id" {
-  description = "Secret Manager secret ID for OpenAI API key (operator will populate)"
-  value       = google_secret_manager_secret.openai_api_key.id
+  description = "Secret Manager secret_id for OpenAI API key (operator will populate)"
+  value       = google_secret_manager_secret.openai_api_key.secret_id
 }
 
 output "secret_google_client_secret_id" {
-  description = "Secret Manager secret ID for Google client secret (operator will populate)"
-  value       = google_secret_manager_secret.google_client_secret.id
+  description = "Secret Manager secret_id for Google client secret (operator will populate)"
+  value       = google_secret_manager_secret.google_client_secret.secret_id
 }
