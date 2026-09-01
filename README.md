@@ -279,6 +279,120 @@ This D4A foundation follows the security expectations for the project:
 - real `.tfvars` remains uncommitted
 - no application Cloud Run / Cloud SQL resources yet
 
+## D4B: Cloud SQL and Secret Manager
+
+D4B adds production-target infrastructure for database and secrets without deploying the runtime services yet.
+
+### Database
+
+D4B creates a Cloud SQL PostgreSQL 16 instance named `haunted-halls-postgres` configured for low-cost development:
+
+- **tier**: `db-f1-micro` (smallest shared-core)
+- **availability**: ZONAL (not HA)
+- **storage**: 10 GB SSD with autoresize
+- **backups**: disabled for development; future production will enable PITR
+- **deletion protection**: disabled for cost management; intentional for development
+
+The database `haunted_halls` is managed by Terraform; application schema tables are owned by Alembic migrations, preserving the single source of truth for schema versioning:
+
+```
+Cloud SQL database (Terraform)
+       ↓
+Alembic migration job
+       ↓
+application schema (tables, constraints, etc.)
+```
+
+A PostgreSQL application user `haunted_halls_app` is created with an ephemeral-generated strong password that does not enter Terraform state.
+
+### Secret Manager
+
+D4B creates Secret Manager secrets for:
+
+#### Terraform-generated secrets (written only, not stored in state)
+
+- **hh-database-url** — SQLAlchemy PostgreSQL connection string with embedded application password
+- **hh-internal-engine-service-token** — high-entropy bearer token for frontend/engine authentication
+- **hh-nextauth-secret** — NextAuth session encryption key
+
+These are generated during `terraform apply` using ephemeral random resources and write-only secret data, so their values never appear in:
+
+- Terraform state
+- Terraform plan files
+- console output
+- logs
+
+Rotate them by incrementing the corresponding version variable in `terraform.tfvars`:
+
+```hcl
+database_password_version = 1  # increment to rotate
+internal_service_token_version = 1  # increment to rotate
+nextauth_secret_version = 1  # increment to rotate
+```
+
+Each version variable feeds both the ephemeral value's `password_wo_version` / `secret_data_wo_version` argument, which is what actually triggers the Google provider to write a new value. Incrementing `database_password_version` regenerates the ephemeral database password, updates the Cloud SQL user's password, and writes a new `hh-database-url` secret version (the connection string embeds the same password). Incrementing `internal_service_token_version` or `nextauth_secret_version` regenerates and writes only that corresponding secret. Leaving a version unchanged leaves the corresponding secret untouched.
+
+#### Operator-populated secrets (containers only, no Terraform data)
+
+- **hh-openai-api-key** — OpenAI API credential (populated by operator)
+- **hh-google-client-secret** — Google OAuth client secret (populated by operator)
+
+These are created as empty Secret Manager containers during Terraform apply. The operator populates them securely after infrastructure is ready:
+
+```bash
+# Example: populate OpenAI API key
+read -s OPENAI_SECRET
+printf '%s' "$OPENAI_SECRET" | \
+  gcloud secrets versions add hh-openai-api-key --data-file=-
+unset OPENAI_SECRET
+```
+
+### Secret-level IAM
+
+Runtime identities receive `roles/secretmanager.secretAccessor` on only the secrets they need:
+
+| Runtime | Secrets |
+|---------|---------|
+| `hh-frontend-runtime` | hh-internal-engine-service-token, hh-nextauth-secret, hh-google-client-secret |
+| `hh-engine-runtime` | hh-database-url, hh-internal-engine-service-token, hh-openai-api-key |
+| `hh-migration-runtime` | hh-database-url |
+
+### Cloud SQL connectivity
+
+Cloud SQL intentionally has a public IPv4 address, restricted to Cloud SQL Auth Proxy / connector-only traffic:
+
+- `ipv4_enabled = true` — the instance has a public IP; this is the intended initial connectivity design, not an oversight
+- `connector_enforcement = "REQUIRED"` — direct PostgreSQL connections over that public IP are rejected; only the Cloud SQL Auth Proxy or connector-based connections are accepted
+- zero `authorized_networks` entries are configured, so no IP range is separately allowlisted for direct access
+- no direct PostgreSQL port exposure
+
+Private IP, Private Service Access, VPC connectors, PSC, or NAT are deliberately out of scope for D4B/D4C and may be evaluated later; introducing them now would materially expand the current staged architecture.
+
+This is compatible with the planned D4C Cloud Run Unix-socket Cloud SQL integration, which connects through the Cloud SQL Auth Proxy sidecar/connector rather than a direct TCP connection.
+
+### Terraform version and provider upgrade
+
+D4B requires:
+
+- **Terraform >= 1.11.0** for write-only arguments (`password_wo`, `password_wo_version`, `secret_data_wo`, `secret_data_wo_version`)
+- **Google provider ~> 7.x** for reliable write-only secret support
+- **Random provider >= 3.7.0, < 4.0.0** — the `ephemeral "random_password"` resource requires Random provider 3.7.0 or newer
+
+CI updated to Terraform 1.11.0; local `.terraform.lock.hcl` locks the specific Google provider version. Run `terraform init -upgrade` to sync providers after a version constraint change.
+
+The `google` provider explicitly sets `user_project_override = true` and `billing_project = var.project_id`, so API usage (including APIs like Billing Budgets that require an explicit quota project) is billed/quota-charged to the configured GCP project rather than relying on ambient Application Default Credentials configuration.
+
+### No runtime deployment yet
+
+D4B does **not** create or deploy:
+
+- Cloud Run services
+- public application URLs
+- container images
+- managed Cloud SQL connectors
+
+Those are D4C responsibilities. D4B establishes the infrastructure foundation that D4C will consume.
+
 ## CI
 
 GitHub Actions runs the frontend validation workflow on pull requests targeting `main`, on pushes to `main`, and manually via `workflow_dispatch`.

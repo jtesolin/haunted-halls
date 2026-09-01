@@ -8,3 +8,12 @@ budget_amount = "20"
 github_owner = "jtesolin"
 frontend_repo_name = "haunted-halls"
 engine_repo_name = "haunted-halls-engine"
+
+# D4B: Cloud SQL and Secret Manager configuration
+# Increment version numbers to rotate generated credentials
+cloud_sql_tier           = "db-f1-micro"
+cloud_sql_disk_size      = 10
+database_password_version = 1
+internal_service_token_version = 1
+nextauth_secret_version = 1
+
