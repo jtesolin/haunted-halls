@@ -380,6 +380,8 @@ D4B requires:
 
 CI updated to Terraform 1.11.0; local `.terraform.lock.hcl` locks the specific Google provider version. Run `terraform init -upgrade` to sync providers after a version constraint change.
 
+The `google` provider explicitly sets `user_project_override = true` and `billing_project = var.project_id`, so API usage (including APIs like Billing Budgets that require an explicit quota project) is billed/quota-charged to the configured GCP project rather than relying on ambient Application Default Credentials configuration.
+
 ### No runtime deployment yet
 
 D4B does **not** create or deploy:
