@@ -2,6 +2,10 @@ resource "google_iam_workload_identity_pool" "github_actions" {
   workload_identity_pool_id = "github-actions"
   display_name              = "GitHub Actions Pool"
   description               = "OIDC federation for GitHub Actions deployments to the Haunted Halls project."
+
+  depends_on = [
+    google_project_service.iam,
+  ]
 }
 
 locals {

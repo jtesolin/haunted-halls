@@ -200,7 +200,27 @@ Fill in placeholders such as:
 project_id = "your-project-id"
 region = "us-east1"
 billing_account_id = "000000-000000-000000"
-state_bucket_name = "your-unique-haunted-halls-state-bucket"
+```
+
+The main configuration does not read the state bucket name from `terraform.tfvars`. The bootstrap configuration's `state_bucket_name` variable creates the bucket; the main configuration receives that already-created bucket through backend initialization instead:
+
+```bash
+TF_STATE_BUCKET=<actual-state-bucket> make tf-init
+```
+
+or equivalently:
+
+```bash
+terraform -chdir=infra/terraform init \
+  -backend-config="bucket=<actual-state-bucket>" \
+  -backend-config="prefix=haunted-halls"
+```
+
+You can retrieve the bucket name created by bootstrap with:
+
+```bash
+terraform -chdir=infra/terraform/bootstrap \
+  output -raw terraform_state_bucket_name
 ```
 
 Then run:

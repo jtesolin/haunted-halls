@@ -14,16 +14,6 @@ variable "region" {
   default     = "us-east1"
 }
 
-variable "state_bucket_name" {
-  description = "Globally unique GCS bucket name used for remote Terraform state."
-  type        = string
-
-  validation {
-    condition     = length(trimspace(var.state_bucket_name)) > 0
-    error_message = "state_bucket_name must be provided."
-  }
-}
-
 variable "billing_account_id" {
   description = "Billing account ID for the project budget guardrail. Leave blank to skip budget creation when account access is unavailable."
   type        = string
