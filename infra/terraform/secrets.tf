@@ -22,6 +22,8 @@ resource "google_secret_manager_secret" "database_url" {
   replication {
     auto {}
   }
+
+  depends_on = [google_project_service.secret_manager]
 }
 
 # Construct DATABASE_URL using ephemeral password and Cloud SQL connection name
@@ -32,8 +34,9 @@ locals {
 
 # Create initial version of DATABASE_URL with ephemeral write-only data
 resource "google_secret_manager_secret_version" "database_url_initial" {
-  secret         = google_secret_manager_secret.database_url.id
-  secret_data_wo = local.database_url_value
+  secret                 = google_secret_manager_secret.database_url.id
+  secret_data_wo         = local.database_url_value
+  secret_data_wo_version = var.database_password_version
 }
 
 # Internal service token secret (used by frontend and engine for mutual auth)
@@ -43,12 +46,15 @@ resource "google_secret_manager_secret" "internal_service_token" {
   replication {
     auto {}
   }
+
+  depends_on = [google_project_service.secret_manager]
 }
 
 # Create initial version with ephemeral write-only data
 resource "google_secret_manager_secret_version" "internal_service_token_initial" {
-  secret         = google_secret_manager_secret.internal_service_token.id
-  secret_data_wo = ephemeral.random_password.internal_service_token.result
+  secret                 = google_secret_manager_secret.internal_service_token.id
+  secret_data_wo         = ephemeral.random_password.internal_service_token.result
+  secret_data_wo_version = var.internal_service_token_version
 }
 
 # NextAuth secret (used by frontend for session encryption)
@@ -58,12 +64,15 @@ resource "google_secret_manager_secret" "nextauth_secret" {
   replication {
     auto {}
   }
+
+  depends_on = [google_project_service.secret_manager]
 }
 
 # Create initial version with ephemeral write-only data
 resource "google_secret_manager_secret_version" "nextauth_secret_initial" {
-  secret         = google_secret_manager_secret.nextauth_secret.id
-  secret_data_wo = ephemeral.random_password.nextauth_secret.result
+  secret                 = google_secret_manager_secret.nextauth_secret.id
+  secret_data_wo         = ephemeral.random_password.nextauth_secret.result
+  secret_data_wo_version = var.nextauth_secret_version
 }
 
 # OpenAI API key secret (operator-supplied, not managed by Terraform data)
@@ -73,6 +82,8 @@ resource "google_secret_manager_secret" "openai_api_key" {
   replication {
     auto {}
   }
+
+  depends_on = [google_project_service.secret_manager]
 }
 
 # Google OAuth client secret (operator-supplied, not managed by Terraform data)
@@ -82,4 +93,6 @@ resource "google_secret_manager_secret" "google_client_secret" {
   replication {
     auto {}
   }
+
+  depends_on = [google_project_service.secret_manager]
 }

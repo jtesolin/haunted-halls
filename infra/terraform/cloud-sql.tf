@@ -10,8 +10,9 @@ resource "google_sql_database_instance" "postgres" {
   deletion_protection = false
 
   settings {
-    tier              = var.cloud_sql_tier
-    availability_type = "ZONAL"
+    tier                  = var.cloud_sql_tier
+    availability_type     = "ZONAL"
+    connector_enforcement = "REQUIRED"
     location_preference {
       zone = "${var.region}-b"
     }
@@ -31,8 +32,7 @@ resource "google_sql_database_instance" "postgres" {
   }
 
   depends_on = [
-    google_service_account.engine_runtime,
-    google_service_account.migration_runtime
+    google_project_service.cloud_sql_admin
   ]
 }
 
@@ -56,5 +56,5 @@ resource "google_sql_user" "app" {
   name                = "haunted_halls_app"
   instance            = google_sql_database_instance.postgres.name
   password_wo         = ephemeral.random_password.db_password.result
-  password_wo_version = 1
+  password_wo_version = var.database_password_version
 }

@@ -330,7 +330,7 @@ internal_service_token_version = 1  # increment to rotate
 nextauth_secret_version = 1  # increment to rotate
 ```
 
-When a version increments, Terraform regenerates the ephemeral value and creates a new Secret Manager version.
+Each version variable feeds both the ephemeral value's `password_wo_version` / `secret_data_wo_version` argument, which is what actually triggers the Google provider to write a new value. Incrementing `database_password_version` regenerates the ephemeral database password, updates the Cloud SQL user's password, and writes a new `hh-database-url` secret version (the connection string embeds the same password). Incrementing `internal_service_token_version` or `nextauth_secret_version` regenerates and writes only that corresponding secret. Leaving a version unchanged leaves the corresponding secret untouched.
 
 #### Operator-populated secrets (containers only, no Terraform data)
 
@@ -359,14 +359,14 @@ Runtime identities receive `roles/secretmanager.secretAccessor` on only the secr
 
 ### Cloud SQL connectivity
 
-Cloud SQL is configured for Cloud SQL Auth Proxy / Cloud SQL connector access:
+Cloud SQL enforces Cloud SQL Auth Proxy / Cloud SQL connector-only access:
 
-- `ipv4_enabled = true`
+- `ipv4_enabled = true` (public IP exists for connector/proxy use only)
+- `connector_enforcement = "REQUIRED"` — direct PostgreSQL connections are rejected; only the Cloud SQL Auth Proxy or connector-based connections are accepted
 - no authorized public networks
 - no direct PostgreSQL port exposure
-- future: `enable_cloud_sql_connector_only = true` when provider fully supports it
 
-The intended D4C runtime will use Cloud Run's native Cloud SQL Unix-socket integration.
+This is compatible with the planned D4C Cloud Run Unix-socket Cloud SQL integration, which connects through the Cloud SQL Auth Proxy sidecar/connector rather than a direct TCP connection.
 
 ### Terraform version and provider upgrade
 
