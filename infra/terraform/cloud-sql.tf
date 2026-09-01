@@ -10,7 +10,10 @@ resource "google_sql_database_instance" "postgres" {
   deletion_protection = false
 
   settings {
-    tier                  = var.cloud_sql_tier
+    tier = var.cloud_sql_tier
+    # PostgreSQL 16 defaults to ENTERPRISE_PLUS when edition is omitted,
+    # but shared-core db-f1-micro requires ENTERPRISE.
+    edition               = "ENTERPRISE"
     availability_type     = "ZONAL"
     connector_enforcement = "REQUIRED"
     location_preference {
