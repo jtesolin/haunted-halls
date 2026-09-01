@@ -48,3 +48,33 @@ variable "engine_repo_name" {
   type        = string
   default     = "haunted-halls-engine"
 }
+
+variable "cloud_sql_tier" {
+  description = "Cloud SQL machine tier for the database instance."
+  type        = string
+  default     = "db-f1-micro"
+}
+
+variable "cloud_sql_disk_size" {
+  description = "Cloud SQL disk size in GB."
+  type        = number
+  default     = 10
+}
+
+variable "database_password_version" {
+  description = "Version for database password rotation. Increment to rotate credentials."
+  type        = number
+  default     = 1
+}
+
+variable "internal_service_token_version" {
+  description = "Version for internal service token rotation. Increment to rotate credentials."
+  type        = number
+  default     = 1
+}
+
+variable "nextauth_secret_version" {
+  description = "Version for NextAuth secret rotation. Increment to rotate credentials."
+  type        = number
+  default     = 1
+}
