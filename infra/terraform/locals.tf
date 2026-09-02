@@ -17,4 +17,15 @@ locals {
     frontend = "hh-frontend-deployer"
     engine   = "hh-engine-deployer"
   }
+
+  cloud_run_service_names = {
+    frontend = "haunted-halls-frontend"
+    engine   = "haunted-halls-engine"
+    migrate  = "haunted-halls-migrate"
+  }
+
+  cloud_run_urls = {
+    frontend = "https://${local.cloud_run_service_names.frontend}-${data.google_project.current.number}.${var.region}.run.app"
+    engine   = "https://${local.cloud_run_service_names.engine}-${data.google_project.current.number}.${var.region}.run.app"
+  }
 }

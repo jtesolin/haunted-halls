@@ -46,3 +46,28 @@ output "secret_google_client_secret_id" {
   description = "Secret Manager secret_id for Google client secret (operator will populate)"
   value       = google_secret_manager_secret.google_client_secret.secret_id
 }
+
+output "frontend_cloud_run_url" {
+  description = "Deterministic run.app URL for the public frontend service."
+  value       = local.cloud_run_urls.frontend
+}
+
+output "engine_cloud_run_url" {
+  description = "Deterministic run.app URL for the private engine service."
+  value       = local.cloud_run_urls.engine
+}
+
+output "frontend_cloud_run_service_name" {
+  description = "Cloud Run frontend service name."
+  value       = local.cloud_run_service_names.frontend
+}
+
+output "engine_cloud_run_service_name" {
+  description = "Cloud Run engine service name."
+  value       = local.cloud_run_service_names.engine
+}
+
+output "migration_cloud_run_job_name" {
+  description = "Cloud Run migration job name."
+  value       = local.cloud_run_service_names.migrate
+}

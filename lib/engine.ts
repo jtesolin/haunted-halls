@@ -1,12 +1,17 @@
 import { NextResponse } from "next/server";
+import { GoogleAuth } from "google-auth-library";
+import type { IdTokenClient } from "google-auth-library";
 
 const DEFAULT_ENGINE_BASE_URL = "http://localhost:8000";
 const MIN_INTERNAL_ENGINE_SERVICE_TOKEN_LENGTH = 64;
+const ENGINE_ID_TOKEN_AUDIENCE_ENV = "ENGINE_ID_TOKEN_AUDIENCE";
 export const INTERNAL_ENGINE_USER_ID_HEADER = "X-Haunted-Halls-User-Id";
 const INTERNAL_ENGINE_SERVICE_TOKEN_PLACEHOLDERS = new Set([
   "replace-with-internal-engine-token",
   "generate-with-openssl-do-not-commit",
 ]);
+let googleAuth: GoogleAuth | undefined;
+const idTokenClients = new Map<string, Promise<IdTokenClient>>();
 const PUBLIC_ENGINE_ERROR_CODES = new Set([
   "daily_request_limit",
   "daily_token_limit",
@@ -59,18 +64,61 @@ export function getInternalEngineServiceToken() {
   return token;
 }
 
-function createServiceHeaders(headers?: HeadersInit) {
+async function createCloudRunIdentityHeader() {
+  const audience = process.env[ENGINE_ID_TOKEN_AUDIENCE_ENV]?.trim();
+  if (!audience) {
+    return null;
+  }
+
+  if (!googleAuth) {
+    googleAuth = new GoogleAuth();
+  }
+
+  let clientPromise = idTokenClients.get(audience);
+  if (!clientPromise) {
+    clientPromise = (async () => googleAuth!.getIdTokenClient(audience))();
+    idTokenClients.set(audience, clientPromise);
+  }
+
+  try {
+    const client = await clientPromise;
+    const identityHeaders = await client.getRequestHeaders();
+    const authorization = identityHeaders.get("authorization");
+
+    if (authorization) {
+      return authorization;
+    }
+  } catch {
+    idTokenClients.delete(audience);
+  }
+
+  throw new InternalEngineConfigurationError(
+    `Cloud Run identity token could not be acquired for audience ${audience}`
+  );
+}
+
+async function createServiceHeaders(headers?: HeadersInit) {
   const requestHeaders = new Headers(headers);
   requestHeaders.delete("authorization");
+  requestHeaders.delete("x-serverless-authorization");
   requestHeaders.delete(INTERNAL_ENGINE_USER_ID_HEADER);
   requestHeaders.set("Authorization", `Bearer ${getInternalEngineServiceToken()}`);
+  const cloudRunAuthorization = await createCloudRunIdentityHeader();
+  if (cloudRunAuthorization) {
+    requestHeaders.set("X-Serverless-Authorization", cloudRunAuthorization);
+  }
   return requestHeaders;
 }
 
-function createPublicHeaders(headers?: HeadersInit) {
+async function createPublicHeaders(headers?: HeadersInit) {
   const requestHeaders = new Headers(headers);
   requestHeaders.delete("authorization");
+  requestHeaders.delete("x-serverless-authorization");
   requestHeaders.delete(INTERNAL_ENGINE_USER_ID_HEADER);
+  const cloudRunAuthorization = await createCloudRunIdentityHeader();
+  if (cloudRunAuthorization) {
+    requestHeaders.set("X-Serverless-Authorization", cloudRunAuthorization);
+  }
   return requestHeaders;
 }
 
@@ -82,8 +130,8 @@ function normalizeInternalUserId(internalUserId: string) {
   return normalized;
 }
 
-function createUserScopedHeaders(internalUserId: string, headers?: HeadersInit) {
-  const requestHeaders = createServiceHeaders(headers);
+async function createUserScopedHeaders(internalUserId: string, headers?: HeadersInit) {
+  const requestHeaders = await createServiceHeaders(headers);
   requestHeaders.set(INTERNAL_ENGINE_USER_ID_HEADER, normalizeInternalUserId(internalUserId));
   return requestHeaders;
 }
@@ -104,7 +152,7 @@ function resolveEngineUrl(input: string | URL) {
 export async function fetchEngineAsService(input: string | URL, init: RequestInit = {}) {
   return fetch(resolveEngineUrl(input), {
     ...init,
-    headers: createServiceHeaders(init.headers),
+    headers: await createServiceHeaders(init.headers),
   });
 }
 
@@ -115,14 +163,14 @@ export async function fetchEngineAsUser(
 ) {
   return fetch(resolveEngineUrl(input), {
     ...init,
-    headers: createUserScopedHeaders(internalUserId, init.headers),
+    headers: await createUserScopedHeaders(internalUserId, init.headers),
   });
 }
 
 export async function fetchEnginePublic(input: string | URL, init: RequestInit = {}) {
   return fetch(resolveEngineUrl(input), {
     ...init,
-    headers: createPublicHeaders(init.headers),
+    headers: await createPublicHeaders(init.headers),
   });
 }
 
