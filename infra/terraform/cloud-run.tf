@@ -1,4 +1,6 @@
 resource "google_cloud_run_v2_service" "engine" {
+  count = var.application_services_enabled ? 1 : 0
+
   name                = local.cloud_run_service_names.engine
   location            = var.region
   deletion_protection = false
@@ -94,9 +96,28 @@ resource "google_cloud_run_v2_service" "engine" {
   }
 
   depends_on = [google_project_service.cloud_run]
+
+  lifecycle {
+    precondition {
+      condition     = length(trimspace(var.frontend_image)) > 0
+      error_message = "frontend_image is required when application_services_enabled is true."
+    }
+
+    precondition {
+      condition     = length(trimspace(var.google_oauth_client_id)) > 0
+      error_message = "google_oauth_client_id is required when application_services_enabled is true."
+    }
+
+    precondition {
+      condition     = var.google_client_secret_version > 0 && floor(var.google_client_secret_version) == var.google_client_secret_version
+      error_message = "google_client_secret_version must be a positive integer when application_services_enabled is true."
+    }
+  }
 }
 
 resource "google_cloud_run_v2_service" "frontend" {
+  count = var.application_services_enabled ? 1 : 0
+
   name                = local.cloud_run_service_names.frontend
   location            = var.region
   deletion_protection = false
@@ -235,17 +256,21 @@ resource "google_cloud_run_v2_job" "migration" {
 }
 
 resource "google_cloud_run_v2_service_iam_member" "engine_frontend_invoker" {
+  count = var.application_services_enabled ? 1 : 0
+
   project  = var.project_id
   location = var.region
-  name     = google_cloud_run_v2_service.engine.name
+  name     = google_cloud_run_v2_service.engine[0].name
   role     = "roles/run.invoker"
   member   = "serviceAccount:${google_service_account.frontend_runtime.email}"
 }
 
 resource "google_cloud_run_v2_service_iam_member" "frontend_public_invoker" {
+  count = var.application_services_enabled ? 1 : 0
+
   project  = var.project_id
   location = var.region
-  name     = google_cloud_run_v2_service.frontend.name
+  name     = google_cloud_run_v2_service.frontend[0].name
   role     = "roles/run.invoker"
   member   = "allUsers"
 }

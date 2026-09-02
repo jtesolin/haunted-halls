@@ -79,14 +79,16 @@ variable "nextauth_secret_version" {
   default     = 1
 }
 
+variable "application_services_enabled" {
+  description = "Whether Terraform should manage the frontend and engine Cloud Run services and their IAM bindings. Keep false until the migration job has successfully executed."
+  type        = bool
+  default     = false
+}
+
 variable "frontend_image" {
   description = "Immutable container image reference for the frontend Cloud Run service."
   type        = string
-
-  validation {
-    condition     = length(trimspace(var.frontend_image)) > 0
-    error_message = "frontend_image must be provided."
-  }
+  default     = ""
 }
 
 variable "engine_image" {
@@ -102,11 +104,7 @@ variable "engine_image" {
 variable "google_oauth_client_id" {
   description = "Google OAuth Web Application client ID for the production frontend."
   type        = string
-
-  validation {
-    condition     = length(trimspace(var.google_oauth_client_id)) > 0
-    error_message = "google_oauth_client_id must be provided."
-  }
+  default     = ""
 }
 
 variable "openai_api_key_version" {
@@ -123,9 +121,10 @@ variable "openai_api_key_version" {
 variable "google_client_secret_version" {
   description = "Secret Manager version for the operator-managed Google OAuth client secret."
   type        = number
+  default     = 0
 
   validation {
-    condition     = var.google_client_secret_version > 0 && floor(var.google_client_secret_version) == var.google_client_secret_version
-    error_message = "google_client_secret_version must be a positive integer."
+    condition     = var.google_client_secret_version >= 0 && floor(var.google_client_secret_version) == var.google_client_secret_version
+    error_message = "google_client_secret_version must be zero or a positive integer."
   }
 }

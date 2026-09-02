@@ -397,7 +397,20 @@ The frontend BFF keeps the existing application bearer token in `Authorization`.
 
 The configured deterministic URLs are derived from the project number and region and are used for `NEXTAUTH_URL`, `ENGINE_BASE_URL`, and `ENGINE_ID_TOKEN_AUDIENCE`. Before a real apply, create the production Google OAuth Web Application using the Terraform output frontend URL and its `/api/auth/callback/google` callback, populate `hh-google-client-secret`, and provide immutable frontend/engine image references plus the operator-managed secret versions in ignored `terraform.tfvars`.
 
-The intended manual first-deployment order is: build and push reviewed immutable images, update the migration job, execute it and wait for success, then start the private engine and public frontend services. This is intentionally before D5 CI/CD. No Cloud Run resources have been created by this implementation pass, and custom domains, DNS, VPC expansion, and GitHub Actions deployment automation remain out of scope.
+The intended manual first-deployment order is:
+
+1. Build and push reviewed immutable images.
+2. Keep `application_services_enabled = false`.
+3. Run `terraform plan` and `terraform apply`.
+4. Terraform creates or updates `haunted-halls-migrate`, but does not create the engine or frontend services or their IAM bindings.
+5. Execute `haunted-halls-migrate` manually and wait for successful completion.
+6. Set `application_services_enabled = true` and provide the frontend image and production OAuth values.
+7. Run a fresh `terraform plan`.
+8. Apply to create or update the engine and frontend services and their IAM bindings.
+9. Verify runtime behavior.
+10. Run a final `terraform plan`; it should report `No changes`.
+
+Creating the migration job is not equivalent to successfully executing the migration. The gate keeps application service presence separate from migration execution while preserving the normal Terraform workflow. After the first successful migration and deployment, `application_services_enabled = true` is the steady-state value; future D5 automation will still execute migrations before deploying new application revisions. No Cloud Run resources have been created by this implementation pass, and custom domains, DNS, VPC expansion, and GitHub Actions deployment automation remain out of scope.
 
 ## CI
 
