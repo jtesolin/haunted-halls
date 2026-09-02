@@ -384,14 +384,20 @@ The `google` provider explicitly sets `user_project_override = true` and `billin
 
 ### No runtime deployment yet
 
-D4B does **not** create or deploy:
+D4C Terraform now configures the first-deployment runtime, but it has not been applied. The code defines:
 
-- Cloud Run services
-- public application URLs
-- container images
-- managed Cloud SQL connectors
+- public Cloud Run service `haunted-halls-frontend` as the browser-facing boundary
+- private IAM-protected Cloud Run service `haunted-halls-engine`
+- migration job `haunted-halls-migrate`, using the same engine image and explicit `python -m alembic upgrade head` command
+- separate frontend, engine, and migration runtime service accounts
+- minimum instances of `0`, maximum instances of `2`, request-based CPU allocation, and modest `1` CPU / `512Mi` resources
+- Cloud SQL connector integration mounted at `/cloudsql` for the engine and migration job
 
-Those are D4C responsibilities. D4B establishes the infrastructure foundation that D4C will consume.
+The frontend BFF keeps the existing application bearer token in `Authorization`. When `ENGINE_ID_TOKEN_AUDIENCE` is configured, it obtains an ADC-backed Google-signed ID token for that audience and sends it only in `X-Serverless-Authorization`; local Compose leaves that header absent. The engine remains private, and only `hh-frontend-runtime` receives its `roles/run.invoker` binding. The frontend receives public Cloud Run invocation access.
+
+The configured deterministic URLs are derived from the project number and region and are used for `NEXTAUTH_URL`, `ENGINE_BASE_URL`, and `ENGINE_ID_TOKEN_AUDIENCE`. Before a real apply, create the production Google OAuth Web Application using the Terraform output frontend URL and its `/api/auth/callback/google` callback, populate `hh-google-client-secret`, and provide immutable frontend/engine image references plus the operator-managed secret versions in ignored `terraform.tfvars`.
+
+The intended manual first-deployment order is: build and push reviewed immutable images, update the migration job, execute it and wait for success, then start the private engine and public frontend services. This is intentionally before D5 CI/CD. No Cloud Run resources have been created by this implementation pass, and custom domains, DNS, VPC expansion, and GitHub Actions deployment automation remain out of scope.
 
 ## CI
 
