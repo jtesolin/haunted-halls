@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { GoogleAuth } from "google-auth-library";
+import { GoogleAuth, IdTokenClient } from "google-auth-library";
 
 const DEFAULT_ENGINE_BASE_URL = "http://localhost:8000";
 const MIN_INTERNAL_ENGINE_SERVICE_TOKEN_LENGTH = 64;
@@ -9,6 +9,8 @@ const INTERNAL_ENGINE_SERVICE_TOKEN_PLACEHOLDERS = new Set([
   "replace-with-internal-engine-token",
   "generate-with-openssl-do-not-commit",
 ]);
+let googleAuth: GoogleAuth | undefined;
+const idTokenClients = new Map<string, Promise<IdTokenClient>>();
 const PUBLIC_ENGINE_ERROR_CODES = new Set([
   "daily_request_limit",
   "daily_token_limit",
@@ -67,18 +69,31 @@ async function createCloudRunIdentityHeader() {
     return null;
   }
 
-  const auth = new GoogleAuth();
-  const client = await auth.getIdTokenClient(audience);
-  const identityHeaders = await client.getRequestHeaders();
-  const authorization = identityHeaders.get("authorization");
-
-  if (!authorization) {
-    throw new InternalEngineConfigurationError(
-      "Cloud Run identity token could not be acquired"
-    );
+  if (!googleAuth) {
+    googleAuth = new GoogleAuth();
   }
 
-  return authorization;
+  let clientPromise = idTokenClients.get(audience);
+  if (!clientPromise) {
+    clientPromise = (async () => googleAuth!.getIdTokenClient(audience))();
+    idTokenClients.set(audience, clientPromise);
+  }
+
+  try {
+    const client = await clientPromise;
+    const identityHeaders = await client.getRequestHeaders();
+    const authorization = identityHeaders.get("authorization");
+
+    if (authorization) {
+      return authorization;
+    }
+  } catch {
+    idTokenClients.delete(audience);
+  }
+
+  throw new InternalEngineConfigurationError(
+    `Cloud Run identity token could not be acquired for audience ${audience}`
+  );
 }
 
 async function createServiceHeaders(headers?: HeadersInit) {
