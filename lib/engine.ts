@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { GoogleAuth, IdTokenClient } from "google-auth-library";
+import { GoogleAuth } from "google-auth-library";
+import type { IdTokenClient } from "google-auth-library";
 
 const DEFAULT_ENGINE_BASE_URL = "http://localhost:8000";
 const MIN_INTERNAL_ENGINE_SERVICE_TOKEN_LENGTH = 64;
