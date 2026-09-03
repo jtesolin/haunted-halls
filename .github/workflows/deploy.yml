@@ -1,0 +1,198 @@
+name: Frontend Deploy
+
+on:
+  workflow_run:
+    workflows:
+      - Frontend CI
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: haunted-halls-frontend-production
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT: haunted-halls-development
+  GCP_REGION: us-east1
+  IMAGE_REPOSITORY: us-east1-docker.pkg.dev/haunted-halls-development/haunted-halls/frontend
+  WIF_PROVIDER: projects/458395246135/locations/global/workloadIdentityPools/github-actions/providers/github
+  DEPLOY_SERVICE_ACCOUNT: hh-frontend-deployer@haunted-halls-development.iam.gserviceaccount.com
+
+jobs:
+  deploy:
+    name: Deploy Frontend to Production
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Resolve deployment SHA
+        id: revision
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          MANUAL_REF: ${{ github.ref }}
+          MANUAL_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ "$MANUAL_REF" != "refs/heads/main" ]]; then
+              echo "Manual production deployments are allowed only from refs/heads/main (received $MANUAL_REF)." >&2
+              exit 1
+            fi
+            deploy_sha="$MANUAL_SHA"
+          else
+            deploy_sha="$WORKFLOW_RUN_SHA"
+          fi
+
+          if [[ ! "$deploy_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Resolved deployment SHA is not a full commit SHA: $deploy_sha" >&2
+            exit 1
+          fi
+
+          echo "deploy_sha=$deploy_sha" >> "$GITHUB_OUTPUT"
+          echo "Deployment SHA: $deploy_sha"
+
+      - name: Check out deployment revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.revision.outputs.deploy_sha }}
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT }}
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Configure Artifact Registry authentication
+        run: gcloud auth configure-docker us-east1-docker.pkg.dev --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push immutable frontend image
+        id: image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          target: runner
+          push: true
+          tags: ${{ env.IMAGE_REPOSITORY }}:${{ steps.revision.outputs.deploy_sha }}
+          cache-from: type=gha,scope=haunted-halls-frontend
+          cache-to: type=gha,mode=max,scope=haunted-halls-frontend
+
+      - name: Resolve image and previous deployment metadata
+        id: metadata
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Build did not return a valid image digest: $IMAGE_DIGEST" >&2
+            exit 1
+          fi
+
+          image_ref="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
+          previous_frontend_image="$(gcloud run services describe haunted-halls-frontend \
+            --project="$GCP_PROJECT" \
+            --region="$GCP_REGION" \
+            --format='value(spec.template.spec.containers[0].image)')"
+
+          echo "image_ref=$image_ref" >> "$GITHUB_OUTPUT"
+          echo "previous_frontend_image=$previous_frontend_image" >> "$GITHUB_OUTPUT"
+
+      - name: Update frontend service image
+        env:
+          IMAGE_REF: ${{ steps.metadata.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          gcloud run services update haunted-halls-frontend \
+            --image="$IMAGE_REF" \
+            --project="$GCP_PROJECT" \
+            --region="$GCP_REGION" \
+            --quiet
+
+      - name: Verify frontend rollout and public health
+        id: verify
+        run: |
+          set -euo pipefail
+          service_json="$(gcloud run services describe haunted-halls-frontend \
+            --project="$GCP_PROJECT" \
+            --region="$GCP_REGION" \
+            --format=json)"
+
+          ready="$(jq -r 'first(.status.conditions[]? | select(.type == "Ready") | .status) // empty' <<< "$service_json")"
+          deployed_image="$(jq -r '.spec.template.spec.containers[0].image // empty' <<< "$service_json")"
+          service_url="$(jq -r '.status.url // empty' <<< "$service_json")"
+          expected_image="${IMAGE_REPOSITORY}@${{ steps.image.outputs.digest }}"
+
+          if [[ "$ready" != "True" ]]; then
+            echo "Frontend service is not Ready: $ready" >&2
+            exit 1
+          fi
+          if [[ "$deployed_image" != "$expected_image" ]]; then
+            echo "Frontend image mismatch: expected $expected_image, got $deployed_image" >&2
+            exit 1
+          fi
+          if [[ -z "$service_url" ]]; then
+            echo "Frontend service URL is missing from Cloud Run describe output." >&2
+            exit 1
+          fi
+
+          public_status="$(curl \
+            --silent \
+            --show-error \
+            --output /tmp/frontend-health.txt \
+            --write-out '%{http_code}' \
+            --connect-timeout 5 \
+            --max-time 15 \
+            --retry 2 \
+            --retry-delay 1 \
+            "${service_url}/api/health")"
+          if [[ "$public_status" != "200" ]]; then
+            echo "Expected unauthenticated frontend health check to return 200, got $public_status" >&2
+            exit 1
+          fi
+
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+          echo "public_status=$public_status" >> "$GITHUB_OUTPUT"
+
+      - name: Write deployment summary
+        if: always()
+        env:
+          DEPLOY_SHA: ${{ steps.revision.outputs.deploy_sha }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          IMAGE_REF: ${{ steps.metadata.outputs.image_ref }}
+          PREVIOUS_FRONTEND_IMAGE: ${{ steps.metadata.outputs.previous_frontend_image }}
+          FRONTEND_READY: ${{ steps.verify.outputs.ready }}
+          PUBLIC_HEALTH_STATUS: ${{ steps.verify.outputs.public_status }}
+        run: |
+          {
+            echo "## Frontend Deploy"
+            echo
+            printf -- '- Deployment Git SHA: `%s`\n' "${DEPLOY_SHA:-not available}"
+            printf -- '- Immutable image digest: `%s`\n' "${IMAGE_DIGEST:-not available}"
+            printf -- '- Previous frontend image: `%s`\n' "${PREVIOUS_FRONTEND_IMAGE:-not available}"
+            printf -- '- Deployed frontend image: `%s`\n' "${IMAGE_REF:-not available}"
+            printf -- '- Frontend Ready status: `%s`\n' "${FRONTEND_READY:-not verified}"
+            printf -- '- Public health status: `%s`\n' "${PUBLIC_HEALTH_STATUS:-not verified}"
+            echo
+            echo "Rollback is manual: redeploy the previous frontend image or another known-good digest."
+          } >> "$GITHUB_STEP_SUMMARY"
