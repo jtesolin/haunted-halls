@@ -412,6 +412,138 @@ The intended manual first-deployment order is:
 
 Creating the migration job is not equivalent to successfully executing the migration. The gate keeps application service presence separate from migration execution while preserving the normal Terraform workflow. After the first successful migration and deployment, `application_services_enabled = true` is the steady-state value; future D5 automation will still execute migrations before deploying new application revisions. No Cloud Run resources have been created by this implementation pass, and custom domains, DNS, VPC expansion, and GitHub Actions deployment automation remain out of scope.
 
+## D5A: GitHub Actions CD Ownership Foundation
+
+D5A establishes the operational boundary between Terraform-managed infrastructure and GitHub Actions-driven deployment.
+
+### Deployment vs. Configuration Ownership
+
+Terraform owns all Cloud Run configuration:
+
+- Service and job creation and deletion
+- Container specifications (ports, startup probes, environment variables)
+- Cloud SQL integration and mounting
+- Secret Manager integration and versioning
+- Scaling configuration
+- Service account assignment and IAM
+
+GitHub Actions CD workflows own **only image revisions**:
+
+- Building application Docker images
+- Pushing immutable SHA-tagged images to Artifact Registry
+- Updating Cloud Run service and job image attributes to point to new revisions
+- Executing database migrations before engine rollout
+
+This separation prevents normal application deployments from requiring a Terraform `apply`.
+
+### Deployment Service Accounts
+
+D5A adds least-privilege IAM bindings for the two deployment service accounts:
+
+#### Frontend Deployer (`hh-frontend-deployer`)
+
+- **Artifact Registry**: `roles/artifactregistry.writer` on the `haunted-halls` repository
+  - Allows pushing and tagging images from CI/CD
+- **Cloud Run**: `roles/run.developer` on `haunted-halls-frontend` service only
+  - Allows updating the frontend Cloud Run service (including its image); CD workflows should only change the image field.
+- **Service Account User**: `roles/iam.serviceAccountUser` on `hh-frontend-runtime`
+  - Allows deployment workflows to run Cloud Run operations as the frontend runtime identity
+- **Scope**: Frontend repository only; no access to engine, migrations, or secrets
+
+#### Engine Deployer (`hh-engine-deployer`)
+
+- **Artifact Registry**: `roles/artifactregistry.writer` on the `haunted-halls` repository
+  - Allows pushing and tagging images from CI/CD
+- **Cloud Run**: `roles/run.developer` on:
+  - `haunted-halls-engine` service — allows updating the service (including its image); workflows should only change the image field
+  - `haunted-halls-migrate` job — allows updating the job (including its image) and executing migrations
+- **Service Account User**: `roles/iam.serviceAccountUser` on `hh-engine-runtime` and `hh-migration-runtime` — allows deployment workflows to impersonate the runtime identities
+  - Allows deployment workflows to run Cloud Run operations as those service accounts
+- **Scope**: Engine repository only; no access to frontend or user secrets
+
+Neither deployer receives:
+
+- `roles/artifactregistry.admin`, `roles/run.admin`, or project-wide privileges
+- Secret Manager accessor roles (deployment does not decrypt secrets; runtime identities do)
+- Cloud SQL client access
+- Project Editor or Owner
+
+### Workload Identity Federation Hardening
+
+The existing GitHub OIDC provider condition is now restricted to deployment workflows:
+
+```
+attribute.repository_owner == "jtesolin"
+AND attribute.ref == "refs/heads/main"
+AND one of:
+  - attribute.repository == "jtesolin/haunted-halls" AND attribute.workflow_ref == "jtesolin/haunted-halls/.github/workflows/deploy.yml@refs/heads/main"
+  - attribute.repository == "jtesolin/haunted-halls-engine" AND attribute.workflow_ref == "jtesolin/haunted-halls-engine/.github/workflows/deploy.yml@refs/heads/main"
+```
+
+Deployments can only run from `main` branch and only from dedicated `deploy.yml` workflows in each repository. CI workflows, pull requests, arbitrary branches, forks, and other workflow files are not permitted to authenticate.
+
+### Future Deployment Workflow Contract
+
+D5 deployment workflows are not yet implemented. When they are, the expected behavior is:
+
+**Engine deployment workflow:**
+
+1. Trigger on push to `main` or manual dispatch
+2. Authenticate using GitHub OIDC → `hh-engine-deployer`
+3. Build immutable engine image, tag with commit SHA
+4. Push to Artifact Registry, resolve sha256 digest
+5. Update `haunted-halls-migrate` job image to new digest
+6. Execute migration job and wait for completion
+7. If migration fails, stop (do not deploy engine)
+8. Update `haunted-halls-engine` service image to new digest
+9. Wait for readiness
+10. Run authenticated health/smoke test
+
+**Frontend deployment workflow:**
+
+1. Trigger on push to `main` or manual dispatch
+2. Authenticate using GitHub OIDC → `hh-frontend-deployer`
+3. Build immutable frontend image, tag with commit SHA
+4. Push to Artifact Registry, resolve sha256 digest
+5. Update `haunted-halls-frontend` service image to new digest
+6. Wait for readiness
+7. Run public health/smoke test
+
+Each repository deploys only its own application responsibility. The frontend workflow cannot deploy the engine, and the engine workflow cannot deploy the frontend.
+
+### Image Lifecycle Ownership
+
+Cloud Run service and job image attributes are now managed by Terraform's lifecycle `ignore_changes` for the image attribute only. This prevents Terraform from:
+
+- Reverting image changes made by CD workflows
+- Forcing unnecessary deployments when no configuration has changed
+
+Terraform preserves all other configuration:
+
+- Environment variables
+- Secret references and versions
+- Cloud SQL mounts
+- Service account assignments
+- Scaling
+- Probes and startup configuration
+- commands and arguments (for the migration job, the alembic command is Terraform-owned)
+
+### Production Deployment Concurrency
+
+Future deployment workflows must serialize production deployments using GitHub Actions concurrency groups. Use:
+
+```yaml
+concurrency:
+  group: haunted-halls-production
+  cancel-in-progress: false
+```
+
+Never use `cancel-in-progress: true` for production deployments; a newer commit must not cancel a migration or rollout halfway through. Queued deployments are preferred to cancellation.
+
+### Rollback Model
+
+Application rollback in D5 means deploying a prior known-good image revision. Database migrations are not automatically downgraded; the system follows the expand-contract principle for schema changes. Rollback automation is out of scope for D5A; it will be addressed in later work.
+
 ## CI
 
 GitHub Actions runs the frontend validation workflow on pull requests targeting `main`, on pushes to `main`, and manually via `workflow_dispatch`.
