@@ -5,6 +5,7 @@ node_modules
 coverage
 .env*
 !.env.example
+gha-creds-*.json
 *.log
 *.tsbuildinfo
 Dockerfile

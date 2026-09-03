@@ -156,10 +156,13 @@ jobs:
             exit 1
           fi
 
+          health_file="$(mktemp)"
+          trap 'rm -f "$health_file"' EXIT
+
           public_status="$(curl \
             --silent \
             --show-error \
-            --output /tmp/frontend-health.txt \
+            --output "$health_file" \
             --write-out '%{http_code}' \
             --connect-timeout 5 \
             --max-time 15 \
@@ -168,11 +171,22 @@ jobs:
             "${service_url}/api/health")"
           if [[ "$public_status" != "200" ]]; then
             echo "Expected unauthenticated frontend health check to return 200, got $public_status" >&2
+            echo "Response body:" >&2
+            cat "$health_file" >&2
+            exit 1
+          fi
+
+          health_status="$(jq -r '.status // empty' "$health_file")"
+          if [[ "$health_status" != "ok" ]]; then
+            echo "Expected frontend health payload status to be 'ok', got '$health_status'." >&2
+            echo "Response body:" >&2
+            cat "$health_file" >&2
             exit 1
           fi
 
           echo "ready=$ready" >> "$GITHUB_OUTPUT"
           echo "public_status=$public_status" >> "$GITHUB_OUTPUT"
+          echo "health_status=$health_status" >> "$GITHUB_OUTPUT"
 
       - name: Write deployment summary
         if: always()
@@ -183,16 +197,18 @@ jobs:
           PREVIOUS_FRONTEND_IMAGE: ${{ steps.metadata.outputs.previous_frontend_image }}
           FRONTEND_READY: ${{ steps.verify.outputs.ready }}
           PUBLIC_HEALTH_STATUS: ${{ steps.verify.outputs.public_status }}
+          HEALTH_STATUS: ${{ steps.verify.outputs.health_status }}
         run: |
           {
             echo "## Frontend Deploy"
             echo
-            printf -- '- Deployment Git SHA: `%s`\n' "${DEPLOY_SHA:-not available}"
-            printf -- '- Immutable image digest: `%s`\n' "${IMAGE_DIGEST:-not available}"
-            printf -- '- Previous frontend image: `%s`\n' "${PREVIOUS_FRONTEND_IMAGE:-not available}"
-            printf -- '- Deployed frontend image: `%s`\n' "${IMAGE_REF:-not available}"
-            printf -- '- Frontend Ready status: `%s`\n' "${FRONTEND_READY:-not verified}"
-            printf -- '- Public health status: `%s`\n' "${PUBLIC_HEALTH_STATUS:-not verified}"
+            printf -- '- Deployment Git SHA: %s\n' "${DEPLOY_SHA:-not available}"
+            printf -- '- Immutable image digest: %s\n' "${IMAGE_DIGEST:-not available}"
+            printf -- '- Previous frontend image: %s\n' "${PREVIOUS_FRONTEND_IMAGE:-not available}"
+            printf -- '- Deployed frontend image: %s\n' "${IMAGE_REF:-not available}"
+            printf -- '- Frontend Ready status: %s\n' "${FRONTEND_READY:-not verified}"
+            printf -- '- Health HTTP status: %s\n' "${PUBLIC_HEALTH_STATUS:-not verified}"
+            printf -- '- Health application status: %s\n' "${HEALTH_STATUS:-not verified}"
             echo
             echo "Rollback is manual: redeploy the previous frontend image or another known-good digest."
           } >> "$GITHUB_STEP_SUMMARY"
