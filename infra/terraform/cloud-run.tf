@@ -98,6 +98,13 @@ resource "google_cloud_run_v2_service" "engine" {
   depends_on = [google_project_service.cloud_run]
 
   lifecycle {
+    # D5A: GitHub Actions CD ownership — ignore deployed image revisions.
+    # CD workflows update the image attribute directly through Cloud Run API;
+    # Terraform manages all other configuration (scaling, env vars, probes, mounts, etc).
+    ignore_changes = [
+      template[0].containers[0].image
+    ]
+
     precondition {
       condition     = length(trimspace(var.frontend_image)) > 0
       error_message = "frontend_image is required when application_services_enabled is true."
@@ -210,6 +217,15 @@ resource "google_cloud_run_v2_service" "frontend" {
   }
 
   depends_on = [google_project_service.cloud_run]
+
+  lifecycle {
+    # D5A: GitHub Actions CD ownership — ignore deployed image revisions.
+    # CD workflows update the image attribute directly through Cloud Run API;
+    # Terraform manages all other configuration (scaling, env vars, probes, etc).
+    ignore_changes = [
+      template[0].containers[0].image
+    ]
+  }
 }
 
 resource "google_cloud_run_v2_job" "migration" {
@@ -253,6 +269,15 @@ resource "google_cloud_run_v2_job" "migration" {
   }
 
   depends_on = [google_project_service.cloud_run]
+
+  lifecycle {
+    # D5A: GitHub Actions CD ownership — ignore deployed image revisions.
+    # CD workflows update the image attribute directly through Cloud Run API;
+    # Terraform preserves the migration command (python -m alembic upgrade head).
+    ignore_changes = [
+      template[0].template[0].containers[0].image
+    ]
+  }
 }
 
 resource "google_cloud_run_v2_service_iam_member" "engine_frontend_invoker" {
