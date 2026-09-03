@@ -104,21 +104,6 @@ resource "google_cloud_run_v2_service" "engine" {
     ignore_changes = [
       template[0].containers[0].image
     ]
-
-    precondition {
-      condition     = length(trimspace(var.frontend_image)) > 0
-      error_message = "frontend_image is required when application_services_enabled is true."
-    }
-
-    precondition {
-      condition     = length(trimspace(var.google_oauth_client_id)) > 0
-      error_message = "google_oauth_client_id is required when application_services_enabled is true."
-    }
-
-    precondition {
-      condition     = var.google_client_secret_version > 0 && floor(var.google_client_secret_version) == var.google_client_secret_version
-      error_message = "google_client_secret_version must be a positive integer when application_services_enabled is true."
-    }
   }
 }
 
@@ -225,6 +210,21 @@ resource "google_cloud_run_v2_service" "frontend" {
     ignore_changes = [
       template[0].containers[0].image
     ]
+
+    precondition {
+      condition     = length(trimspace(var.frontend_image)) > 0
+      error_message = "frontend_image is required when application_services_enabled is true."
+    }
+
+    precondition {
+      condition     = length(trimspace(var.google_oauth_client_id)) > 0
+      error_message = "google_oauth_client_id is required when application_services_enabled is true."
+    }
+
+    precondition {
+      condition     = var.google_client_secret_version > 0 && floor(var.google_client_secret_version) == var.google_client_secret_version
+      error_message = "google_client_secret_version must be a positive integer when application_services_enabled is true."
+    }
   }
 }
 
