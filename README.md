@@ -457,8 +457,8 @@ D5A adds least-privilege IAM bindings for the two deployment service accounts:
 - **Cloud Run**: `roles/run.developer` on:
   - `haunted-halls-engine` service — allows updating the service (including its image); workflows should only change the image field
   - `haunted-halls-migrate` job — allows updating the job (including its image) and executing migrations
-  - `hh-engine-runtime` — run engine as engine identity
-  - `hh-migration-runtime` — run migrations as migration identity
+- **Service Account User**: `roles/iam.serviceAccountUser` on `hh-engine-runtime` and `hh-migration-runtime` — allows deployment workflows to impersonate the runtime identities
+  - Allows deployment workflows to run Cloud Run operations as those service accounts
 - **Scope**: Engine repository only; no access to frontend or user secrets
 
 Neither deployer receives:

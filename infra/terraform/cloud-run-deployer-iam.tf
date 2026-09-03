@@ -2,7 +2,7 @@
 # Principle: Least privilege, resource-level roles only
 
 # Grant Cloud Run Developer to frontend deployer on the frontend service
-# Allows updating frontend service image and configuration during CD deployment
+# Allows updating frontend service image during CD deployment; Terraform owns other configuration (scaling, env vars, probes, mounts, etc).
 resource "google_cloud_run_v2_service_iam_member" "frontend_deployer" {
   count = var.application_services_enabled ? 1 : 0
 
