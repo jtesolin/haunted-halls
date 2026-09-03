@@ -232,6 +232,24 @@ resource "google_cloud_run_v2_service" "frontend" {
   }
 }
 
+resource "google_cloud_run_domain_mapping" "frontend" {
+  count = (
+    var.application_services_enabled &&
+    length(trimspace(var.frontend_custom_domain)) > 0
+  ) ? 1 : 0
+
+  name     = var.frontend_custom_domain
+  location = google_cloud_run_v2_service.frontend[0].location
+
+  metadata {
+    namespace = var.project_id
+  }
+
+  spec {
+    route_name = google_cloud_run_v2_service.frontend[0].name
+  }
+}
+
 resource "google_cloud_run_v2_job" "migration" {
   name                = local.cloud_run_service_names.migrate
   location            = var.region
