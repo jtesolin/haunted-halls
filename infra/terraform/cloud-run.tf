@@ -98,11 +98,13 @@ resource "google_cloud_run_v2_service" "engine" {
   depends_on = [google_project_service.cloud_run]
 
   lifecycle {
-    # D5A: GitHub Actions CD ownership — ignore deployed image revisions.
-    # CD workflows update the image attribute directly through Cloud Run API;
-    # Terraform manages all other configuration (scaling, env vars, probes, mounts, etc).
+    # D5A: GitHub Actions CD owns deployed image revisions.
+    # Cloud Run client/client_version identify the caller that last updated the
+    # service and are non-authoritative deployment metadata.
     ignore_changes = [
-      template[0].containers[0].image
+      client,
+      client_version,
+      template[0].containers[0].image,
     ]
   }
 }
@@ -204,11 +206,13 @@ resource "google_cloud_run_v2_service" "frontend" {
   depends_on = [google_project_service.cloud_run]
 
   lifecycle {
-    # D5A: GitHub Actions CD ownership — ignore deployed image revisions.
-    # CD workflows update the image attribute directly through Cloud Run API;
-    # Terraform manages all other configuration (scaling, env vars, probes, etc).
+    # D5A: GitHub Actions CD owns deployed image revisions.
+    # Cloud Run client/client_version identify the caller that last updated the
+    # service and are non-authoritative deployment metadata.
     ignore_changes = [
-      template[0].containers[0].image
+      client,
+      client_version,
+      template[0].containers[0].image,
     ]
 
     precondition {
@@ -271,11 +275,13 @@ resource "google_cloud_run_v2_job" "migration" {
   depends_on = [google_project_service.cloud_run]
 
   lifecycle {
-    # D5A: GitHub Actions CD ownership — ignore deployed image revisions.
-    # CD workflows update the image attribute directly through Cloud Run API;
-    # Terraform preserves the migration command (python -m alembic upgrade head).
+    # D5A: GitHub Actions CD owns the migration job image revision.
+    # Cloud Run client/client_version identify the caller that last updated the
+    # job and are non-authoritative deployment metadata.
     ignore_changes = [
-      template[0].template[0].containers[0].image
+      client,
+      client_version,
+      template[0].template[0].containers[0].image,
     ]
   }
 }
