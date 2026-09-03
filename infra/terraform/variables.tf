@@ -95,10 +95,14 @@ variable "frontend_custom_domain" {
       var.frontend_custom_domain == "" ||
       (
         var.frontend_custom_domain == trimspace(var.frontend_custom_domain) &&
-        can(regex("^[A-Za-z0-9.-]+$", var.frontend_custom_domain))
+        length(var.frontend_custom_domain) <= 253 &&
+        can(regex(
+          "^([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$",
+          var.frontend_custom_domain
+        ))
       )
     )
-    error_message = "frontend_custom_domain must be empty or a trimmed hostname such as haunted-halls.tesolin.us."
+    error_message = "frontend_custom_domain must be empty or a valid hostname such as haunted-halls.tesolin.us."
   }
 }
 
