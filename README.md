@@ -530,15 +530,21 @@ Terraform preserves all other configuration:
 
 ### Production Deployment Concurrency
 
-Future deployment workflows must serialize production deployments using GitHub Actions concurrency groups. Use:
+Each repository serializes its own production deployments independently using GitHub Actions concurrency groups. The current production deployment groups are:
 
 ```yaml
+# Frontend
 concurrency:
-  group: haunted-halls-production
+  group: haunted-halls-frontend-production
+  cancel-in-progress: false
+
+# Engine
+concurrency:
+  group: haunted-halls-engine-production
   cancel-in-progress: false
 ```
 
-Never use `cancel-in-progress: true` for production deployments; a newer commit must not cancel a migration or rollout halfway through. Queued deployments are preferred to cancellation.
+GitHub Actions concurrency groups are repository-scoped, so using the same group name in two different repositories would not provide cross-repository serialization. Never use `cancel-in-progress: true` for production deployments; a newer commit must not cancel a migration or rollout halfway through. Queued deployments are preferred to cancellation.
 
 ### Rollback Model
 
