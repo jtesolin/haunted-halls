@@ -152,15 +152,18 @@ ZoneEdit remains the legacy DNS provider until the operator changes the Network 
 
 After the D6B1 delegation is complete, the next stages are:
 
-1. Add the Google domain-verification TXT record through Terraform in Google Cloud DNS.
-2. Verify `tesolin.us` ownership with Google.
-3. Enable the Cloud Run domain mapping.
-4. Retrieve the exact Cloud Run-required DNS records.
-5. Manage those DNS record(s) in Google Cloud DNS through Terraform.
-6. Wait for managed HTTPS certificate issuance.
-7. Verify `https://haunted-halls.tesolin.us/api/health`.
-8. Update the Google OAuth origin and callback for the custom domain.
-9. In a later D6C step, switch `NEXTAUTH_URL` to the custom domain and verify browser login.
+1. Obtain Google's exact domain-verification TXT value.
+2. Manage the TXT record through Terraform in Google Cloud DNS.
+3. Review, merge, and apply the Terraform change.
+4. Confirm the TXT record is publicly visible.
+5. MANUAL: click Verify in Google and confirm ownership of `tesolin.us`.
+6. Only then enable the Cloud Run domain mapping.
+7. Retrieve the exact Cloud Run-required DNS records.
+8. Manage those DNS record(s) in Google Cloud DNS through Terraform.
+9. Wait for managed HTTPS certificate issuance.
+10. Verify `https://haunted-halls.tesolin.us/api/health`.
+11. Update the Google OAuth origin and callback for the custom domain.
+12. In a later D6C step, switch `NEXTAUTH_URL` to the custom domain and verify browser login.
 
 This D6B1 implementation does not enable the Cloud Run custom hostname yet, does not modify `NEXTAUTH_URL`, and does not change the existing Google OAuth configuration or engine base URL settings.
 
@@ -173,7 +176,7 @@ gcloud domains list-user-verified
 gcloud domains verify tesolin.us
 ```
 
-These are operator steps outside the Terraform code path. No interactive Search Console verification is included in this task.
+Google supplies the exact `google-site-verification=...` TXT value through the interactive Search Console flow. Terraform manages that public TXT record in Google Cloud DNS; after it is merged and applied, confirm the TXT is publicly visible before manually clicking Verify in Google. Keep the verification record in Terraform after ownership succeeds. Do not create the Cloud Run domain mapping until ownership is confirmed.
 
 ### DNS records after delegation
 
