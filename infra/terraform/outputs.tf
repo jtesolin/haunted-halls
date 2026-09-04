@@ -71,3 +71,8 @@ output "migration_cloud_run_job_name" {
   description = "Cloud Run migration job name."
   value       = local.cloud_run_service_names.migrate
 }
+
+output "tesolin_us_name_servers" {
+  description = "Google Cloud DNS authoritative nameservers for tesolin.us."
+  value       = google_dns_managed_zone.tesolin_us.name_servers
+}
