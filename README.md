@@ -115,6 +115,54 @@ The intended sequence is:
 
 This D6A step only implements the foundation. It does not claim the custom domain is live, and it does not change the production auth configuration.
 
+## D6B1: Google Cloud DNS foundation
+
+This D6B1 phase moves the authoritative DNS hosting for `tesolin.us` from the legacy ZoneEdit provider to Google Cloud DNS while keeping Network Solutions as the registrar. The goal is to create the Google-managed public zone, expose the authoritative nameserver list, and pause for a manual registrar update before the domain is delegated to Google.
+
+The operational model is:
+
+```text
+Network Solutions
+    registrar only
+    + nameserver delegation
+          |
+          v
+Google Cloud DNS
+    authoritative DNS for tesolin.us
+          |
+          v
+Cloud Run / future Haunted Halls records
+```
+
+This is intentionally minimal and does not create any application recordsets yet. No A/AAAA/CNAME/TXT/MX/SRV records are added in this phase, and the Google site-verification TXT record is not created until the registrar has delegated the zone to Google and the operator is ready for the domain-ownership verification flow.
+
+### D6B1 sequence
+
+1. Terraform creates the public `tesolin.us` Cloud DNS managed zone.
+2. Terraform outputs the authoritative nameservers assigned by Google.
+3. MANUAL: update the `tesolin.us` nameservers at Network Solutions to match the exact Google nameservers returned by Terraform.
+4. Wait for delegation to propagate.
+5. Verify Google Cloud DNS is authoritative for `tesolin.us`.
+
+### ZoneEdit migration behavior
+
+ZoneEdit remains untouched during this phase. There is no record-copying automation, no deletion of the legacy zone, and no effort to wait for support tickets. Because there are no known consumers of `tesolin.us` DNS beyond the Haunted Halls custom domain work, the migration is intentionally narrow: create the Google Cloud DNS zone, expose the authoritative nameservers, and let the registrar update delegation manually.
+
+### D6B2 / D6C follow-up
+
+After the D6B1 delegation is complete, the next stages are:
+
+1. Add the Google domain-verification TXT record through Terraform.
+2. Verify `tesolin.us` ownership with Google.
+3. Enable the Cloud Run domain mapping.
+4. Add Cloud Run-required DNS record(s) through Terraform.
+5. Wait for managed HTTPS certificate issuance.
+6. Verify `https://haunted-halls.tesolin.us/api/health`.
+7. Update the Google OAuth origin and callback for the custom domain.
+8. In a later D6C step, switch `NEXTAUTH_URL` to the custom domain and verify browser login.
+
+This D6B1 implementation does not enable the Cloud Run custom hostname yet, does not modify `NEXTAUTH_URL`, and does not change the existing Google OAuth configuration or engine base URL settings.
+
 ### Domain verification prerequisite
 
 The mapping for `haunted-halls.tesolin.us` requires Google to recognize ownership of the parent domain `tesolin.us`. The operator can confirm the domain state with:

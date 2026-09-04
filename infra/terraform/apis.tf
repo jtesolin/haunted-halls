@@ -38,6 +38,11 @@ resource "google_project_service" "cloud_resource_manager" {
   disable_on_destroy = false
 }
 
+resource "google_project_service" "cloud_dns" {
+  service            = "dns.googleapis.com"
+  disable_on_destroy = false
+}
+
 resource "google_project_service" "billingbudgets" {
   service            = "billingbudgets.googleapis.com"
   disable_on_destroy = false
