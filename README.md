@@ -177,7 +177,7 @@ These are operator steps outside the Terraform code path. No interactive Search 
 
 ### DNS records after delegation
 
-Once the Network Solutions nameservers point at Google Cloud DNS, Google will return the required domain records for the Cloud Run mapping with an equivalent of:
+Once the Network Solutions nameservers point at Google Cloud DNS, the Cloud Run domain mapping will return the required DNS records for the Cloud Run mapping with an equivalent of:
 
 ```bash
 gcloud beta run domain-mappings describe \
