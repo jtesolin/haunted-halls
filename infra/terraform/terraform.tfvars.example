@@ -22,6 +22,10 @@ nextauth_secret_version = 1
 application_services_enabled = false
 engine_image = "replace-with-reviewed-immutable-engine-image"
 
+# D6A: Optional custom frontend domain. Leave empty until ownership of the
+# base domain is verified and the Cloud Run mapping is ready to be created.
+frontend_custom_domain = ""
+
 # After haunted-halls-migrate executes successfully, set the gate to true and
 # provide the frontend image and production OAuth configuration.
 frontend_image = ""

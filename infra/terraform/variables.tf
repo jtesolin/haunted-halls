@@ -85,6 +85,27 @@ variable "application_services_enabled" {
   default     = false
 }
 
+variable "frontend_custom_domain" {
+  description = "Optional custom hostname mapped to the public frontend Cloud Run service."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.frontend_custom_domain == "" ||
+      (
+        var.frontend_custom_domain == trimspace(var.frontend_custom_domain) &&
+        length(var.frontend_custom_domain) <= 253 &&
+        can(regex(
+          "^([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$",
+          var.frontend_custom_domain
+        ))
+      )
+    )
+    error_message = "frontend_custom_domain must be empty or a valid hostname such as haunted-halls.tesolin.us."
+  }
+}
+
 variable "frontend_image" {
   description = "Immutable container image reference for the frontend Cloud Run service."
   type        = string
