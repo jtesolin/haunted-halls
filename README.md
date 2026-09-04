@@ -136,6 +136,8 @@ Only after delegation:
 
 This phase is intentionally minimal and does not create application recordsets yet. No A/AAAA/CNAME/TXT/MX/SRV records are added in this phase, and the Google site-verification TXT record is not created until the operator is ready to verify `tesolin.us` ownership after delegation.
 
+D6B1 itself added only the managed zone's automatic NS and SOA records. D6B2A adds the Terraform-managed Google site-verification TXT record.
+
 ### D6B1 sequence
 
 1. Terraform creates the public `tesolin.us` Cloud DNS managed zone.
