@@ -28,4 +28,12 @@ locals {
     frontend = "https://${local.cloud_run_service_names.frontend}-${data.google_project.current.number}.${var.region}.run.app"
     engine   = "https://${local.cloud_run_service_names.engine}-${data.google_project.current.number}.${var.region}.run.app"
   }
+
+  # D6C: canonical public frontend URL, preferring the verified custom domain
+  # and falling back to the deterministic Cloud Run run.app URL.
+  frontend_canonical_url = (
+    length(trimspace(var.frontend_custom_domain)) > 0
+    ? "https://${trimspace(var.frontend_custom_domain)}"
+    : local.cloud_run_urls.frontend
+  )
 }

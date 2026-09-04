@@ -193,6 +193,22 @@ gcloud beta run domain-mappings describe \
 
 The exact returned records are authoritative. The current mapping requires `haunted-halls.tesolin.us. CNAME ghs.googlehosted.com.`; D6B2B manages that record in Google Cloud DNS through Terraform before certificate issuance can begin. Google Cloud DNS is the authoritative owner of `tesolin.us` once delegation has been updated.
 
+## D6C: canonical custom-domain frontend authentication URL
+
+This D6C change makes `https://haunted-halls.tesolin.us` the canonical frontend authentication URL when `frontend_custom_domain` is configured. Terraform derives a `frontend_canonical_url` local that resolves to `https://<frontend_custom_domain>` when the variable is non-empty, and otherwise falls back to the existing deterministic Cloud Run `run.app` frontend URL. Only the `NEXTAUTH_URL` environment variable on the frontend Cloud Run service uses this canonical URL; `ENGINE_BASE_URL` and `ENGINE_ID_TOKEN_AUDIENCE` remain unchanged and continue to target the engine's deterministic Cloud Run URL.
+
+Before this cutover, the Google OAuth Web Application client must be manually updated to include:
+
+```text
+Authorized JavaScript origin:
+https://haunted-halls.tesolin.us
+
+Authorized redirect URI:
+https://haunted-halls.tesolin.us/api/auth/callback/google
+```
+
+The existing `run.app` OAuth origin and redirect URI entries may remain temporarily during transition and rollback testing. This D6C implementation does not claim acceptance testing of the live custom-domain login flow is complete.
+
 ## Infrastructure and D4A Foundation
 
 Haunted Halls now includes the first Terraform foundation for its planned Google Cloud deployment. This repository owns the shared GCP infrastructure for the browser-facing BFF and the internal engine deployment lifecycle. The D4A scope establishes a safe, reviewable control plane without creating billable Cloud Run or Cloud SQL resources yet.
