@@ -937,8 +937,8 @@ export default function Home() {
   };
 
   return (
-    <div className="h-screen overflow-hidden bg-[#09090c] text-white">
-      <div className="h-full w-full px-4 py-6 sm:px-6 lg:px-8">
+    <div className="h-dvh overflow-hidden bg-[#09090c] text-white">
+      <div className="h-full w-full overflow-x-hidden px-2 py-2 sm:px-6 sm:py-6 lg:px-8">
         <div
           className={`relative h-full md:grid md:min-h-0 md:transition-[grid-template-columns,gap] md:duration-300 md:ease-in-out md:motion-reduce:transition-none ${
             isSidebarCollapsed
@@ -1004,14 +1004,17 @@ export default function Home() {
             }`}
           />
 
-          <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-6 shadow-2xl shadow-black/20">
-            <header className="mb-6 flex items-center justify-between gap-4 rounded-3xl border border-white/10 bg-white/5 p-5">
-              <div>
-                <p className="text-sm uppercase tracking-[0.28em] text-sky-300/80">Dungeon MUD</p>
-                <h1 className="mt-2 text-3xl font-semibold text-white">Chat with the haunted halls</h1>
+          <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-2 shadow-2xl shadow-black/20 md:p-6">
+            <header className="mb-2 flex min-w-0 items-center justify-between gap-2 rounded-2xl border border-white/10 bg-white/5 p-2 pl-12 md:mb-6 md:gap-4 md:rounded-3xl md:p-5">
+              <div className="min-w-0 flex-1">
+                <p className="hidden text-sm uppercase tracking-[0.28em] text-sky-300/80 md:block">Dungeon MUD</p>
+                <h1 className="truncate text-lg font-semibold text-white md:mt-2 md:text-3xl">
+                  <span className="md:hidden">Haunted Halls</span>
+                  <span className="hidden md:inline">Chat with the haunted halls</span>
+                </h1>
               </div>
-              <div className="w-[18rem] shrink-0">
-                <div role="status" aria-live="polite" className="rounded-2xl border border-white/10 bg-black/35 p-3">
+              <div className="min-w-0 shrink md:w-[18rem] md:shrink-0">
+                <div role="status" aria-live="polite" className="rounded-xl border border-white/10 bg-black/35 p-1.5 md:rounded-2xl md:p-3">
                   {isAuthLoading ? (
                     <p className="text-sm text-zinc-300">Checking sign-in...</p>
                   ) : isAuthenticated ? (
@@ -1032,7 +1035,7 @@ export default function Home() {
                         )}
                         <div className="min-w-0">
                           <p className="truncate text-sm font-medium text-zinc-100">{userDisplayName}</p>
-                          {userEmail ? <p className="truncate text-xs text-zinc-400">{userEmail}</p> : null}
+                          {userEmail ? <p className="hidden truncate text-xs text-zinc-400 md:block">{userEmail}</p> : null}
                         </div>
                       </div>
                       <button
@@ -1041,7 +1044,8 @@ export default function Home() {
                         className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg border border-white/15 px-2.5 text-xs font-semibold text-zinc-200 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70"
                         aria-label="Sign out"
                       >
-                        Sign out
+                        <span className="md:hidden">Out</span>
+                        <span className="hidden md:inline">Sign out</span>
                       </button>
                     </div>
                   ) : (
@@ -1053,7 +1057,8 @@ export default function Home() {
                         className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg bg-sky-500 px-3 text-xs font-semibold text-white transition hover:bg-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70"
                         aria-label="Sign in with Google"
                       >
-                        Sign in with Google
+                        <span className="md:hidden">Sign in</span>
+                        <span className="hidden md:inline">Sign in with Google</span>
                       </button>
                     </div>
                   )}
@@ -1068,13 +1073,13 @@ export default function Home() {
                       : "Signed out"}
                 </p>
               </div>
-              <div className="rounded-3xl bg-white/5 px-4 py-3 text-sm text-zinc-300">
+              <div className="hidden rounded-3xl bg-white/5 px-4 py-3 text-sm text-zinc-300 md:block">
                 {activeSession ? activeSession.messages.length : 0} message{activeSession?.messages.length === 1 ? "" : "s"}
               </div>
             </header>
 
-            <div className="flex h-full min-h-0 flex-col gap-6">
-              <div className="flex-1 min-h-0 overflow-hidden rounded-3xl border border-white/10 bg-black/40 p-4">
+            <div className="flex min-h-0 flex-1 flex-col gap-2 md:gap-6">
+              <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-white/10 bg-black/40 p-2 md:rounded-3xl md:p-4">
                 {isAuthLoading ? (
                   <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-zinc-400">
                     <p className="max-w-xl text-lg">Checking sign-in...</p>
@@ -1098,7 +1103,7 @@ export default function Home() {
                 )}
               </div>
 
-              <div className="mt-2 shrink-0">
+              <div className="shrink-0">
                 <ChatInput
                   value={messageText}
                   onChange={setMessageText}

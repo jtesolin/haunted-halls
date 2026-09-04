@@ -40,7 +40,7 @@ export default function ChatInput({
 
   return (
     <form
-      className="rounded-3xl border border-white/10 bg-zinc-950/90 p-4 shadow-inner"
+      className="rounded-2xl border border-white/10 bg-zinc-950/90 p-2 shadow-inner md:rounded-3xl md:p-4"
       onSubmit={(event) => {
         event.preventDefault();
         if (sendDisabled) {
@@ -54,7 +54,7 @@ export default function ChatInput({
       <label htmlFor="mud-input" className="sr-only">
         Enter your command
       </label>
-      <div className="flex flex-col gap-3 sm:flex-row">
+      <div className="flex flex-col gap-2 sm:flex-row md:gap-3">
         <textarea
           id="mud-input"
           ref={textareaRef}
