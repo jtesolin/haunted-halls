@@ -16,3 +16,16 @@ resource "google_dns_record_set" "google_site_verification" {
   ttl          = 300
   rrdatas      = ["\"google-site-verification=IsCn8xrobpc-ZM5o2LzVj6QiQ4aQJHSZluO4eA0vllQ\""]
 }
+
+resource "google_dns_record_set" "frontend_custom_domain" {
+  count = (
+    var.application_services_enabled &&
+    length(trimspace(var.frontend_custom_domain)) > 0
+  ) ? 1 : 0
+
+  managed_zone = google_dns_managed_zone.tesolin_us.name
+  name         = "${var.frontend_custom_domain}."
+  type         = "CNAME"
+  ttl          = 300
+  rrdatas      = ["ghs.googlehosted.com."]
+}

@@ -160,8 +160,8 @@ After the D6B1 delegation is complete, the next stages are:
 4. Confirm the TXT record is publicly visible.
 5. MANUAL: click Verify in Google and confirm ownership of `tesolin.us`.
 6. Only then enable the Cloud Run domain mapping.
-7. Retrieve the exact Cloud Run-required DNS records.
-8. Manage those DNS record(s) in Google Cloud DNS through Terraform.
+7. Retrieve the exact Cloud Run-required DNS records: `haunted-halls.tesolin.us. CNAME ghs.googlehosted.com.`.
+8. Manage that CNAME record in Google Cloud DNS through Terraform.
 9. Wait for managed HTTPS certificate issuance.
 10. Verify `https://haunted-halls.tesolin.us/api/health`.
 11. Update the Google OAuth origin and callback for the custom domain.
@@ -191,7 +191,7 @@ gcloud beta run domain-mappings describe \
   --project haunted-halls-development
 ```
 
-The exact returned records are authoritative. D6B2 manages those records in Google Cloud DNS, and Google Cloud DNS is the authoritative owner of `tesolin.us` once delegation has been updated.
+The exact returned records are authoritative. The current mapping requires `haunted-halls.tesolin.us. CNAME ghs.googlehosted.com.`; D6B2B manages that record in Google Cloud DNS through Terraform before certificate issuance can begin. Google Cloud DNS is the authoritative owner of `tesolin.us` once delegation has been updated.
 
 ## Infrastructure and D4A Foundation
 
