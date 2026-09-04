@@ -152,7 +152,7 @@ resource "google_cloud_run_v2_service" "frontend" {
 
       env {
         name  = "NEXTAUTH_URL"
-        value = local.cloud_run_urls.frontend
+        value = local.frontend_canonical_url
       }
 
       env {
