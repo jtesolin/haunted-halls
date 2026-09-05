@@ -263,7 +263,6 @@ export default function Home() {
         ? "Preparing campaign..."
         : "Command input unavailable";
   const userDisplayName = session?.user?.name?.trim() || session?.user?.email?.trim() || "Signed in";
-  const userEmail = session?.user?.email?.trim() || null;
   const userImage = session?.user?.image?.trim() || null;
 
   useEffect(() => {
@@ -1005,39 +1004,31 @@ export default function Home() {
           />
 
           <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-2 shadow-2xl shadow-black/20 md:p-6">
-            <header className="mb-2 flex min-w-0 items-center justify-between gap-2 rounded-2xl border border-white/10 bg-white/5 p-2 pl-12 md:mb-6 md:gap-4 md:rounded-3xl md:p-5">
+            <header className="mb-2 flex min-w-0 items-center justify-between gap-2 rounded-2xl border border-white/10 bg-white/5 p-2 pl-12 md:mb-3 md:gap-4 md:rounded-2xl md:p-3 md:pl-4">
               <div className="min-w-0 flex-1">
-                <p className="hidden text-sm uppercase tracking-[0.28em] text-sky-300/80 md:block">Dungeon MUD</p>
-                <h1 className="truncate text-lg font-semibold text-white md:mt-2 md:text-3xl">
-                  <span className="md:hidden">Haunted Halls</span>
-                  <span className="hidden md:inline">Chat with the haunted halls</span>
-                </h1>
+                <p className="hidden text-[10px] uppercase tracking-[0.24em] text-zinc-500 md:block">Dungeon MUD</p>
+                <h1 className="truncate text-lg font-semibold text-white md:mt-0.5 md:text-xl">Haunted Halls</h1>
               </div>
-              <div className="min-w-0 shrink md:w-[18rem] md:shrink-0">
-                <div role="status" aria-live="polite" className="rounded-xl border border-white/10 bg-black/35 p-1.5 md:rounded-2xl md:p-3">
+              <div className="min-w-0 shrink">
+                <div role="status" aria-live="polite">
                   {isAuthLoading ? (
-                    <p className="text-sm text-zinc-300">Checking sign-in...</p>
+                    <p className="text-xs text-zinc-400">Checking sign-in...</p>
                   ) : isAuthenticated ? (
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex min-w-0 items-center gap-2">
-                        {userImage ? (
-                          <Image
-                            src={userImage}
-                            alt="Signed-in profile"
-                            width={32}
-                            height={32}
-                            className="h-8 w-8 rounded-full border border-white/20"
-                          />
-                        ) : (
-                          <div className="flex h-8 w-8 items-center justify-center rounded-full border border-white/20 bg-zinc-800 text-xs text-zinc-300">
-                            {userDisplayName.charAt(0).toUpperCase()}
-                          </div>
-                        )}
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-medium text-zinc-100">{userDisplayName}</p>
-                          {userEmail ? <p className="hidden truncate text-xs text-zinc-400 md:block">{userEmail}</p> : null}
+                    <div className="flex min-w-0 items-center gap-2">
+                      {userImage ? (
+                        <Image
+                          src={userImage}
+                          alt="Signed-in profile"
+                          width={28}
+                          height={28}
+                          className="h-7 w-7 shrink-0 rounded-full border border-white/20"
+                        />
+                      ) : (
+                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-white/20 bg-zinc-800 text-xs text-zinc-300">
+                          {userDisplayName.charAt(0).toUpperCase()}
                         </div>
-                      </div>
+                      )}
+                      <p className="hidden max-w-40 truncate text-sm font-medium text-zinc-200 sm:block">{userDisplayName}</p>
                       <button
                         type="button"
                         onClick={handleSignOut}
@@ -1049,8 +1040,8 @@ export default function Home() {
                       </button>
                     </div>
                   ) : (
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-sm text-zinc-300">Sign in to play</p>
+                    <div className="flex items-center gap-2">
+                      <p className="hidden text-xs text-zinc-400 sm:block md:hidden">Sign in to play</p>
                       <button
                         type="button"
                         onClick={handleSignIn}
@@ -1063,8 +1054,6 @@ export default function Home() {
                     </div>
                   )}
                 </div>
-                {authError ? <p className="mt-2 text-xs text-rose-400" aria-live="polite">{authError}</p> : null}
-                {requestError ? <p className="mt-2 text-xs text-amber-300" aria-live="polite">{requestError}</p> : null}
                 <p className="sr-only" aria-live="polite">
                   {isAuthLoading
                     ? "Checking sign-in"
@@ -1073,10 +1062,14 @@ export default function Home() {
                       : "Signed out"}
                 </p>
               </div>
-              <div className="hidden rounded-3xl bg-white/5 px-4 py-3 text-sm text-zinc-300 md:block">
-                {activeSession ? activeSession.messages.length : 0} message{activeSession?.messages.length === 1 ? "" : "s"}
-              </div>
             </header>
+
+            {authError || requestError ? (
+              <div className="mb-2 space-y-1 px-1 text-xs md:mb-3 md:px-2">
+                {authError ? <p className="text-rose-400" aria-live="polite">{authError}</p> : null}
+                {requestError ? <p className="text-amber-300" aria-live="polite">{requestError}</p> : null}
+              </div>
+            ) : null}
 
             <div className="flex min-h-0 flex-1 flex-col gap-2 md:gap-6">
               <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-white/10 bg-black/40 p-2 md:rounded-3xl md:p-4">
