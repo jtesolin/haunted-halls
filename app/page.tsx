@@ -263,7 +263,6 @@ export default function Home() {
         ? "Preparing campaign..."
         : "Command input unavailable";
   const userDisplayName = session?.user?.name?.trim() || session?.user?.email?.trim() || "Signed in";
-  const userEmail = session?.user?.email?.trim() || null;
   const userImage = session?.user?.image?.trim() || null;
 
   useEffect(() => {
@@ -937,8 +936,8 @@ export default function Home() {
   };
 
   return (
-    <div className="h-screen overflow-hidden bg-[#09090c] text-white">
-      <div className="h-full w-full px-4 py-6 sm:px-6 lg:px-8">
+    <div className="h-dvh overflow-hidden bg-[#09090c] text-white">
+      <div className="h-full w-full overflow-x-hidden px-2 py-2 sm:px-6 sm:py-6 lg:px-8">
         <div
           className={`relative h-full md:grid md:min-h-0 md:transition-[grid-template-columns,gap] md:duration-300 md:ease-in-out md:motion-reduce:transition-none ${
             isSidebarCollapsed
@@ -1004,62 +1003,56 @@ export default function Home() {
             }`}
           />
 
-          <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-6 shadow-2xl shadow-black/20">
-            <header className="mb-6 flex items-center justify-between gap-4 rounded-3xl border border-white/10 bg-white/5 p-5">
-              <div>
-                <p className="text-sm uppercase tracking-[0.28em] text-sky-300/80">Dungeon MUD</p>
-                <h1 className="mt-2 text-3xl font-semibold text-white">Chat with the haunted halls</h1>
+          <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-2 shadow-2xl shadow-black/20 md:p-6">
+            <header className="mb-2 ml-12 flex h-9 min-w-0 items-center justify-between gap-2 rounded-2xl border border-white/10 bg-white/5 px-2 md:mb-3 md:ml-0 md:h-auto md:gap-4 md:rounded-2xl md:p-3 md:pl-4">
+              <div className="min-w-0 flex-1">
+                <h1 className="truncate text-lg font-semibold text-white md:mt-0.5 md:text-xl">Haunted Halls</h1>
               </div>
-              <div className="w-[18rem] shrink-0">
-                <div role="status" aria-live="polite" className="rounded-2xl border border-white/10 bg-black/35 p-3">
+              <div className="min-w-0 shrink">
+                <div>
                   {isAuthLoading ? (
-                    <p className="text-sm text-zinc-300">Checking sign-in...</p>
+                    <p className="text-xs text-zinc-400">Checking sign-in...</p>
                   ) : isAuthenticated ? (
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex min-w-0 items-center gap-2">
-                        {userImage ? (
-                          <Image
-                            src={userImage}
-                            alt="Signed-in profile"
-                            width={32}
-                            height={32}
-                            className="h-8 w-8 rounded-full border border-white/20"
-                          />
-                        ) : (
-                          <div className="flex h-8 w-8 items-center justify-center rounded-full border border-white/20 bg-zinc-800 text-xs text-zinc-300">
-                            {userDisplayName.charAt(0).toUpperCase()}
-                          </div>
-                        )}
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-medium text-zinc-100">{userDisplayName}</p>
-                          {userEmail ? <p className="truncate text-xs text-zinc-400">{userEmail}</p> : null}
+                    <div className="flex min-w-0 items-center gap-2">
+                      {userImage ? (
+                        <Image
+                          src={userImage}
+                          alt="Signed-in profile"
+                          width={28}
+                          height={28}
+                          className="h-7 w-7 shrink-0 rounded-full border border-white/20"
+                        />
+                      ) : (
+                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-white/20 bg-zinc-800 text-xs text-zinc-300">
+                          {userDisplayName.charAt(0).toUpperCase()}
                         </div>
-                      </div>
+                      )}
+                      <p className="hidden max-w-40 truncate text-sm font-medium text-zinc-200 sm:block">{userDisplayName}</p>
                       <button
                         type="button"
                         onClick={handleSignOut}
-                        className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg border border-white/15 px-2.5 text-xs font-semibold text-zinc-200 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70"
+                        className="inline-flex h-7 shrink-0 items-center justify-center rounded-lg border border-white/15 px-2.5 text-xs font-semibold text-zinc-200 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70 md:h-8"
                         aria-label="Sign out"
                       >
-                        Sign out
+                        <span className="md:hidden">Out</span>
+                        <span className="hidden md:inline">Sign out</span>
                       </button>
                     </div>
                   ) : (
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-sm text-zinc-300">Sign in to play</p>
+                    <div className="flex items-center gap-2">
+                      <p className="hidden text-xs text-zinc-400 sm:block md:hidden">Sign in to play</p>
                       <button
                         type="button"
                         onClick={handleSignIn}
-                        className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg bg-sky-500 px-3 text-xs font-semibold text-white transition hover:bg-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70"
+                        className="inline-flex h-7 shrink-0 items-center justify-center rounded-lg bg-sky-500 px-2.5 text-xs font-semibold text-white transition hover:bg-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70 md:h-8 md:px-3"
                         aria-label="Sign in with Google"
                       >
-                        Sign in with Google
+                        <span className="md:hidden">Sign in</span>
+                        <span className="hidden md:inline">Sign in with Google</span>
                       </button>
                     </div>
                   )}
                 </div>
-                {authError ? <p className="mt-2 text-xs text-rose-400" aria-live="polite">{authError}</p> : null}
-                {requestError ? <p className="mt-2 text-xs text-amber-300" aria-live="polite">{requestError}</p> : null}
                 <p className="sr-only" aria-live="polite">
                   {isAuthLoading
                     ? "Checking sign-in"
@@ -1068,13 +1061,17 @@ export default function Home() {
                       : "Signed out"}
                 </p>
               </div>
-              <div className="rounded-3xl bg-white/5 px-4 py-3 text-sm text-zinc-300">
-                {activeSession ? activeSession.messages.length : 0} message{activeSession?.messages.length === 1 ? "" : "s"}
-              </div>
             </header>
 
-            <div className="flex h-full min-h-0 flex-col gap-6">
-              <div className="flex-1 min-h-0 overflow-hidden rounded-3xl border border-white/10 bg-black/40 p-4">
+            {authError || requestError ? (
+              <div className="mb-2 space-y-1 px-1 text-xs md:mb-3 md:px-2">
+                {authError ? <p className="text-rose-400" aria-live="polite">{authError}</p> : null}
+                {requestError ? <p className="text-amber-300" aria-live="polite">{requestError}</p> : null}
+              </div>
+            ) : null}
+
+            <div className="flex min-h-0 flex-1 flex-col gap-2 md:gap-6">
+              <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-white/10 bg-black/40 p-2 md:rounded-3xl md:p-4">
                 {isAuthLoading ? (
                   <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-zinc-400">
                     <p className="max-w-xl text-lg">Checking sign-in...</p>
@@ -1098,7 +1095,7 @@ export default function Home() {
                 )}
               </div>
 
-              <div className="mt-2 shrink-0">
+              <div className="shrink-0">
                 <ChatInput
                   value={messageText}
                   onChange={setMessageText}

@@ -26,7 +26,7 @@ export default function ConversationView({
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto pr-2 custom-scrollbar" ref={containerRef}>
-      <div className="flex flex-col gap-4 py-4">
+      <div className="flex flex-col gap-2 py-2 md:gap-4 md:py-4">
         {messages.map((message) => (
           <div
             key={message.id}
