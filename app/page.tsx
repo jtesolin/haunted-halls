@@ -1004,7 +1004,7 @@ export default function Home() {
           />
 
           <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-2 shadow-2xl shadow-black/20 md:p-6">
-            <header className="mb-2 flex min-w-0 items-center justify-between gap-2 rounded-2xl border border-white/10 bg-white/5 p-2 pl-12 md:mb-3 md:gap-4 md:rounded-2xl md:p-3 md:pl-4">
+            <header className="mb-2 ml-12 flex h-9 min-w-0 items-center justify-between gap-2 rounded-2xl border border-white/10 bg-white/5 p-0 md:mb-3 md:ml-0 md:h-auto md:gap-4 md:rounded-2xl md:p-3 md:pl-4">
               <div className="min-w-0 flex-1">
                 <h1 className="truncate text-lg font-semibold text-white md:mt-0.5 md:text-xl">Haunted Halls</h1>
               </div>
