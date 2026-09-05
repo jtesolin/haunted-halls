@@ -1009,7 +1009,7 @@ export default function Home() {
                 <h1 className="truncate text-lg font-semibold text-white md:mt-0.5 md:text-xl">Haunted Halls</h1>
               </div>
               <div className="min-w-0 shrink">
-                <div role="status" aria-live="polite">
+                <div>
                   {isAuthLoading ? (
                     <p className="text-xs text-zinc-400">Checking sign-in...</p>
                   ) : isAuthenticated ? (
@@ -1031,7 +1031,7 @@ export default function Home() {
                       <button
                         type="button"
                         onClick={handleSignOut}
-                        className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg border border-white/15 px-2.5 text-xs font-semibold text-zinc-200 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70"
+                        className="inline-flex h-7 shrink-0 items-center justify-center rounded-lg border border-white/15 px-2.5 text-xs font-semibold text-zinc-200 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70 md:h-8"
                         aria-label="Sign out"
                       >
                         <span className="md:hidden">Out</span>
@@ -1044,7 +1044,7 @@ export default function Home() {
                       <button
                         type="button"
                         onClick={handleSignIn}
-                        className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg bg-sky-500 px-3 text-xs font-semibold text-white transition hover:bg-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70"
+                        className="inline-flex h-7 shrink-0 items-center justify-center rounded-lg bg-sky-500 px-2.5 text-xs font-semibold text-white transition hover:bg-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70 md:h-8 md:px-3"
                         aria-label="Sign in with Google"
                       >
                         <span className="md:hidden">Sign in</span>
