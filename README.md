@@ -686,6 +686,10 @@ The workflow now includes a credential-free Terraform validation job that runs:
 
 for both the bootstrap and main Terraform stacks.
 
+CI also runs a full-stack E2E job (`Frontend / E2E`) that checks out this frontend PR
+alongside `jtesolin/haunted-halls-engine@main`, starts the isolated E2E Compose stack, and
+runs the Playwright suite described in [End-to-end (Playwright) testing](#end-to-end-playwright-testing) below. Playwright reports/traces and Compose logs are uploaded as artifacts when the job fails, and the Compose stack (including volumes) is always torn down afterward.
+
 ## Local Docker Stack
 
 The frontend repository owns the local Compose configuration and builds the sibling engine repository from `../haunted-halls-engine`.
@@ -787,6 +791,98 @@ Run `make debug-build` after Dockerfile or dependency changes. The normal and de
 PostgreSQL data persists in the Docker-managed `postgres-data` volume. `docker compose down` preserves it across restarts and image rebuilds. To intentionally reset local data, run `docker compose down -v` or `make docker-reset-db` before starting the stack again.
 
 These checks run on Node 24.18.0 (as configured in the workflow) and a standard GitHub-hosted Linux runner.
+
+## End-to-end (Playwright) testing
+
+The frontend has a full-stack Playwright suite that exercises the real request path:
+
+```text
+Chromium → Next.js UI → NextAuth session → Next.js BFF/API routes →
+internal service auth + internal user context → FastAPI engine → PostgreSQL
+```
+
+External nondeterministic providers are controlled rather than automated:
+
+- **Google OAuth** is never automated in this suite. Sign-in is established through a
+  guarded, loopback-only, test-only NextAuth provider (below), not by driving Google's
+  UI.
+- **OpenAI** is disabled for E2E runs (`AI_ENABLED=false`, empty `OPENAI_API_KEY` on the
+  engine), so the engine returns deterministic stub narration.
+
+Everything else — the Next.js BFF, session/auth plumbing, the FastAPI engine, and
+PostgreSQL — is real. The suite does not mock `/api/chat`, `/api/campaign`,
+`/api/campaigns`, or campaign-detail/delete routes.
+
+### The test-only auth seam ("e2e" provider)
+
+`lib/auth.ts` registers an additional NextAuth `CredentialsProvider` (id `e2e`) alongside
+the normal Google provider, but **only** when both of the following are true at process
+startup:
+
+- the server-side-only environment variable `E2E_AUTH_ENABLED=true` is set (this is never
+  read from a public/client-side variable); and
+- `NEXTAUTH_URL` resolves to a loopback origin (`http://localhost:3000`,
+  `http://127.0.0.1:3000`, etc).
+
+If `E2E_AUTH_ENABLED=true` is set with a missing/invalid/non-loopback `NEXTAUTH_URL`, the
+process throws a configuration error at startup instead of silently exposing or silently
+disabling the provider — it fails closed. **This means the provider can never be enabled
+on the production canonical origin (`https://haunted-halls.tesolin.us`).** The normal
+Google sign-in flow is unaffected either way.
+
+The `e2e` provider does not accept any browser-supplied identity fields. Every sign-in
+resolves the same fixed synthetic identity (`provider_subject: playwright-e2e`,
+`email: playwright-e2e@example.com`) through the existing `resolveInternalUserId()` /
+engine user-resolution path used by the Google provider, so tests exercise a real,
+engine-owned internal user id. Protected BFF routes continue to use the normal
+`getServerSession(authOptions)` / `session.internalUserId` checks; there is no header
+bypass or special unauthenticated path.
+
+> **Warning:** the `e2e` provider is a test-only authentication bypass. Never set
+> `E2E_AUTH_ENABLED=true` outside a disposable, loopback-only E2E stack, and never point
+> it at a non-loopback `NEXTAUTH_URL`.
+
+### Running the E2E stack locally
+
+1. Install Playwright's Chromium browser (and Linux dependencies, if needed):
+
+   ```bash
+   npx playwright install --with-deps chromium
+   ```
+
+2. Start the isolated E2E Compose stack. This reuses the existing Compose architecture
+   with a focused override ([docker-compose.e2e.yml](docker-compose.e2e.yml)) that forces
+   the engine's OpenAI access off and enables the guarded frontend auth seam, using an
+   isolated project name so E2E data never touches your normal dev database:
+
+   ```bash
+   docker compose -p haunted-halls-e2e -f docker-compose.yml -f docker-compose.e2e.yml up -d --build
+   ```
+
+3. Run the suite (Playwright authenticates via the `e2e` provider in a setup project and
+   saves state to `playwright/.auth/user.json`, which is never committed):
+
+   ```bash
+   npm run test:e2e
+   # or, interactively:
+   npm run test:e2e:ui
+   ```
+
+4. Tear the stack down, removing its volumes so no E2E data lingers:
+
+   ```bash
+   docker compose -p haunted-halls-e2e -f docker-compose.yml -f docker-compose.e2e.yml down -v
+   ```
+
+The suite covers: the unauthenticated shell, authenticated session/initial campaign
+creation, a full chat round trip (with focus returning to the command input), campaign
+persistence across reload, campaign lifecycle (create/switch/delete), and a mobile
+viewport smoke test. It targets Chromium only, runs with a single worker (tests mutate
+shared server-side campaign state for one E2E identity), and produces an HTML report
+plus trace/screenshot artifacts on failure under `playwright-report/`.
+
+CI runs this suite as `Frontend / E2E` against the current `haunted-halls-engine`
+`main` branch checked out as a sibling directory, using the same Compose override.
 
 ## Learn More
 

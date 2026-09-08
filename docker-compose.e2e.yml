@@ -1,0 +1,31 @@
+# Focused Compose override for full-stack Playwright E2E runs.
+#
+# Usage (see README for details):
+#   docker compose -p haunted-halls-e2e -f docker-compose.yml -f docker-compose.e2e.yml up -d --build
+#   npm run test:e2e
+#   docker compose -p haunted-halls-e2e -f docker-compose.yml -f docker-compose.e2e.yml down -v
+#
+# This override forces deterministic, isolated behavior on top of the base stack:
+#   - the engine runs with AI disabled (no OpenAI calls, deterministic stub narration)
+#     regardless of any OpenAI key present in the developer's engine .env;
+#   - the frontend runs with the guarded, loopback-only, test-only E2E auth provider
+#     enabled, using a loopback NEXTAUTH_URL and test-only local secrets;
+#   - use an isolated Compose project name (e.g. -p haunted-halls-e2e) and always
+#     tear down with -v so E2E data never contaminates the normal dev database.
+#
+# Do not use this file for production or normal local development.
+
+services:
+  engine:
+    environment:
+      AI_ENABLED: "false"
+      OPENAI_API_KEY: ""
+
+  frontend:
+    environment:
+      E2E_AUTH_ENABLED: "true"
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: e2e-test-only-nextauth-secret-change-me-00000000000000
+      INTERNAL_ENGINE_SERVICE_TOKEN: ${INTERNAL_ENGINE_SERVICE_TOKEN:-local-compose-token-change-me-00000000000000000000000000000000000000}
+      GOOGLE_CLIENT_ID: e2e-test-only-google-client-id
+      GOOGLE_CLIENT_SECRET: e2e-test-only-google-client-secret
