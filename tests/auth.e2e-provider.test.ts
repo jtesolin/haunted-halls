@@ -46,6 +46,7 @@ describe("authOptions e2e provider registration", () => {
     process.env.E2E_AUTH_ENABLED = "true";
     process.env.NEXTAUTH_URL = "https://haunted-halls.tesolin.us";
     vi.resetModules();
-    await expect(import("@/lib/auth")).rejects.toThrow();
+    const { E2EAuthConfigurationError } = await import("@/lib/e2e-auth");
+    await expect(import("@/lib/auth")).rejects.toThrow(E2EAuthConfigurationError);
   });
 });

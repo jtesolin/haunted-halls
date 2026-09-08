@@ -23,6 +23,7 @@ test.describe("persistence across reload", () => {
     });
 
     await expect(conversation.getByText("look around", { exact: true })).toBeVisible();
+    await expect(conversation.getByText("AI narrator replies (stub): look around")).toBeVisible();
 
     await page.reload();
 
@@ -32,5 +33,8 @@ test.describe("persistence across reload", () => {
     await expect(page.locator("main").getByText("look around", { exact: true })).toBeVisible({
       timeout: 20_000,
     });
+    await expect(
+      page.locator("main").getByText("AI narrator replies (stub): look around"),
+    ).toBeVisible({ timeout: 20_000 });
   });
 });

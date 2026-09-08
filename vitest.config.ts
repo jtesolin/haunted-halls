@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
 
 export default defineConfig({
@@ -6,7 +6,7 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./tests/setup.ts"],
     clearMocks: true,
-    exclude: ["**/node_modules/**", "**/playwright/**"],
+    exclude: [...configDefaults.exclude, "**/playwright/**"],
   },
   resolve: {
     alias: {

@@ -30,6 +30,7 @@ test.describe("full chat round trip", () => {
     await expect(conversation.getByText("The narrator is responding...")).toHaveCount(0, {
       timeout: 20_000,
     });
+    await expect(conversation.getByText("AI narrator replies (stub): look around")).toBeVisible();
 
     // The command input becomes enabled again and regains focus so the next
     // command can be typed without an extra click.

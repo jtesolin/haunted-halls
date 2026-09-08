@@ -17,7 +17,7 @@ test.describe("authenticated session / initial campaign", () => {
     // deterministic opening narration is rendered as the first assistant message.
     const commandInput = page.getByLabel("Enter your command");
     await expect(commandInput).toBeEnabled({ timeout: 20_000 });
-    const openingMessage = page.locator("main").getByText(/./).first();
-    await expect(openingMessage).toBeVisible();
+    const openingMessage = page.locator("main").getByText(/^You stand in the Entry Hall\./);
+    await expect(openingMessage).toBeVisible({ timeout: 20_000 });
   });
 });
