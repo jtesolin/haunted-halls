@@ -18,6 +18,14 @@ function getRequiredEnv(name: string): string {
   return value || `test-${name.toLowerCase()}`;
 }
 
+function isE2ESessionAllowed(): boolean {
+  try {
+    return isE2EAuthEnabled();
+  } catch {
+    return false;
+  }
+}
+
 const providers: NextAuthOptions["providers"] = [
   GoogleProvider({
     clientId: getRequiredEnv("GOOGLE_CLIENT_ID"),
@@ -63,12 +71,20 @@ export const authOptions: NextAuthOptions = {
   },
   callbacks: {
     async jwt({ token, account, profile }) {
+      if (token.e2eAuth) {
+        if (!isE2ESessionAllowed()) {
+          throw new Error("AccessDenied");
+        }
+
+        return token;
+      }
+
       if (token.internalUserId) {
         return token;
       }
 
       if (account?.provider === E2E_PROVIDER_ID) {
-        if (!isE2EAuthEnabled()) {
+        if (!isE2ESessionAllowed()) {
           // Defense in depth: even if a stale/misissued e2e JWT is presented, refuse
           // to trust it unless the guard is currently satisfied for this process.
           throw new Error("AccessDenied");
@@ -76,6 +92,7 @@ export const authOptions: NextAuthOptions = {
 
         try {
           token.internalUserId = await resolveInternalUserId(E2E_FIXED_IDENTITY);
+          token.e2eAuth = true;
         } catch (error) {
           if (error instanceof InternalUserResolutionError) {
             console.error("e2e auth sign-in failed during internal user resolution");
