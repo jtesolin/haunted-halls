@@ -130,6 +130,94 @@ describe("internal user resolution", () => {
     expect(fetchEngineAsService).toHaveBeenCalledTimes(1);
   });
 
+  it("marks E2E tokens and rejects them after the E2E seam is disabled", async () => {
+    const previousEnabled = process.env.E2E_AUTH_ENABLED;
+    const previousUrl = process.env.NEXTAUTH_URL;
+    process.env.E2E_AUTH_ENABLED = "true";
+    process.env.NEXTAUTH_URL = "http://localhost:3000";
+    vi.mocked(fetchEngineAsService).mockResolvedValue(
+      new Response(JSON.stringify({ user_id: "e2e_user" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    const jwt = authOptions.callbacks?.jwt;
+    if (!jwt) {
+      throw new Error("jwt callback is not configured");
+    }
+
+    try {
+      const issued = await jwt({
+        token: {},
+        account: { provider: "e2e", providerAccountId: "playwright-e2e" } as never,
+        profile: undefined,
+        user: callbackUser,
+        trigger: "signIn",
+        isNewUser: false,
+        session: undefined,
+      });
+
+      expect(issued).toMatchObject({ internalUserId: "e2e_user", e2eAuth: true });
+
+      delete process.env.E2E_AUTH_ENABLED;
+      await expect(
+        jwt({
+          token: issued,
+          account: null,
+          profile: undefined,
+          user: callbackUser,
+          trigger: "update",
+          isNewUser: false,
+          session: undefined,
+        })
+      ).rejects.toThrow("AccessDenied");
+    } finally {
+      if (previousEnabled === undefined) {
+        delete process.env.E2E_AUTH_ENABLED;
+      } else {
+        process.env.E2E_AUTH_ENABLED = previousEnabled;
+      }
+      if (previousUrl === undefined) {
+        delete process.env.NEXTAUTH_URL;
+      } else {
+        process.env.NEXTAUTH_URL = previousUrl;
+      }
+    }
+  });
+
+  it("keeps the normal internal user fast path for non-E2E tokens", async () => {
+    const previousEnabled = process.env.E2E_AUTH_ENABLED;
+    delete process.env.E2E_AUTH_ENABLED;
+
+    const jwt = authOptions.callbacks?.jwt;
+    if (!jwt) {
+      throw new Error("jwt callback is not configured");
+    }
+
+    try {
+      const token = { internalUserId: "google_user" };
+      await expect(
+        jwt({
+          token,
+          account: null,
+          profile: undefined,
+          user: callbackUser,
+          trigger: "update",
+          isNewUser: false,
+          session: undefined,
+        })
+      ).resolves.toBe(token);
+      expect(fetchEngineAsService).not.toHaveBeenCalled();
+    } finally {
+      if (previousEnabled === undefined) {
+        delete process.env.E2E_AUTH_ENABLED;
+      } else {
+        process.env.E2E_AUTH_ENABLED = previousEnabled;
+      }
+    }
+  });
+
   it("fails closed when internal resolution fails during sign-in", async () => {
     vi.mocked(fetchEngineAsService).mockResolvedValue(new Response("down", { status: 503 }));
 
