@@ -27,6 +27,7 @@
 - After making repository changes, update the canonical two-repo status document when needed: `../haunted-halls-engine/docs/project-status.md`.
 - Do not change `Last synchronized (planning memory sync)` unless the user explicitly confirms they performed that planning-memory synchronization.
 - Treat project-status updates as part of normal completion for architecture, behavior, roadmap, or phase-progress changes.
+- For cross-repository architecture, status, and review-disposition context, use the canonical documents in `jtesolin/haunted-halls-engine`: `docs/project-status.md`, `docs/architecture.md`, and `docs/review-triage-policy.md`; a local `../haunted-halls-engine` sibling is optional.
 - Use verified commands:
   - `npm run dev`
   - `npm run lint`
