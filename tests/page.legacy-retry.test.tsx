@@ -25,7 +25,24 @@ vi.mock("@/components/ConversationView", () => ({
     <div>
       {messages.map((message) => {
         if (message.failure?.retryable) {
-          delete message.request_id;
+          const handleRetry = () => {
+            delete message.request_id;
+            onRetry?.(message.id);
+          };
+          return (
+            <div key={message.id}>
+              <p>{message.text}</p>
+              <p>{message.failure.message}</p>
+              <button
+                type="button"
+                disabled={retryDisabled}
+                onClick={handleRetry}
+                aria-label={`Retry sending: ${message.text}`}
+              >
+                Retry
+              </button>
+            </div>
+          );
         }
 
         return (
@@ -33,16 +50,6 @@ vi.mock("@/components/ConversationView", () => ({
             {!message.is_loading ? <p>{message.text}</p> : null}
             {message.is_loading ? <p>{message.loading_text ?? "Loading..."}</p> : null}
             {message.failure ? <p>{message.failure.message}</p> : null}
-            {message.failure?.retryable && onRetry ? (
-              <button
-                type="button"
-                disabled={retryDisabled}
-                onClick={() => onRetry(message.id)}
-                aria-label={`Retry sending: ${message.text}`}
-              >
-                Retry
-              </button>
-            ) : null}
           </div>
         );
       })}
