@@ -69,7 +69,7 @@ describe("BFF auth guard", () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  it("requires a valid UUIDv4 idempotency key and does not forward a malformed one", async () => {
+  it("requires an exact UUIDv4 idempotency key and does not normalize or forward malformed keys", async () => {
     vi.mocked(getServerSession).mockResolvedValue({ internalUserId: "user_0123456789abcdef0123456789abcdef" } as never);
 
     const request = new Request("http://localhost:3000/api/chat", {
@@ -83,6 +83,31 @@ describe("BFF auth guard", () => {
 
     expect(response.status).toBe(400);
     expect(body).toEqual({ error: "Idempotency-Key header is required and must be a valid UUIDv4" });
+    expect(global.fetch).not.toHaveBeenCalled();
+
+    const paddedKeyRequest = new Request("http://localhost:3000/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "look" }),
+    });
+    Object.defineProperty(paddedKeyRequest, "headers", {
+      value: {
+        get: (name: string) => {
+          if (name.toLowerCase() === "idempotency-key") {
+            return ` ${VALID_IDEMPOTENCY_KEY} `;
+          }
+          if (name.toLowerCase() === "content-type") {
+            return "application/json";
+          }
+          return null;
+        },
+      },
+    });
+    const paddedKeyResponse = await postChat(paddedKeyRequest);
+    const paddedKeyBody = await paddedKeyResponse.json();
+
+    expect(paddedKeyResponse.status).toBe(400);
+    expect(paddedKeyBody.error).toBe("Idempotency-Key header is required and must be a valid UUIDv4");
     expect(global.fetch).not.toHaveBeenCalled();
 
     const missingKeyResponse = await postChat(new Request("http://localhost:3000/api/chat", {

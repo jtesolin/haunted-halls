@@ -29,9 +29,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Authentication required" }, { status: 401 });
     }
 
-    const idempotencyKeyHeader = request.headers.get("Idempotency-Key");
-    const validatedIdempotencyKey = idempotencyKeyHeader?.trim();
-    if (!validatedIdempotencyKey || !UUID_V4_PATTERN.test(validatedIdempotencyKey)) {
+    const idempotencyKey = request.headers.get("Idempotency-Key");
+    if (!idempotencyKey || !UUID_V4_PATTERN.test(idempotencyKey)) {
       return NextResponse.json(
         { error: "Idempotency-Key header is required and must be a valid UUIDv4" },
         { status: 400 }
@@ -63,7 +62,7 @@ export async function POST(request: Request) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Idempotency-Key": validatedIdempotencyKey,
+        "Idempotency-Key": idempotencyKey,
       },
       body: JSON.stringify(payload),
     });

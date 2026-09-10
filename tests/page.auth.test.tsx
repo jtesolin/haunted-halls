@@ -648,7 +648,7 @@ describe("home auth gating", () => {
 
     const cryptoSource = globalThis.crypto;
     const originalRandomUUID = cryptoSource.randomUUID;
-    const originalGetRandomValues = cryptoSource.getRandomValues.bind(cryptoSource);
+    const originalGetRandomValues = cryptoSource.getRandomValues;
     const getRandomValues = vi.fn((array: Uint8Array) => {
       array.set([0, 1, 2, 3, 4, 5, 6, 7, 200, 9, 10, 11, 12, 13, 14, 15]);
       return array;
