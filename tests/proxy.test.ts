@@ -30,7 +30,7 @@ describe("proxy legacy run.app redirect", () => {
     process.env.NEXTAUTH_URL = "https://haunted-halls.tesolin.us";
 
     const request = makeRequest(
-      "https://haunted-halls-frontend-458395246135.us-east1.run.app/",
+      "https://frontend.internal/",
       "haunted-halls-frontend-458395246135.us-east1.run.app",
     );
     const response = proxy(request);
