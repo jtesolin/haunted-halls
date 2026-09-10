@@ -187,6 +187,10 @@ describe("proxy matcher", () => {
     expect(matcherRegexp.test("/api/healthz")).toBe(true);
   });
 
+  it("still applies to descendants such as /api/health/debug", () => {
+    expect(matcherRegexp.test("/api/health/debug")).toBe(true);
+  });
+
   it("still applies to unrelated API/BFF and page routes", () => {
     expect(matcherRegexp.test("/")).toBe(true);
     expect(matcherRegexp.test("/campaign")).toBe(true);

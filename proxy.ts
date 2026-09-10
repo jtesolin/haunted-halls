@@ -68,5 +68,5 @@ export function proxy(request: NextRequest) {
 export const config = {
   // Never redirect the Cloud Run startup/health probe: it must keep returning
   // /api/health directly regardless of which hostname it is reached on.
-  matcher: ["/((?!api/health(?:/|$)).*)"],
+  matcher: ["/((?!api/health(?:/)?$).*)"],
 };
