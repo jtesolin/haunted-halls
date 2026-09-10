@@ -24,6 +24,7 @@ const SIDEBAR_WIDTH = "320px";
 const COLLAPSED_TOOLBAR_WIDTH = "64px";
 const MOBILE_BREAKPOINT_QUERY = "(max-width: 767px)";
 const AMBIGUOUS_RETRY_MESSAGE = "Delivery could not be confirmed. You may safely retry.";
+const REQUEST_ID_ERROR_MESSAGE = "Unable to securely prepare this message. Please try again.";
 const GENERIC_SIGN_IN_ERROR = "Sign-in failed. Please try again.";
 
 function getSafeCallbackPath(candidate: string): string {
@@ -848,7 +849,14 @@ export default function Home() {
 
     const sessionId = activeSession.id;
     const campaignId = activeSession.campaign_id ?? null;
-    const requestId = createRequestId();
+    let requestId: string;
+    try {
+      requestId = createRequestId();
+    } catch {
+      setRequestError(REQUEST_ID_ERROR_MESSAGE);
+      return;
+    }
+
     const userMessage: ChatMessage = {
       id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
       role: "user",
@@ -909,7 +917,16 @@ export default function Home() {
 
     const sessionId = activeSession.id;
     const campaignId = activeSession.campaign_id ?? null;
-    const requestId = failedMessage.request_id ?? createRequestId();
+    let requestId = failedMessage.request_id;
+    if (!requestId) {
+      try {
+        requestId = createRequestId();
+      } catch {
+        setRequestError(REQUEST_ID_ERROR_MESSAGE);
+        return;
+      }
+    }
+
     const loadingNarratorMessage = createLoadingNarratorMessage(NARRATOR_LOADING_TEXT);
 
     setRequestError("");

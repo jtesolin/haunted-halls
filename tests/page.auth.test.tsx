@@ -14,6 +14,7 @@ vi.mock("next-auth/react", () => ({
 
 const UUID_V4_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
 const AMBIGUOUS_RETRY_MESSAGE = "Delivery could not be confirmed. You may safely retry.";
+const REQUEST_ID_ERROR_MESSAGE = "Unable to securely prepare this message. Please try again.";
 
 describe("home auth gating", () => {
   beforeEach(() => {
@@ -671,6 +672,56 @@ describe("home auth gating", () => {
       expect(idempotencyKey).toBe("00010203-0405-4607-8809-0a0b0c0d0e0f");
       expect(idempotencyKey).toMatch(UUID_V4_PATTERN);
       expect(getRandomValues).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(cryptoSource, "randomUUID", { configurable: true, value: originalRandomUUID });
+      Object.defineProperty(cryptoSource, "getRandomValues", { configurable: true, value: originalGetRandomValues });
+    }
+  });
+
+  it("does not mutate chat state or call chat when a new send cannot generate a secure request ID", async () => {
+    vi.mocked(useSession).mockReturnValue({
+      data: { user: { name: "Player One", email: "player@example.com", image: null }, expires: "2099-01-01T00:00:00.000Z" },
+      status: "authenticated",
+      update: vi.fn(),
+    });
+
+    vi.mocked(global.fetch).mockImplementation((input: RequestInfo | URL) => {
+      if (String(input) === "/api/campaigns") {
+        return Promise.resolve(new Response("[]", { status: 200 }));
+      }
+      if (String(input) === "/api/campaign") {
+        return Promise.resolve(new Response(JSON.stringify({
+          campaign_id: "campaign-123",
+          name: "The Lost Crypt",
+          description: null,
+          messages: [],
+          truncated: false,
+        }), { status: 200 }));
+      }
+      if (String(input) === "/api/chat") {
+        return Promise.resolve(new Response(JSON.stringify({ reply: "The hall answers." }), { status: 200 }));
+      }
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    });
+
+    const cryptoSource = globalThis.crypto;
+    const originalRandomUUID = cryptoSource.randomUUID;
+    const originalGetRandomValues = cryptoSource.getRandomValues;
+    Object.defineProperty(cryptoSource, "randomUUID", { configurable: true, value: undefined });
+    Object.defineProperty(cryptoSource, "getRandomValues", { configurable: true, value: undefined });
+
+    try {
+      render(<Home />);
+      await waitFor(() => expect(global.fetch).toHaveBeenCalledWith("/api/campaign", expect.anything()));
+      const textarea = await screen.findByRole("textbox", { name: "Enter your command" });
+      fireEvent.change(textarea, { target: { value: "look around" } });
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+      await waitFor(() => expect(screen.getByText(REQUEST_ID_ERROR_MESSAGE)).toBeInTheDocument());
+      expect(textarea).toHaveValue("look around");
+      expect(screen.queryByText("look around", { selector: "p" })).not.toBeInTheDocument();
+      expect(screen.queryByText("The narrator is responding...")).not.toBeInTheDocument();
+      expect(vi.mocked(global.fetch).mock.calls.filter(([input]) => String(input) === "/api/chat")).toHaveLength(0);
     } finally {
       Object.defineProperty(cryptoSource, "randomUUID", { configurable: true, value: originalRandomUUID });
       Object.defineProperty(cryptoSource, "getRandomValues", { configurable: true, value: originalGetRandomValues });

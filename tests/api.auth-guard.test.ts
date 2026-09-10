@@ -69,7 +69,7 @@ describe("BFF auth guard", () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  it("requires a valid UUID idempotency key and does not forward a malformed one", async () => {
+  it("requires a valid UUIDv4 idempotency key and does not forward a malformed one", async () => {
     vi.mocked(getServerSession).mockResolvedValue({ internalUserId: "user_0123456789abcdef0123456789abcdef" } as never);
 
     const request = new Request("http://localhost:3000/api/chat", {
@@ -82,7 +82,7 @@ describe("BFF auth guard", () => {
     const body = await response.json();
 
     expect(response.status).toBe(400);
-    expect(body).toEqual({ error: "Idempotency-Key header is required and must be a valid UUID" });
+    expect(body).toEqual({ error: "Idempotency-Key header is required and must be a valid UUIDv4" });
     expect(global.fetch).not.toHaveBeenCalled();
 
     const missingKeyResponse = await postChat(new Request("http://localhost:3000/api/chat", {
@@ -93,7 +93,7 @@ describe("BFF auth guard", () => {
     const missingKeyBody = await missingKeyResponse.json();
 
     expect(missingKeyResponse.status).toBe(400);
-    expect(missingKeyBody.error).toBe("Idempotency-Key header is required and must be a valid UUID");
+    expect(missingKeyBody.error).toBe("Idempotency-Key header is required and must be a valid UUIDv4");
     expect(global.fetch).not.toHaveBeenCalled();
   });
 

@@ -33,7 +33,7 @@ export async function POST(request: Request) {
     const validatedIdempotencyKey = idempotencyKeyHeader?.trim();
     if (!validatedIdempotencyKey || !UUID_V4_PATTERN.test(validatedIdempotencyKey)) {
       return NextResponse.json(
-        { error: "Idempotency-Key header is required and must be a valid UUID" },
+        { error: "Idempotency-Key header is required and must be a valid UUIDv4" },
         { status: 400 }
       );
     }
