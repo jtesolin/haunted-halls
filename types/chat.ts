@@ -30,6 +30,7 @@ export interface ChatMessage {
   id: string;
   role: ChatRole;
   text: string;
+  request_id?: string;
   is_loading?: boolean;
   loading_text?: string;
   delivery_state?: ChatDeliveryState;

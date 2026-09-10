@@ -14,6 +14,7 @@ import { INTERNAL_ENGINE_USER_ID_HEADER } from "@/lib/engine";
 
 const TEST_INTERNAL_ENGINE_SERVICE_TOKEN =
   "test-internal-engine-service-token-0000000000000000000000000000000000";
+const VALID_IDEMPOTENCY_KEY = "123e4567-e89b-42d3-a456-426614174000";
 
 const originalInternalEngineServiceToken = process.env.INTERNAL_ENGINE_SERVICE_TOKEN;
 
@@ -38,7 +39,10 @@ describe("BFF auth guard", () => {
 
     const request = new Request("http://localhost:3000/api/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": VALID_IDEMPOTENCY_KEY,
+      },
       body: JSON.stringify({ message: "look" }),
     });
 
@@ -65,6 +69,91 @@ describe("BFF auth guard", () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
+  it("requires an exact UUIDv4 idempotency key and does not normalize or forward malformed keys", async () => {
+    vi.mocked(getServerSession).mockResolvedValue({ internalUserId: "user_0123456789abcdef0123456789abcdef" } as never);
+
+    const request = new Request("http://localhost:3000/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": "not-a-uuid" },
+      body: JSON.stringify({ message: "look" }),
+    });
+
+    const response = await postChat(request);
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body).toEqual({ error: "Idempotency-Key header is required and must be a valid UUIDv4" });
+    expect(global.fetch).not.toHaveBeenCalled();
+
+    const paddedKeyRequest = new Request("http://localhost:3000/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "look" }),
+    });
+    Object.defineProperty(paddedKeyRequest, "headers", {
+      value: {
+        get: (name: string) => {
+          if (name.toLowerCase() === "idempotency-key") {
+            return ` ${VALID_IDEMPOTENCY_KEY} `;
+          }
+          if (name.toLowerCase() === "content-type") {
+            return "application/json";
+          }
+          return null;
+        },
+      },
+    });
+    const paddedKeyResponse = await postChat(paddedKeyRequest);
+    const paddedKeyBody = await paddedKeyResponse.json();
+
+    expect(paddedKeyResponse.status).toBe(400);
+    expect(paddedKeyBody.error).toBe("Idempotency-Key header is required and must be a valid UUIDv4");
+    expect(global.fetch).not.toHaveBeenCalled();
+
+    const missingKeyResponse = await postChat(new Request("http://localhost:3000/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "look" }),
+    }));
+    const missingKeyBody = await missingKeyResponse.json();
+
+    expect(missingKeyResponse.status).toBe(400);
+    expect(missingKeyBody.error).toBe("Idempotency-Key header is required and must be a valid UUIDv4");
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("forwards the exact validated idempotency key and preserves internal user identity", async () => {
+    const validKey = "123e4567-e89b-42d3-a456-426614174000";
+    vi.mocked(getServerSession).mockResolvedValue({ internalUserId: "user_0123456789abcdef0123456789abcdef" } as never);
+    vi.mocked(global.fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({ reply: "ok", campaign_id: "campaign-1", turn_id: "turn-1" }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const response = await postChat(
+      new Request("http://localhost:3000/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": validKey,
+          Authorization: "Bearer browser-token",
+          [INTERNAL_ENGINE_USER_ID_HEADER]: "user_browser_supplied",
+        },
+        body: JSON.stringify({ message: "look", internal_user_id: "user_body_supplied" }),
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const [, init] = vi.mocked(global.fetch).mock.calls[0];
+    const headers = new Headers(init?.headers);
+    expect(headers.get("Idempotency-Key")).toBe(validKey);
+    expect(headers.get(INTERNAL_ENGINE_USER_ID_HEADER)).toBe("user_0123456789abcdef0123456789abcdef");
+    expect(headers.get("Authorization")).toBe(`Bearer ${TEST_INTERNAL_ENGINE_SERVICE_TOKEN}`);
+  });
+
   it("adds the internal bearer token for authenticated chat requests and strips browser authorization", async () => {
     vi.mocked(getServerSession).mockResolvedValue({ internalUserId: "user_0123456789abcdef0123456789abcdef" } as never);
     vi.mocked(global.fetch).mockResolvedValue(
@@ -85,6 +174,7 @@ describe("BFF auth guard", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        "Idempotency-Key": VALID_IDEMPOTENCY_KEY,
         Authorization: "Bearer browser-token",
         [INTERNAL_ENGINE_USER_ID_HEADER]: "user_browser_supplied",
       },
@@ -101,7 +191,7 @@ describe("BFF auth guard", () => {
 
     const headers = new Headers(init?.headers);
     expect(headers.get("Authorization")).toBe(`Bearer ${TEST_INTERNAL_ENGINE_SERVICE_TOKEN}`);
-    expect(headers.get("authorization")).toBe(`Bearer ${TEST_INTERNAL_ENGINE_SERVICE_TOKEN}`);
+    expect(headers.get("Authorization")).not.toBe("Bearer browser-token");
     expect(headers.get(INTERNAL_ENGINE_USER_ID_HEADER)).toBe(
       "user_0123456789abcdef0123456789abcdef"
     );
@@ -140,7 +230,7 @@ describe("BFF auth guard", () => {
 
     const request = new Request("http://localhost:3000/api/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "Idempotency-Key": VALID_IDEMPOTENCY_KEY },
       body: JSON.stringify({ message: "look" }),
     });
 
@@ -167,7 +257,7 @@ describe("BFF auth guard", () => {
 
     const response = await postChat(new Request("http://localhost:3000/api/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "Idempotency-Key": VALID_IDEMPOTENCY_KEY },
       body: JSON.stringify({ message: "look" }),
     }));
     const body = await response.json();
@@ -212,6 +302,7 @@ describe("BFF auth guard", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "Idempotency-Key": VALID_IDEMPOTENCY_KEY,
           Origin: "http://localhost:3000",
         },
         body: JSON.stringify({ message: "look" }),

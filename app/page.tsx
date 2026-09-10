@@ -23,6 +23,8 @@ const SIDEBAR_PREF_KEY = "haunted-halls-sidebar-collapsed";
 const SIDEBAR_WIDTH = "320px";
 const COLLAPSED_TOOLBAR_WIDTH = "64px";
 const MOBILE_BREAKPOINT_QUERY = "(max-width: 767px)";
+const AMBIGUOUS_RETRY_MESSAGE = "Delivery could not be confirmed. You may safely retry.";
+const REQUEST_ID_ERROR_MESSAGE = "Unable to securely prepare this message. Please try again.";
 const GENERIC_SIGN_IN_ERROR = "Sign-in failed. Please try again.";
 
 function getSafeCallbackPath(candidate: string): string {
@@ -57,7 +59,7 @@ function getUserFacingErrorMessage(status: number, fallback: string) {
     case 429:
       return "The hall is rate limiting requests right now. Please wait a moment and try again.";
     case 502:
-      return "Delivery could not be confirmed. This action cannot be safely retried yet.";
+      return AMBIGUOUS_RETRY_MESSAGE;
     default:
       return fallback;
   }
@@ -214,6 +216,24 @@ function createLoadingNarratorMessage(loadingText: string): ChatMessage {
     is_loading: true,
     loading_text: loadingText,
   };
+}
+
+function createRequestId(): string {
+  const cryptoSource = globalThis.crypto;
+  if (typeof cryptoSource?.randomUUID === "function") {
+    return cryptoSource.randomUUID();
+  }
+
+  if (typeof cryptoSource?.getRandomValues !== "function") {
+    throw new Error("Secure random UUID generation is unavailable.");
+  }
+
+  const bytes = cryptoSource.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"));
+  return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
 }
 
 export default function Home() {
@@ -697,19 +717,24 @@ export default function Home() {
     sessionId,
     campaignId,
     messageId,
+    requestId,
     text,
     loadingMessageId,
   }: {
     sessionId: string;
     campaignId: string | null;
     messageId: string;
+    requestId: string;
     text: string;
     loadingMessageId: string;
   }) => {
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": requestId,
+        },
         body: JSON.stringify({ message: text, campaign_id: campaignId, character_id: null }),
       });
 
@@ -717,9 +742,9 @@ export default function Home() {
         const result = await response.json().catch(() => ({}));
         const failure = response.status >= 500
           ? createChatFailure(
-              "Delivery could not be confirmed. This action cannot be safely retried yet.",
+              AMBIGUOUS_RETRY_MESSAGE,
               "ambiguous",
-              false
+              Boolean(requestId)
             )
           : getChatFailure(response.status, result);
 
@@ -780,9 +805,9 @@ export default function Home() {
       );
     } catch {
       const failure = createChatFailure(
-        "Delivery could not be confirmed. This action cannot be safely retried yet.",
+        AMBIGUOUS_RETRY_MESSAGE,
         "ambiguous",
-        false
+        Boolean(requestId)
       );
 
       setSessions((currentSessions) =>
@@ -824,10 +849,19 @@ export default function Home() {
 
     const sessionId = activeSession.id;
     const campaignId = activeSession.campaign_id ?? null;
+    let requestId: string;
+    try {
+      requestId = createRequestId();
+    } catch {
+      setRequestError(REQUEST_ID_ERROR_MESSAGE);
+      return;
+    }
+
     const userMessage: ChatMessage = {
       id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
       role: "user",
       text: trimmed,
+      request_id: requestId,
       delivery_state: "pending",
     };
     const loadingNarratorMessage = createLoadingNarratorMessage(NARRATOR_LOADING_TEXT);
@@ -863,6 +897,7 @@ export default function Home() {
       sessionId,
       campaignId,
       messageId: userMessage.id,
+      requestId,
       text: trimmed,
       loadingMessageId: loadingNarratorMessage.id,
     });
@@ -882,6 +917,16 @@ export default function Home() {
 
     const sessionId = activeSession.id;
     const campaignId = activeSession.campaign_id ?? null;
+    let requestId = failedMessage.request_id;
+    if (!requestId) {
+      try {
+        requestId = createRequestId();
+      } catch {
+        setRequestError(REQUEST_ID_ERROR_MESSAGE);
+        return;
+      }
+    }
+
     const loadingNarratorMessage = createLoadingNarratorMessage(NARRATOR_LOADING_TEXT);
 
     setRequestError("");
@@ -894,7 +939,7 @@ export default function Home() {
               messages: [
                 ...session.messages.map((message) =>
                   message.id === messageId
-                    ? { ...message, delivery_state: "pending" as const, failure: undefined }
+                    ? { ...message, delivery_state: "pending" as const, failure: undefined, request_id: requestId }
                     : message
                 ),
                 loadingNarratorMessage,
@@ -908,6 +953,7 @@ export default function Home() {
       sessionId,
       campaignId,
       messageId,
+      requestId,
       text: failedMessage.text,
       loadingMessageId: loadingNarratorMessage.id,
     });

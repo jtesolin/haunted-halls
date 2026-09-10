@@ -10,6 +10,8 @@ import {
 } from "@/lib/engine";
 import { ensureAllowedMutationOrigin, ensureAuthenticated } from "@/lib/route-auth";
 
+const UUID_V4_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
+
 export async function POST(request: Request) {
   try {
     const { response: authResponse, internalUserId } = await ensureAuthenticated();
@@ -25,6 +27,14 @@ export async function POST(request: Request) {
     if (!internalUserId) {
       console.error("chat proxy: missing internal user context after authentication");
       return NextResponse.json({ error: "Authentication required" }, { status: 401 });
+    }
+
+    const idempotencyKey = request.headers.get("Idempotency-Key");
+    if (!idempotencyKey || !UUID_V4_PATTERN.test(idempotencyKey)) {
+      return NextResponse.json(
+        { error: "Idempotency-Key header is required and must be a valid UUIDv4" },
+        { status: 400 }
+      );
     }
 
     const body = (await request.json()) as Record<string, unknown>;
@@ -52,6 +62,7 @@ export async function POST(request: Request) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        "Idempotency-Key": idempotencyKey,
       },
       body: JSON.stringify(payload),
     });

@@ -12,6 +12,10 @@ vi.mock("next-auth/react", () => ({
   SessionProvider: ({ children }: { children: ReactNode }) => children,
 }));
 
+const UUID_V4_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
+const AMBIGUOUS_RETRY_MESSAGE = "Delivery could not be confirmed. You may safely retry.";
+const REQUEST_ID_ERROR_MESSAGE = "Unable to securely prepare this message. Please try again.";
+
 describe("home auth gating", () => {
   beforeEach(() => {
     global.fetch = vi.fn() as unknown as typeof fetch;
@@ -472,7 +476,7 @@ describe("home auth gating", () => {
     }));
   });
 
-  it("marks network and server failures as ambiguous without offering retry", async () => {
+  it("marks network and server failures as ambiguous with Retry when the logical send carries a stable idempotency key", async () => {
     vi.mocked(useSession).mockReturnValue({
       data: { user: { name: "Player One", email: "player@example.com", image: null }, expires: "2099-01-01T00:00:00.000Z" },
       status: "authenticated",
@@ -498,15 +502,10 @@ describe("home auth gating", () => {
     fireEvent.change(textarea, { target: { value: "open the iron door" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
-    await waitFor(() => expect(screen.getByText("Delivery could not be confirmed. This action cannot be safely retried yet.")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(AMBIGUOUS_RETRY_MESSAGE)).toBeInTheDocument());
     expect(screen.getAllByText("open the iron door")).toHaveLength(2);
-    expect(screen.queryByRole("button", { name: /Retry sending/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /Retry sending/ }).length).toBeGreaterThan(0);
     expect(screen.queryByText("The narrator is responding...")).not.toBeInTheDocument();
-    fireEvent.change(textarea, { target: { value: "another command" } });
-    await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
-    await waitFor(() => expect(screen.getByText("The message could not be sent. It may be empty, too long, or the campaign is no longer active.")).toBeInTheDocument());
-    expect(screen.queryByRole("button", { name: /Retry sending/ })).not.toBeInTheDocument();
   });
 
   it.each([
@@ -555,6 +554,234 @@ describe("home auth gating", () => {
     if (retryAt) {
       expect(screen.getByText(/You can continue (after|tomorrow at)/)).toBeInTheDocument();
     }
+  });
+
+  it("generates a stable UUID per logical send and a different UUID for the next identical send", async () => {
+    vi.mocked(useSession).mockReturnValue({
+      data: { user: { name: "Player One", email: "player@example.com", image: null }, expires: "2099-01-01T00:00:00.000Z" },
+      status: "authenticated",
+      update: vi.fn(),
+    });
+
+    vi.mocked(global.fetch).mockImplementation((input: RequestInfo | URL) => {
+      if (String(input) === "/api/campaigns") {
+        return Promise.resolve(new Response("[]", { status: 200 }));
+      }
+      if (String(input) === "/api/campaign") {
+        return Promise.resolve(new Response(JSON.stringify({
+          campaign_id: "campaign-123",
+          name: "The Lost Crypt",
+          description: null,
+          messages: [{ turn_id: "turn-42", role: "assistant", content: "A previous turn", created_at: "2026-01-01T00:00:00Z" }],
+          truncated: false,
+        }), { status: 200 }));
+      }
+      if (String(input) === "/api/chat") {
+        return Promise.resolve(new Response(JSON.stringify({ reply: "The hall answers.", campaign_id: "campaign-123", turn_id: "turn-99" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    });
+
+    render(<Home />);
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledWith("/api/campaign", expect.anything()));
+    const textarea = await screen.findByRole("textbox", { name: "Enter your command" });
+
+    expect(screen.getAllByText("A previous turn").length).toBeGreaterThan(0);
+
+    fireEvent.change(textarea, { target: { value: "look around" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(vi.mocked(global.fetch).mock.calls.filter(([input]) => String(input) === "/api/chat")).toHaveLength(1);
+    });
+
+    const firstInit = vi.mocked(global.fetch).mock.calls.find(([input]) => String(input) === "/api/chat")?.[1] as RequestInit | undefined;
+    const firstIdempotencyKey = new Headers(firstInit?.headers as HeadersInit | undefined).get("Idempotency-Key");
+    expect(firstIdempotencyKey).toMatch(UUID_V4_PATTERN);
+
+    await waitFor(() => expect(screen.getAllByText("The hall answers.").length).toBeGreaterThan(0));
+
+    fireEvent.change(textarea, { target: { value: "look around" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(vi.mocked(global.fetch).mock.calls.filter(([input]) => String(input) === "/api/chat")).toHaveLength(2);
+    });
+
+    const secondInit = vi.mocked(global.fetch).mock.calls.filter(([input]) => String(input) === "/api/chat")[1]?.[1] as RequestInit | undefined;
+    const secondIdempotencyKey = new Headers(secondInit?.headers as HeadersInit | undefined).get("Idempotency-Key");
+    expect(secondIdempotencyKey).toMatch(UUID_V4_PATTERN);
+    expect(secondIdempotencyKey).not.toBe(firstIdempotencyKey);
+  });
+
+  it("uses strong runtime randomness to generate a valid UUIDv4 when randomUUID is unavailable", async () => {
+    vi.mocked(useSession).mockReturnValue({
+      data: { user: { name: "Player One", email: "player@example.com", image: null }, expires: "2099-01-01T00:00:00.000Z" },
+      status: "authenticated",
+      update: vi.fn(),
+    });
+
+    vi.mocked(global.fetch).mockImplementation((input: RequestInfo | URL) => {
+      if (String(input) === "/api/campaigns") {
+        return Promise.resolve(new Response("[]", { status: 200 }));
+      }
+      if (String(input) === "/api/campaign") {
+        return Promise.resolve(new Response(JSON.stringify({
+          campaign_id: "campaign-123",
+          name: "The Lost Crypt",
+          description: null,
+          messages: [],
+          truncated: false,
+        }), { status: 200 }));
+      }
+      if (String(input) === "/api/chat") {
+        return Promise.resolve(new Response(JSON.stringify({ reply: "The hall answers.", campaign_id: "campaign-123", turn_id: "turn-99" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    });
+
+    const cryptoSource = globalThis.crypto;
+    const originalRandomUUID = cryptoSource.randomUUID;
+    const originalGetRandomValues = cryptoSource.getRandomValues;
+    const getRandomValues = vi.fn((array: Uint8Array) => {
+      array.set([0, 1, 2, 3, 4, 5, 6, 7, 200, 9, 10, 11, 12, 13, 14, 15]);
+      return array;
+    });
+    Object.defineProperty(cryptoSource, "randomUUID", { configurable: true, value: undefined });
+    Object.defineProperty(cryptoSource, "getRandomValues", { configurable: true, value: getRandomValues });
+
+    try {
+      render(<Home />);
+      await waitFor(() => expect(global.fetch).toHaveBeenCalledWith("/api/campaign", expect.anything()));
+      const textarea = await screen.findByRole("textbox", { name: "Enter your command" });
+      fireEvent.change(textarea, { target: { value: "look around" } });
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+      await waitFor(() => {
+        expect(vi.mocked(global.fetch).mock.calls.filter(([input]) => String(input) === "/api/chat")).toHaveLength(1);
+      });
+
+      const init = vi.mocked(global.fetch).mock.calls.find(([input]) => String(input) === "/api/chat")?.[1] as RequestInit | undefined;
+      const idempotencyKey = new Headers(init?.headers as HeadersInit | undefined).get("Idempotency-Key");
+      expect(idempotencyKey).toBe("00010203-0405-4607-8809-0a0b0c0d0e0f");
+      expect(idempotencyKey).toMatch(UUID_V4_PATTERN);
+      expect(getRandomValues).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(cryptoSource, "randomUUID", { configurable: true, value: originalRandomUUID });
+      Object.defineProperty(cryptoSource, "getRandomValues", { configurable: true, value: originalGetRandomValues });
+    }
+  });
+
+  it("does not mutate chat state or call chat when a new send cannot generate a secure request ID", async () => {
+    vi.mocked(useSession).mockReturnValue({
+      data: { user: { name: "Player One", email: "player@example.com", image: null }, expires: "2099-01-01T00:00:00.000Z" },
+      status: "authenticated",
+      update: vi.fn(),
+    });
+
+    vi.mocked(global.fetch).mockImplementation((input: RequestInfo | URL) => {
+      if (String(input) === "/api/campaigns") {
+        return Promise.resolve(new Response("[]", { status: 200 }));
+      }
+      if (String(input) === "/api/campaign") {
+        return Promise.resolve(new Response(JSON.stringify({
+          campaign_id: "campaign-123",
+          name: "The Lost Crypt",
+          description: null,
+          messages: [],
+          truncated: false,
+        }), { status: 200 }));
+      }
+      if (String(input) === "/api/chat") {
+        return Promise.resolve(new Response(JSON.stringify({ reply: "The hall answers." }), { status: 200 }));
+      }
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    });
+
+    const cryptoSource = globalThis.crypto;
+    const originalRandomUUID = cryptoSource.randomUUID;
+    const originalGetRandomValues = cryptoSource.getRandomValues;
+    Object.defineProperty(cryptoSource, "randomUUID", { configurable: true, value: undefined });
+    Object.defineProperty(cryptoSource, "getRandomValues", { configurable: true, value: undefined });
+
+    try {
+      render(<Home />);
+      await waitFor(() => expect(global.fetch).toHaveBeenCalledWith("/api/campaign", expect.anything()));
+      const textarea = await screen.findByRole("textbox", { name: "Enter your command" });
+      fireEvent.change(textarea, { target: { value: "look around" } });
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+      await waitFor(() => expect(screen.getByText(REQUEST_ID_ERROR_MESSAGE)).toBeInTheDocument());
+      expect(textarea).toHaveValue("look around");
+      expect(screen.queryByText("look around", { selector: "p" })).not.toBeInTheDocument();
+      expect(screen.queryByText("The narrator is responding...")).not.toBeInTheDocument();
+      expect(vi.mocked(global.fetch).mock.calls.filter(([input]) => String(input) === "/api/chat")).toHaveLength(0);
+    } finally {
+      Object.defineProperty(cryptoSource, "randomUUID", { configurable: true, value: originalRandomUUID });
+      Object.defineProperty(cryptoSource, "getRandomValues", { configurable: true, value: originalGetRandomValues });
+    }
+  });
+
+  it("reuses the same idempotency key on Retry for ambiguous 5xx failures", async () => {
+    vi.mocked(useSession).mockReturnValue({
+      data: { user: { name: "Player One", email: "player@example.com", image: null }, expires: "2099-01-01T00:00:00.000Z" },
+      status: "authenticated",
+      update: vi.fn(),
+    });
+
+    let chatAttempts = 0;
+    let resolveFirstChat: ((value: Response) => void) | undefined;
+    const firstChat = new Promise<Response>((resolve) => { resolveFirstChat = resolve; });
+
+    vi.mocked(global.fetch).mockImplementation((input: RequestInfo | URL) => {
+      if (String(input) === "/api/campaigns") {
+        return Promise.resolve(new Response("[]", { status: 200 }));
+      }
+      if (String(input) === "/api/campaign") {
+        return Promise.resolve(new Response(JSON.stringify({
+          campaign_id: "campaign-123",
+          name: "The Lost Crypt",
+          description: null,
+          messages: [],
+          truncated: false,
+        }), { status: 200 }));
+      }
+      if (String(input) === "/api/chat") {
+        chatAttempts += 1;
+        if (chatAttempts === 1) {
+          return firstChat;
+        }
+        return Promise.resolve(new Response(JSON.stringify({ error: "The hall failed." }), { status: 500 }));
+      }
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    });
+
+    render(<Home />);
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledWith("/api/campaign", expect.anything()));
+    const textarea = await screen.findByRole("textbox", { name: "Enter your command" });
+    fireEvent.change(textarea, { target: { value: "open the iron door" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    resolveFirstChat?.(new Response(JSON.stringify({ error: "The hall failed." }), { status: 500 }));
+    await waitFor(() => expect(screen.getByText(AMBIGUOUS_RETRY_MESSAGE)).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /Retry sending/ })).toBeEnabled();
+
+    const firstFailedRequest = vi.mocked(global.fetch).mock.calls.find(([input]) => String(input) === "/api/chat")?.[1] as RequestInit | undefined;
+    const firstKey = new Headers(firstFailedRequest?.headers as HeadersInit | undefined).get("Idempotency-Key");
+
+    fireEvent.click(screen.getByRole("button", { name: /Retry sending/ }));
+    await waitFor(() => expect(chatAttempts).toBe(2));
+
+    const retryRequest = vi.mocked(global.fetch).mock.calls.filter(([input]) => String(input) === "/api/chat").at(-1)?.[1] as RequestInit | undefined;
+    const retryKey = new Headers(retryRequest?.headers as HeadersInit | undefined).get("Idempotency-Key");
+    expect(retryKey).toBe(firstKey);
+    expect(screen.getByRole("button", { name: /Retry sending/ })).toBeEnabled();
   });
 
   it("uses a safe fallback for a malformed daily limit reset and does not retry an unknown 429", async () => {
