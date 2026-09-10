@@ -113,7 +113,7 @@ describe("BFF auth guard", () => {
         headers: {
           "Content-Type": "application/json",
           "Idempotency-Key": validKey,
-          Authorization: "******",
+          Authorization: "Bearer browser-token",
           [INTERNAL_ENGINE_USER_ID_HEADER]: "user_browser_supplied",
         },
         body: JSON.stringify({ message: "look", internal_user_id: "user_body_supplied" }),
@@ -126,7 +126,7 @@ describe("BFF auth guard", () => {
     const headers = new Headers(init?.headers);
     expect(headers.get("Idempotency-Key")).toBe(validKey);
     expect(headers.get(INTERNAL_ENGINE_USER_ID_HEADER)).toBe("user_0123456789abcdef0123456789abcdef");
-    expect(headers.get("authorization")).toBeTruthy();
+    expect(headers.get("Authorization")).toBe(`Bearer ${TEST_INTERNAL_ENGINE_SERVICE_TOKEN}`);
   });
 
   it("adds the internal bearer token for authenticated chat requests and strips browser authorization", async () => {
@@ -150,7 +150,7 @@ describe("BFF auth guard", () => {
       headers: {
         "Content-Type": "application/json",
         "Idempotency-Key": VALID_IDEMPOTENCY_KEY,
-        Authorization: "******",
+        Authorization: "Bearer browser-token",
         [INTERNAL_ENGINE_USER_ID_HEADER]: "user_browser_supplied",
       },
       body: JSON.stringify({ message: "look", internal_user_id: "user_body_supplied" }),
@@ -165,8 +165,8 @@ describe("BFF auth guard", () => {
     expect(String(target)).toContain("/api/chat");
 
     const headers = new Headers(init?.headers);
-    expect(headers.get("Authorization")).toBeTruthy();
-    expect(headers.get("authorization")).toBeTruthy();
+    expect(headers.get("Authorization")).toBe(`Bearer ${TEST_INTERNAL_ENGINE_SERVICE_TOKEN}`);
+    expect(headers.get("Authorization")).not.toBe("Bearer browser-token");
     expect(headers.get(INTERNAL_ENGINE_USER_ID_HEADER)).toBe(
       "user_0123456789abcdef0123456789abcdef"
     );
