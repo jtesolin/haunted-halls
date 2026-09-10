@@ -65,6 +65,22 @@ describe("proxy legacy run.app redirect", () => {
     );
   });
 
+  it("keeps a protocol-relative-looking path on the canonical host", () => {
+    process.env.NEXTAUTH_URL = "https://haunted-halls.tesolin.us";
+
+    const request = makeRequest(
+      "https://frontend.internal//evil.example/path?bar=baz",
+      "haunted-halls-frontend-458395246135.us-east1.run.app",
+    );
+    const response = proxy(request);
+    const location = response.headers.get("location");
+
+    expect(response.status).toBe(308);
+    expect(new URL(location ?? "").hostname).toBe("haunted-halls.tesolin.us");
+    expect(new URL(location ?? "").pathname).toBe("//evil.example/path");
+    expect(new URL(location ?? "").search).toBe("?bar=baz");
+  });
+
   it("does not redirect requests already on the canonical custom domain", () => {
     process.env.NEXTAUTH_URL = "https://haunted-halls.tesolin.us";
 
@@ -141,6 +157,22 @@ describe("proxy legacy run.app redirect", () => {
       "https://haunted-halls.tesolin.us/foo?bar=baz",
     );
   });
+
+  it("uses the first comma-separated x-forwarded-host value", () => {
+    process.env.NEXTAUTH_URL = "https://haunted-halls.tesolin.us";
+
+    const request = new NextRequest("https://internal-lb.local/foo", {
+      headers: {
+        host: "internal-lb.local",
+        "x-forwarded-host":
+          " haunted-halls-frontend-458395246135.us-east1.run.app:443, internal-proxy.example",
+      },
+    });
+    const response = proxy(request);
+
+    expect(response.status).toBe(308);
+    expect(response.headers.get("location")).toBe("https://haunted-halls.tesolin.us/foo");
+  });
 });
 
 describe("proxy matcher", () => {
@@ -149,6 +181,10 @@ describe("proxy matcher", () => {
 
   it("excludes /api/health so Cloud Run's health/startup probe is never redirected", () => {
     expect(matcherRegexp.test("/api/health")).toBe(false);
+  });
+
+  it("still applies to similarly prefixed paths such as /api/healthz", () => {
+    expect(matcherRegexp.test("/api/healthz")).toBe(true);
   });
 
   it("still applies to unrelated API/BFF and page routes", () => {

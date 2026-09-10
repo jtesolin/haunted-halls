@@ -37,10 +37,17 @@ function resolveCanonicalHost(): string {
 // Next.js is bound to internally, so it cannot be used to detect which
 // public hostname served the request.
 function resolveRequestHostname(request: NextRequest): string {
-  const forwardedHost = request.headers.get("x-forwarded-host")?.trim();
+  const forwardedHost = request.headers
+    .get("x-forwarded-host")
+    ?.split(",", 1)[0]
+    ?.trim();
   const host = forwardedHost || request.headers.get("host")?.trim() || "";
 
-  return host.split(":")[0]?.toLowerCase() ?? "";
+  const hostname = host.startsWith("[")
+    ? host.slice(1, host.indexOf("]"))
+    : host.replace(/:\d+$/, "");
+
+  return hostname.toLowerCase();
 }
 
 export function proxy(request: NextRequest) {
@@ -51,10 +58,9 @@ export function proxy(request: NextRequest) {
   }
 
   const canonicalHost = resolveCanonicalHost();
-  const destination = new URL(
-    `${request.nextUrl.pathname}${request.nextUrl.search}`,
-    `https://${canonicalHost}`,
-  );
+  const destination = new URL(`https://${canonicalHost}`);
+  destination.pathname = request.nextUrl.pathname;
+  destination.search = request.nextUrl.search;
 
   return NextResponse.redirect(destination, 308);
 }
@@ -62,5 +68,5 @@ export function proxy(request: NextRequest) {
 export const config = {
   // Never redirect the Cloud Run startup/health probe: it must keep returning
   // /api/health directly regardless of which hostname it is reached on.
-  matcher: ["/((?!api/health).*)"],
+  matcher: ["/((?!api/health(?:/|$)).*)"],
 };
