@@ -472,7 +472,7 @@ describe("home auth gating", () => {
     }));
   });
 
-  it("marks network and server failures as ambiguous without offering retry", async () => {
+  it("marks network and server failures as ambiguous with Retry when the logical send carries a stable idempotency key", async () => {
     vi.mocked(useSession).mockReturnValue({
       data: { user: { name: "Player One", email: "player@example.com", image: null }, expires: "2099-01-01T00:00:00.000Z" },
       status: "authenticated",
@@ -500,13 +500,8 @@ describe("home auth gating", () => {
 
     await waitFor(() => expect(screen.getByText("Delivery could not be confirmed. This action cannot be safely retried yet.")).toBeInTheDocument());
     expect(screen.getAllByText("open the iron door")).toHaveLength(2);
-    expect(screen.queryByRole("button", { name: /Retry sending/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /Retry sending/ }).length).toBeGreaterThan(0);
     expect(screen.queryByText("The narrator is responding...")).not.toBeInTheDocument();
-    fireEvent.change(textarea, { target: { value: "another command" } });
-    await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
-    await waitFor(() => expect(screen.getByText("The message could not be sent. It may be empty, too long, or the campaign is no longer active.")).toBeInTheDocument());
-    expect(screen.queryByRole("button", { name: /Retry sending/ })).not.toBeInTheDocument();
   });
 
   it.each([
@@ -555,6 +550,123 @@ describe("home auth gating", () => {
     if (retryAt) {
       expect(screen.getByText(/You can continue (after|tomorrow at)/)).toBeInTheDocument();
     }
+  });
+
+  it("generates a stable UUID per logical send and a different UUID for the next identical send", async () => {
+    vi.mocked(useSession).mockReturnValue({
+      data: { user: { name: "Player One", email: "player@example.com", image: null }, expires: "2099-01-01T00:00:00.000Z" },
+      status: "authenticated",
+      update: vi.fn(),
+    });
+
+    vi.mocked(global.fetch).mockImplementation((input: RequestInfo | URL) => {
+      if (String(input) === "/api/campaigns") {
+        return Promise.resolve(new Response("[]", { status: 200 }));
+      }
+      if (String(input) === "/api/campaign") {
+        return Promise.resolve(new Response(JSON.stringify({
+          campaign_id: "campaign-123",
+          name: "The Lost Crypt",
+          description: null,
+          messages: [{ turn_id: "turn-42", role: "assistant", content: "A previous turn", created_at: "2026-01-01T00:00:00Z" }],
+          truncated: false,
+        }), { status: 200 }));
+      }
+      if (String(input) === "/api/chat") {
+        return Promise.resolve(new Response(JSON.stringify({ reply: "The hall answers.", campaign_id: "campaign-123", turn_id: "turn-99" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    });
+
+    render(<Home />);
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledWith("/api/campaign", expect.anything()));
+    const textarea = await screen.findByRole("textbox", { name: "Enter your command" });
+
+    expect(screen.getAllByText("A previous turn").length).toBeGreaterThan(0);
+
+    fireEvent.change(textarea, { target: { value: "look around" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(vi.mocked(global.fetch).mock.calls.filter(([input]) => String(input) === "/api/chat")).toHaveLength(1);
+    });
+
+    const firstInit = vi.mocked(global.fetch).mock.calls.find(([input]) => String(input) === "/api/chat")?.[1] as RequestInit | undefined;
+    const firstIdempotencyKey = new Headers(firstInit?.headers as HeadersInit | undefined).get("Idempotency-Key");
+    expect(firstIdempotencyKey).toMatch(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/);
+
+    await waitFor(() => expect(screen.getAllByText("The hall answers.").length).toBeGreaterThan(0));
+
+    fireEvent.change(textarea, { target: { value: "look around" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(vi.mocked(global.fetch).mock.calls.filter(([input]) => String(input) === "/api/chat")).toHaveLength(2);
+    });
+
+    const secondInit = vi.mocked(global.fetch).mock.calls.filter(([input]) => String(input) === "/api/chat")[1]?.[1] as RequestInit | undefined;
+    const secondIdempotencyKey = new Headers(secondInit?.headers as HeadersInit | undefined).get("Idempotency-Key");
+    expect(secondIdempotencyKey).toMatch(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/);
+    expect(secondIdempotencyKey).not.toBe(firstIdempotencyKey);
+  });
+
+  it("reuses the same idempotency key on Retry for ambiguous 5xx failures", async () => {
+    vi.mocked(useSession).mockReturnValue({
+      data: { user: { name: "Player One", email: "player@example.com", image: null }, expires: "2099-01-01T00:00:00.000Z" },
+      status: "authenticated",
+      update: vi.fn(),
+    });
+
+    let chatAttempts = 0;
+    let resolveFirstChat: ((value: Response) => void) | undefined;
+    const firstChat = new Promise<Response>((resolve) => { resolveFirstChat = resolve; });
+
+    vi.mocked(global.fetch).mockImplementation((input: RequestInfo | URL) => {
+      if (String(input) === "/api/campaigns") {
+        return Promise.resolve(new Response("[]", { status: 200 }));
+      }
+      if (String(input) === "/api/campaign") {
+        return Promise.resolve(new Response(JSON.stringify({
+          campaign_id: "campaign-123",
+          name: "The Lost Crypt",
+          description: null,
+          messages: [],
+          truncated: false,
+        }), { status: 200 }));
+      }
+      if (String(input) === "/api/chat") {
+        chatAttempts += 1;
+        if (chatAttempts === 1) {
+          return firstChat;
+        }
+        return Promise.resolve(new Response(JSON.stringify({ error: "The hall failed." }), { status: 500 }));
+      }
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    });
+
+    render(<Home />);
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledWith("/api/campaign", expect.anything()));
+    const textarea = await screen.findByRole("textbox", { name: "Enter your command" });
+    fireEvent.change(textarea, { target: { value: "open the iron door" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    resolveFirstChat?.(new Response(JSON.stringify({ error: "The hall failed." }), { status: 500 }));
+    await waitFor(() => expect(screen.getByText("Delivery could not be confirmed. This action cannot be safely retried yet.")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /Retry sending/ })).toBeEnabled();
+
+    const firstFailedRequest = vi.mocked(global.fetch).mock.calls.find(([input]) => String(input) === "/api/chat")?.[1] as RequestInit | undefined;
+    const firstKey = new Headers(firstFailedRequest?.headers as HeadersInit | undefined).get("Idempotency-Key");
+
+    fireEvent.click(screen.getByRole("button", { name: /Retry sending/ }));
+    await waitFor(() => expect(chatAttempts).toBe(2));
+
+    const retryRequest = vi.mocked(global.fetch).mock.calls.filter(([input]) => String(input) === "/api/chat").at(-1)?.[1] as RequestInit | undefined;
+    const retryKey = new Headers(retryRequest?.headers as HeadersInit | undefined).get("Idempotency-Key");
+    expect(retryKey).toBe(firstKey);
+    expect(screen.getByRole("button", { name: /Retry sending/ })).toBeEnabled();
   });
 
   it("uses a safe fallback for a malformed daily limit reset and does not retry an unknown 429", async () => {
