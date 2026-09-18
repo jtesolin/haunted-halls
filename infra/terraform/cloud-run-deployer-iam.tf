@@ -34,6 +34,20 @@ resource "google_cloud_run_v2_service_iam_member" "frontend_deployer_engine_prom
   member   = "serviceAccount:${google_service_account.frontend_deployer.email}"
 }
 
+# The promotion workflow captures the release candidate from the staging engine's
+# Ready serving revision, so it needs read-only access to that service. Viewer
+# grants run.services.get and run.revisions.get without any ability to deploy or
+# otherwise modify the staging engine, which the engine repository owns.
+resource "google_cloud_run_v2_service_iam_member" "frontend_deployer_engine_staging_viewer" {
+  count = var.staging_application_services_enabled ? 1 : 0
+
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.engine_staging[0].name
+  role     = "roles/run.viewer"
+  member   = "serviceAccount:${google_service_account.frontend_deployer.email}"
+}
+
 # Preserve current engine production deployment while staging rollout is applied.
 resource "google_cloud_run_v2_service_iam_member" "engine_service_deployer" {
   count = var.application_services_enabled ? 1 : 0
