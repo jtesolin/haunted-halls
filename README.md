@@ -534,7 +534,9 @@ Before enabling staging application services, create/configure a Google OAuth We
 - Authorized JavaScript origin: `https://staging.haunted-halls.tesolin.us`
 - Authorized redirect URI: `https://staging.haunted-halls.tesolin.us/api/auth/callback/google`
 
-Then add its client secret as a new version of `hh-google-client-secret-staging`, set `staging_google_oauth_client_id`, set `staging_google_client_secret_version`, provide reviewed immutable initial frontend/engine images, and set `staging_application_services_enabled = true` in the operator-local `terraform.tfvars`.
+Then add its client secret as a new version of `hh-google-client-secret-staging`, set `staging_google_oauth_client_id`, set `staging_google_client_secret_version`, and provide reviewed immutable initial frontend/engine images in the operator-local `terraform.tfvars`.
+
+Do not set `staging_application_services_enabled = true` yet. The first apply must keep that gate `false` so the staging foundation is created without the Cloud Run services, migration job, or domain mapping. Enable it only for the second apply, after both database privilege controls below have been applied and verified. See the rollout order at the end of this section.
 
 #### Database privilege isolation
 
