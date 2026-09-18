@@ -538,9 +538,11 @@ Then add its client secret as a new version of `hh-google-client-secret-staging`
 
 #### Database privilege isolation
 
-Terraform declares `database_roles = []` on both `google_sql_user.app` and `google_sql_user.app_staging`. Cloud SQL otherwise grants `cloudsqlsuperuser` to built-in PostgreSQL users by default, and that membership would bypass the per-database isolation described below. Declaring an explicit empty set makes Terraform authoritative over each user's database-role set, so neither application user is a `cloudsqlsuperuser` and neither can reach the other environment's database.
+Cross-database isolation requires two complementary controls, and both must be in place before it is effective.
 
-`CONNECT` isolation is enforced per database:
+First, Terraform declares `database_roles = []` on both `google_sql_user.app` and `google_sql_user.app_staging`. Cloud SQL otherwise grants `cloudsqlsuperuser` to built-in PostgreSQL users by default, and that membership would override any database-level `CONNECT` restriction. Declaring an explicit empty set makes Terraform authoritative over each user's database-role set, so neither application user is a `cloudsqlsuperuser`. On its own this removes the bypass; it does not by itself restrict which databases a user may reach.
+
+Second, an operator applies the `CONNECT` hardening SQL described below. PostgreSQL grants `CONNECT` to `PUBLIC` by default, so immediately after `terraform apply` either application user can still connect to the other environment's database. Isolation takes effect only once that SQL has run:
 
 - `haunted_halls_app` has `CONNECT` on `haunted_halls` only
 - `haunted_halls_staging_app` has `CONNECT` on `haunted_halls_staging` only
