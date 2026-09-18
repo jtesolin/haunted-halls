@@ -109,6 +109,128 @@ resource "google_cloud_run_v2_service" "engine" {
   }
 }
 
+resource "google_cloud_run_v2_service" "engine_staging" {
+  count = var.staging_application_services_enabled ? 1 : 0
+
+  name                = local.cloud_run_service_names.engine_staging
+  location            = var.region
+  deletion_protection = false
+  ingress             = "INGRESS_TRAFFIC_ALL"
+
+  template {
+    service_account = google_service_account.engine_staging_runtime.email
+
+    scaling {
+      min_instance_count = 0
+      max_instance_count = 2
+    }
+
+    volumes {
+      name = "cloudsql"
+
+      cloud_sql_instance {
+        instances = [google_sql_database_instance.postgres.connection_name]
+      }
+    }
+
+    containers {
+      image = local.staging_engine_image
+
+      ports {
+        container_port = 8000
+      }
+
+      resources {
+        limits = {
+          cpu    = "1"
+          memory = "512Mi"
+        }
+        cpu_idle = true
+      }
+
+      env {
+        name  = "AI_ENABLED"
+        value = "true"
+      }
+
+      env {
+        name  = "TOOL_REGISTRY_TRANSPORT"
+        value = "local"
+      }
+
+      env {
+        name = "DATABASE_URL"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.database_url_staging.id
+            version = tostring(var.staging_database_password_version)
+          }
+        }
+      }
+
+      env {
+        name = "INTERNAL_ENGINE_SERVICE_TOKEN"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.internal_service_token_staging.id
+            version = tostring(var.staging_internal_service_token_version)
+          }
+        }
+      }
+
+      env {
+        name = "OPENAI_API_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.openai_api_key.id
+            version = tostring(var.openai_api_key_version)
+          }
+        }
+      }
+
+      startup_probe {
+        initial_delay_seconds = 5
+        timeout_seconds       = 3
+        period_seconds        = 10
+        failure_threshold     = 6
+
+        http_get {
+          path = "/health"
+        }
+      }
+
+      volume_mounts {
+        name       = "cloudsql"
+        mount_path = "/cloudsql"
+      }
+    }
+  }
+
+  depends_on = [google_project_service.cloud_run]
+
+  lifecycle {
+    # GitHub Actions CD owns deployed image revisions.
+    # Cloud Run client/client_version identify the caller that last updated the
+    # service and are non-authoritative deployment metadata.
+    ignore_changes = [
+      client,
+      client_version,
+      template[0].containers[0].image,
+    ]
+
+    precondition {
+      condition = (
+        startswith(local.staging_engine_image, "${local.engine_image_repository}@") &&
+        length(regexall(
+          "^sha256:[0-9a-f]{64}$",
+          replace(local.staging_engine_image, "${local.engine_image_repository}@", "")
+        )) == 1
+      )
+      error_message = "The effective staging engine image must be an immutable digest reference under the engine Artifact Registry repository."
+    }
+  }
+}
+
 resource "google_cloud_run_v2_service" "frontend" {
   count = var.application_services_enabled ? 1 : 0
 
@@ -232,6 +354,156 @@ resource "google_cloud_run_v2_service" "frontend" {
   }
 }
 
+resource "google_cloud_run_v2_service" "frontend_staging" {
+  count = var.staging_application_services_enabled ? 1 : 0
+
+  name                = local.cloud_run_service_names.frontend_staging
+  location            = var.region
+  deletion_protection = false
+  ingress             = "INGRESS_TRAFFIC_ALL"
+
+  template {
+    service_account = google_service_account.frontend_staging_runtime.email
+
+    scaling {
+      min_instance_count = 0
+      max_instance_count = 2
+    }
+
+    containers {
+      image = var.staging_frontend_image
+
+      ports {
+        container_port = 3000
+      }
+
+      resources {
+        limits = {
+          cpu    = "1"
+          memory = "512Mi"
+        }
+        cpu_idle = true
+      }
+
+      env {
+        name  = "ENGINE_BASE_URL"
+        value = local.cloud_run_urls.engine_staging
+      }
+
+      env {
+        name  = "ENGINE_ID_TOKEN_AUDIENCE"
+        value = local.cloud_run_urls.engine_staging
+      }
+
+      env {
+        name  = "NEXTAUTH_URL"
+        value = local.staging_frontend_canonical_url
+      }
+
+      env {
+        name  = "GOOGLE_CLIENT_ID"
+        value = var.staging_google_oauth_client_id
+      }
+
+      env {
+        name = "INTERNAL_ENGINE_SERVICE_TOKEN"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.internal_service_token_staging.id
+            version = tostring(var.staging_internal_service_token_version)
+          }
+        }
+      }
+
+      env {
+        name = "NEXTAUTH_SECRET"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.nextauth_secret_staging.id
+            version = tostring(var.staging_nextauth_secret_version)
+          }
+        }
+      }
+
+      env {
+        name = "GOOGLE_CLIENT_SECRET"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.google_client_secret_staging.id
+            version = tostring(var.staging_google_client_secret_version)
+          }
+        }
+      }
+
+      startup_probe {
+        initial_delay_seconds = 5
+        timeout_seconds       = 3
+        period_seconds        = 10
+        failure_threshold     = 6
+
+        http_get {
+          path = "/api/health"
+        }
+      }
+    }
+  }
+
+  depends_on = [google_project_service.cloud_run]
+
+  lifecycle {
+    # GitHub Actions CD owns deployed image revisions.
+    # Cloud Run client/client_version identify the caller that last updated the
+    # service and are non-authoritative deployment metadata.
+    ignore_changes = [
+      client,
+      client_version,
+      template[0].containers[0].image,
+    ]
+
+    precondition {
+      condition     = length(trimspace(var.staging_frontend_image)) > 0
+      error_message = "staging_frontend_image is required when staging_application_services_enabled is true."
+    }
+
+    precondition {
+      condition = (
+        startswith(var.staging_frontend_image, "${local.frontend_image_repository}@") &&
+        length(regexall(
+          "^sha256:[0-9a-f]{64}$",
+          replace(var.staging_frontend_image, "${local.frontend_image_repository}@", "")
+        )) == 1
+      )
+      error_message = "staging_frontend_image must be an immutable digest reference under the frontend Artifact Registry repository."
+    }
+
+    precondition {
+      condition     = length(trimspace(local.staging_engine_image)) > 0
+      error_message = "staging_engine_image or engine_image is required when staging_application_services_enabled is true."
+    }
+
+    precondition {
+      condition = (
+        startswith(local.staging_engine_image, "${local.engine_image_repository}@") &&
+        length(regexall(
+          "^sha256:[0-9a-f]{64}$",
+          replace(local.staging_engine_image, "${local.engine_image_repository}@", "")
+        )) == 1
+      )
+      error_message = "The effective staging engine image must be an immutable digest reference under the engine Artifact Registry repository."
+    }
+
+    precondition {
+      condition     = length(trimspace(var.staging_google_oauth_client_id)) > 0
+      error_message = "staging_google_oauth_client_id is required when staging_application_services_enabled is true."
+    }
+
+    precondition {
+      condition     = var.staging_google_client_secret_version > 0 && floor(var.staging_google_client_secret_version) == var.staging_google_client_secret_version
+      error_message = "staging_google_client_secret_version must be a positive integer when staging_application_services_enabled is true."
+    }
+  }
+}
+
 resource "google_cloud_run_domain_mapping" "frontend" {
   count = (
     var.application_services_enabled &&
@@ -247,6 +519,21 @@ resource "google_cloud_run_domain_mapping" "frontend" {
 
   spec {
     route_name = google_cloud_run_v2_service.frontend[0].name
+  }
+}
+
+resource "google_cloud_run_domain_mapping" "frontend_staging" {
+  count = var.staging_application_services_enabled ? 1 : 0
+
+  name     = local.staging_frontend_hostname
+  location = google_cloud_run_v2_service.frontend_staging[0].location
+
+  metadata {
+    namespace = var.project_id
+  }
+
+  spec {
+    route_name = google_cloud_run_v2_service.frontend_staging[0].name
   }
 }
 
@@ -304,6 +591,73 @@ resource "google_cloud_run_v2_job" "migration" {
   }
 }
 
+resource "google_cloud_run_v2_job" "migration_staging" {
+  count = var.staging_application_services_enabled ? 1 : 0
+
+  name                = local.cloud_run_service_names.migrate_staging
+  location            = var.region
+  deletion_protection = false
+
+  template {
+    template {
+      service_account = google_service_account.migration_staging_runtime.email
+
+      volumes {
+        name = "cloudsql"
+
+        cloud_sql_instance {
+          instances = [google_sql_database_instance.postgres.connection_name]
+        }
+      }
+
+      containers {
+        image   = local.staging_engine_image
+        command = ["python"]
+        args    = ["-m", "alembic", "upgrade", "head"]
+
+        env {
+          name = "DATABASE_URL"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.database_url_staging.id
+              version = tostring(var.staging_database_password_version)
+            }
+          }
+        }
+
+        volume_mounts {
+          name       = "cloudsql"
+          mount_path = "/cloudsql"
+        }
+      }
+    }
+  }
+
+  depends_on = [google_project_service.cloud_run]
+
+  lifecycle {
+    # GitHub Actions CD owns the migration job image revision.
+    # Cloud Run client/client_version identify the caller that last updated the
+    # job and are non-authoritative deployment metadata.
+    ignore_changes = [
+      client,
+      client_version,
+      template[0].template[0].containers[0].image,
+    ]
+
+    precondition {
+      condition = (
+        startswith(local.staging_engine_image, "${local.engine_image_repository}@") &&
+        length(regexall(
+          "^sha256:[0-9a-f]{64}$",
+          replace(local.staging_engine_image, "${local.engine_image_repository}@", "")
+        )) == 1
+      )
+      error_message = "The effective staging engine image must be an immutable digest reference under the engine Artifact Registry repository."
+    }
+  }
+}
+
 resource "google_cloud_run_v2_service_iam_member" "engine_frontend_invoker" {
   count = var.application_services_enabled ? 1 : 0
 
@@ -314,12 +668,32 @@ resource "google_cloud_run_v2_service_iam_member" "engine_frontend_invoker" {
   member   = "serviceAccount:${google_service_account.frontend_runtime.email}"
 }
 
+resource "google_cloud_run_v2_service_iam_member" "engine_staging_frontend_invoker" {
+  count = var.staging_application_services_enabled ? 1 : 0
+
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.engine_staging[0].name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.frontend_staging_runtime.email}"
+}
+
 resource "google_cloud_run_v2_service_iam_member" "frontend_public_invoker" {
   count = var.application_services_enabled ? 1 : 0
 
   project  = var.project_id
   location = var.region
   name     = google_cloud_run_v2_service.frontend[0].name
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}
+
+resource "google_cloud_run_v2_service_iam_member" "frontend_staging_public_invoker" {
+  count = var.staging_application_services_enabled ? 1 : 0
+
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.frontend_staging[0].name
   role     = "roles/run.invoker"
   member   = "allUsers"
 }

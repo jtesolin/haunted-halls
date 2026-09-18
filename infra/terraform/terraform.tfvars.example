@@ -14,16 +14,19 @@ engine_repo_name = "haunted-halls-engine"
 cloud_sql_tier           = "db-f1-micro"
 cloud_sql_disk_size      = 10
 database_password_version = 1
+staging_database_password_version = 1
 internal_service_token_version = 1
+staging_internal_service_token_version = 1
 nextauth_secret_version = 1
+staging_nextauth_secret_version = 1
 
 # D4C: migration-only first phase. The engine image is required because the
 # migration job uses the same immutable image as the eventual engine service.
 application_services_enabled = false
 engine_image = "replace-with-reviewed-immutable-engine-image"
 
-# D6A: Optional custom frontend domain. Leave empty until ownership of the
-# base domain is verified and the Cloud Run mapping is ready to be created.
+# D6A: Optional production custom frontend domain. Leave empty until ownership
+# of the base domain is verified and the Cloud Run mapping is ready to be created.
 frontend_custom_domain = ""
 
 # After haunted-halls-migrate executes successfully, set the gate to true and
@@ -33,3 +36,16 @@ google_oauth_client_id = ""
 openai_api_key_version = 2
 google_client_secret_version = 0
 
+# Staging environment. Apply these resources before merging workflow changes
+# that redirect automatic frontend deployment to staging.
+staging_application_services_enabled = false
+staging_frontend_image = "replace-with-reviewed-immutable-frontend-image"
+staging_engine_image = "replace-with-reviewed-immutable-engine-image"
+
+# Operator action required before enabling staging services:
+# create/configure a Google OAuth Web Application client for staging with:
+#   Authorized JavaScript origin: https://staging.haunted-halls.tesolin.us
+#   Authorized redirect URI: https://staging.haunted-halls.tesolin.us/api/auth/callback/google
+# then add the client secret as a new version of hh-google-client-secret-staging.
+staging_google_oauth_client_id = ""
+staging_google_client_secret_version = 0

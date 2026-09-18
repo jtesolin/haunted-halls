@@ -11,10 +11,17 @@ resource "google_iam_workload_identity_pool" "github_actions" {
 # D5A: GitHub Actions CD ownership boundaries
 # Terraform manages all Cloud Run configuration.
 # GitHub Actions CD workflows own only image revisions.
-# WIF restricts federation to deploy.yml workflows on main branch only.
+# WIF restricts federation to known deployment/promotion workflows on main branch only.
 locals {
   frontend_repository = "${var.github_owner}/${var.frontend_repo_name}"
   engine_repository   = "${var.github_owner}/${var.engine_repo_name}"
+  frontend_workflow_refs = [
+    "${local.frontend_repository}/.github/workflows/deploy.yml@refs/heads/main",
+    "${local.frontend_repository}/.github/workflows/promote-production.yml@refs/heads/main",
+  ]
+  engine_workflow_refs = [
+    "${local.engine_repository}/.github/workflows/deploy.yml@refs/heads/main",
+  ]
 }
 
 resource "google_iam_workload_identity_pool_provider" "github" {
@@ -38,7 +45,7 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     issuer_uri = "https://token.actions.githubusercontent.com"
   }
 
-  attribute_condition = "attribute.repository_owner == \"${var.github_owner}\" && attribute.ref == \"refs/heads/main\" && ((attribute.repository == \"${local.frontend_repository}\" && attribute.workflow_ref == \"${local.frontend_repository}/.github/workflows/deploy.yml@refs/heads/main\") || (attribute.repository == \"${local.engine_repository}\" && attribute.workflow_ref == \"${local.engine_repository}/.github/workflows/deploy.yml@refs/heads/main\"))"
+  attribute_condition = "attribute.repository_owner == \"${var.github_owner}\" && attribute.ref == \"refs/heads/main\" && ((attribute.repository == \"${local.frontend_repository}\" && attribute.workflow_ref in ${jsonencode(local.frontend_workflow_refs)}) || (attribute.repository == \"${local.engine_repository}\" && attribute.workflow_ref in ${jsonencode(local.engine_workflow_refs)}))"
 }
 
 resource "google_service_account_iam_member" "frontend_repository_federation" {

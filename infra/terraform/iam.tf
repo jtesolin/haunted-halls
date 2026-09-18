@@ -15,6 +15,20 @@ resource "google_secret_manager_secret_iam_member" "database_url_migration" {
   member    = "serviceAccount:${google_service_account.migration_runtime.email}"
 }
 
+# Secret Manager: hh-database-url-staging
+# Accessed by: staging engine runtime, staging migration runtime
+resource "google_secret_manager_secret_iam_member" "database_url_staging_engine" {
+  secret_id = google_secret_manager_secret.database_url_staging.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.engine_staging_runtime.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "database_url_staging_migration" {
+  secret_id = google_secret_manager_secret.database_url_staging.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.migration_staging_runtime.email}"
+}
+
 # Secret Manager: hh-internal-engine-service-token
 # Accessed by: frontend runtime, engine runtime
 resource "google_secret_manager_secret_iam_member" "internal_service_token_frontend" {
@@ -29,12 +43,34 @@ resource "google_secret_manager_secret_iam_member" "internal_service_token_engin
   member    = "serviceAccount:${google_service_account.engine_runtime.email}"
 }
 
+# Secret Manager: hh-internal-engine-service-token-staging
+# Accessed by: staging frontend runtime, staging engine runtime
+resource "google_secret_manager_secret_iam_member" "internal_service_token_staging_frontend" {
+  secret_id = google_secret_manager_secret.internal_service_token_staging.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.frontend_staging_runtime.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "internal_service_token_staging_engine" {
+  secret_id = google_secret_manager_secret.internal_service_token_staging.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.engine_staging_runtime.email}"
+}
+
 # Secret Manager: hh-nextauth-secret
 # Accessed by: frontend runtime only
 resource "google_secret_manager_secret_iam_member" "nextauth_secret_frontend" {
   secret_id = google_secret_manager_secret.nextauth_secret.id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.frontend_runtime.email}"
+}
+
+# Secret Manager: hh-nextauth-secret-staging
+# Accessed by: staging frontend runtime only
+resource "google_secret_manager_secret_iam_member" "nextauth_secret_staging_frontend" {
+  secret_id = google_secret_manager_secret.nextauth_secret_staging.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.frontend_staging_runtime.email}"
 }
 
 # Secret Manager: hh-openai-api-key
@@ -45,12 +81,26 @@ resource "google_secret_manager_secret_iam_member" "openai_api_key_engine" {
   member    = "serviceAccount:${google_service_account.engine_runtime.email}"
 }
 
+resource "google_secret_manager_secret_iam_member" "openai_api_key_staging_engine" {
+  secret_id = google_secret_manager_secret.openai_api_key.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.engine_staging_runtime.email}"
+}
+
 # Secret Manager: hh-google-client-secret
 # Accessed by: frontend runtime only
 resource "google_secret_manager_secret_iam_member" "google_client_secret_frontend" {
   secret_id = google_secret_manager_secret.google_client_secret.id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.frontend_runtime.email}"
+}
+
+# Secret Manager: hh-google-client-secret-staging
+# Accessed by: staging frontend runtime only
+resource "google_secret_manager_secret_iam_member" "google_client_secret_staging_frontend" {
+  secret_id = google_secret_manager_secret.google_client_secret_staging.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.frontend_staging_runtime.email}"
 }
 
 # Cloud SQL Client role: engine runtime
@@ -67,6 +117,18 @@ resource "google_project_iam_member" "migration_cloud_sql_client" {
   project = var.project_id
   role    = "roles/cloudsql.client"
   member  = "serviceAccount:${google_service_account.migration_runtime.email}"
+}
+
+resource "google_project_iam_member" "engine_staging_cloud_sql_client" {
+  project = var.project_id
+  role    = "roles/cloudsql.client"
+  member  = "serviceAccount:${google_service_account.engine_staging_runtime.email}"
+}
+
+resource "google_project_iam_member" "migration_staging_cloud_sql_client" {
+  project = var.project_id
+  role    = "roles/cloudsql.client"
+  member  = "serviceAccount:${google_service_account.migration_staging_runtime.email}"
 }
 
 # Explicit verification: frontend should NOT have Cloud SQL access

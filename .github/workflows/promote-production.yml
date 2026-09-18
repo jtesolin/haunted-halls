@@ -1,0 +1,534 @@
+name: Promote Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine_staging_cutover_verified:
+        description: Confirm the companion engine workflow deploys only staging and production auto-deploy is disabled.
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: haunted-halls-production-promotion
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT: haunted-halls-development
+  GCP_REGION: us-east1
+  FRONTEND_IMAGE_REPOSITORY: us-east1-docker.pkg.dev/haunted-halls-development/haunted-halls/frontend
+  ENGINE_IMAGE_REPOSITORY: us-east1-docker.pkg.dev/haunted-halls-development/haunted-halls/engine
+  STAGING_FRONTEND_SERVICE: haunted-halls-frontend-staging
+  STAGING_ENGINE_SERVICE: haunted-halls-engine-staging
+  PRODUCTION_FRONTEND_SERVICE: haunted-halls-frontend
+  PRODUCTION_ENGINE_SERVICE: haunted-halls-engine
+  PRODUCTION_MIGRATION_JOB: haunted-halls-migrate
+  PRODUCTION_FRONTEND_URL: https://haunted-halls.tesolin.us
+  WIF_PROVIDER: projects/458395246135/locations/global/workloadIdentityPools/github-actions/providers/github
+  DEPLOY_SERVICE_ACCOUNT: hh-frontend-deployer@haunted-halls-development.iam.gserviceaccount.com
+
+jobs:
+  promote:
+    name: Promote Staging Artifacts to Production
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Require main branch dispatch
+        env:
+          MANUAL_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$MANUAL_REF" != "refs/heads/main" ]]; then
+            echo "Production promotion is allowed only from refs/heads/main (received $MANUAL_REF)." >&2
+            exit 1
+          fi
+
+      - name: Require engine staging cutover confirmation
+        env:
+          ENGINE_STAGING_CUTOVER_VERIFIED: ${{ inputs.engine_staging_cutover_verified }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$ENGINE_STAGING_CUTOVER_VERIFIED" != "true" ]]; then
+            echo "Production promotion requires confirming the companion engine workflow deploys only staging and no longer automatically deploys production." >&2
+            exit 1
+          fi
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT }}
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Capture and freeze release candidate artifacts
+        id: capture
+        run: |
+          set -euo pipefail
+
+          validate_image_ref() {
+            local label="$1"
+            local image_ref="$2"
+            local repository="$3"
+            local digest_prefix="${repository}@"
+            local digest
+
+            if [[ "$image_ref" != "$digest_prefix"* ]]; then
+              echo "$label is not an immutable image from $repository: $image_ref" >&2
+              exit 1
+            fi
+
+            digest="${image_ref#"$digest_prefix"}"
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "$label does not include a valid sha256 digest: $image_ref" >&2
+              exit 1
+            fi
+
+            gcloud artifacts docker images describe "$image_ref" \
+              --project="$GCP_PROJECT" \
+              --format='value(image_summary.digest)' >/dev/null
+          }
+
+          capture_ready_serving_image() {
+            local output_prefix="$1"
+            local service_name="$2"
+            local label="$3"
+            local repository="$4"
+            local require_latest_ready="$5"
+            local service_json ready latest_created latest_ready traffic_percent
+            local revision_json revision_ready image_ref
+
+            service_json="$(gcloud run services describe "$service_name" \
+              --project="$GCP_PROJECT" \
+              --region="$GCP_REGION" \
+              --format=json)"
+
+            ready="$(jq -r 'first(.status.conditions[]? | select(.type == "Ready") | .status) // empty' <<< "$service_json")"
+            latest_created="$(jq -r '.status.latestCreatedRevisionName // empty' <<< "$service_json")"
+            latest_ready="$(jq -r '.status.latestReadyRevisionName // empty' <<< "$service_json")"
+
+            if [[ "$ready" != "True" ]]; then
+              echo "$label service is not Ready: $ready" >&2
+              exit 1
+            fi
+            if [[ -z "$latest_created" || -z "$latest_ready" ]]; then
+              echo "$label service is missing latest created/ready revision metadata." >&2
+              exit 1
+            fi
+            if [[ "$require_latest_ready" == "true" && "$latest_created" != "$latest_ready" ]]; then
+              echo "$label latest created revision is not Ready: latestCreated=$latest_created latestReady=$latest_ready" >&2
+              exit 1
+            fi
+
+            traffic_percent="$(jq -r --arg revision "$latest_ready" '[.status.traffic[]? | select(.revisionName == $revision) | .percent] | add // 0' <<< "$service_json")"
+            if [[ "$traffic_percent" != "100" ]]; then
+              echo "$label latest Ready revision is not serving 100% of traffic: revision=$latest_ready percent=$traffic_percent" >&2
+              exit 1
+            fi
+
+            revision_json="$(gcloud run revisions describe "$latest_ready" \
+              --project="$GCP_PROJECT" \
+              --region="$GCP_REGION" \
+              --format=json)"
+            revision_ready="$(jq -r 'first(.status.conditions[]? | select(.type == "Ready") | .status) // empty' <<< "$revision_json")"
+            image_ref="$(jq -r '.spec.containers[0].image // empty' <<< "$revision_json")"
+
+            if [[ "$revision_ready" != "True" ]]; then
+              echo "$label serving revision is not Ready: revision=$latest_ready ready=$revision_ready" >&2
+              exit 1
+            fi
+
+            validate_image_ref "$label serving revision image" "$image_ref" "$repository"
+
+            {
+              echo "${output_prefix}_image=$image_ref"
+              echo "${output_prefix}_revision=$latest_ready"
+            } >> "$GITHUB_OUTPUT"
+
+            printf '%s verified Ready serving revision: %s\n' "$label" "$latest_ready"
+            printf '%s image: %s\n' "$label" "$image_ref"
+          }
+
+          capture_serving_images_snapshot() {
+            local output_prefix="$1"
+            local service_name="$2"
+            local label="$3"
+            local repository="$4"
+            local service_json ready service_url serving_entries image_refs revision_refs
+
+            service_json="$(gcloud run services describe "$service_name" \
+              --project="$GCP_PROJECT" \
+              --region="$GCP_REGION" \
+              --format=json)"
+
+            ready="$(jq -r 'first(.status.conditions[]? | select(.type == "Ready") | .status) // empty' <<< "$service_json")"
+            service_url="$(jq -r '.status.url // empty' <<< "$service_json")"
+            if [[ "$ready" != "True" ]]; then
+              echo "$label service is not Ready: $ready" >&2
+              exit 1
+            fi
+            if [[ -z "$service_url" ]]; then
+              echo "$label service URL is missing from Cloud Run describe output." >&2
+              exit 1
+            fi
+
+            serving_entries="$(jq -r '.status.traffic[]? | select((.percent // 0) > 0) | [.revisionName, (.percent | tostring)] | @tsv' <<< "$service_json")"
+            if [[ -z "$serving_entries" ]]; then
+              echo "$label service has no serving traffic entries." >&2
+              exit 1
+            fi
+
+            image_refs=""
+            revision_refs=""
+            while IFS=$'\t' read -r revision_name percent; do
+              local revision_json revision_ready image_ref entry
+
+              revision_json="$(gcloud run revisions describe "$revision_name" \
+                --project="$GCP_PROJECT" \
+                --region="$GCP_REGION" \
+                --format=json)"
+              revision_ready="$(jq -r 'first(.status.conditions[]? | select(.type == "Ready") | .status) // empty' <<< "$revision_json")"
+              image_ref="$(jq -r '.spec.containers[0].image // empty' <<< "$revision_json")"
+
+              if [[ "$revision_ready" != "True" ]]; then
+                echo "$label serving revision is not Ready: revision=$revision_name ready=$revision_ready" >&2
+                exit 1
+              fi
+
+              validate_image_ref "$label serving revision image" "$image_ref" "$repository"
+              entry="${revision_name}:${percent}%:${image_ref}"
+              if [[ -z "$image_refs" ]]; then
+                image_refs="$image_ref"
+                revision_refs="$entry"
+              else
+                image_refs="${image_refs},${image_ref}"
+                revision_refs="${revision_refs},${entry}"
+              fi
+            done <<< "$serving_entries"
+
+            {
+              echo "${output_prefix}_image=$image_refs"
+              echo "${output_prefix}_revision=$revision_refs"
+            } >> "$GITHUB_OUTPUT"
+
+            printf '%s serving snapshot: %s\n' "$label" "$revision_refs"
+          }
+
+          capture_ready_serving_image "staging_frontend" "$STAGING_FRONTEND_SERVICE" "Staging frontend" "$FRONTEND_IMAGE_REPOSITORY" "true"
+          capture_ready_serving_image "staging_engine" "$STAGING_ENGINE_SERVICE" "Staging engine" "$ENGINE_IMAGE_REPOSITORY" "true"
+          capture_serving_images_snapshot "previous_frontend" "$PRODUCTION_FRONTEND_SERVICE" "Current production frontend" "$FRONTEND_IMAGE_REPOSITORY"
+          capture_serving_images_snapshot "previous_engine" "$PRODUCTION_ENGINE_SERVICE" "Current production engine" "$ENGINE_IMAGE_REPOSITORY"
+
+      - name: Update production migration job image
+        env:
+          STAGING_ENGINE_IMAGE: ${{ steps.capture.outputs.staging_engine_image }}
+        run: |
+          set -euo pipefail
+
+          gcloud run jobs update "$PRODUCTION_MIGRATION_JOB" \
+            --image="$STAGING_ENGINE_IMAGE" \
+            --project="$GCP_PROJECT" \
+            --region="$GCP_REGION" \
+            --quiet
+
+      - name: Verify production migration job image
+        env:
+          STAGING_ENGINE_IMAGE: ${{ steps.capture.outputs.staging_engine_image }}
+        run: |
+          set -euo pipefail
+
+          configured_image="$(gcloud run jobs describe "$PRODUCTION_MIGRATION_JOB" \
+            --project="$GCP_PROJECT" \
+            --region="$GCP_REGION" \
+            --format='value(spec.template.spec.template.spec.containers[0].image)')"
+
+          if [[ "$configured_image" != "$STAGING_ENGINE_IMAGE" ]]; then
+            echo "Migration job image mismatch: expected $STAGING_ENGINE_IMAGE, got $configured_image" >&2
+            exit 1
+          fi
+
+      - name: Execute production migration
+        id: migration
+        run: |
+          set -euo pipefail
+
+          execution_name="$(gcloud run jobs execute "$PRODUCTION_MIGRATION_JOB" \
+            --project="$GCP_PROJECT" \
+            --region="$GCP_REGION" \
+            --wait \
+            --format='value(metadata.name)')"
+
+          if [[ -z "$execution_name" ]]; then
+            echo "Production migration completed but no execution name was returned." >&2
+            exit 1
+          fi
+
+          echo "execution_name=$execution_name" >> "$GITHUB_OUTPUT"
+          printf 'Production migration execution succeeded: %s\n' "$execution_name"
+
+      - name: Deploy production engine digest
+        env:
+          STAGING_ENGINE_IMAGE: ${{ steps.capture.outputs.staging_engine_image }}
+        run: |
+          set -euo pipefail
+
+          gcloud run services update "$PRODUCTION_ENGINE_SERVICE" \
+            --image="$STAGING_ENGINE_IMAGE" \
+            --project="$GCP_PROJECT" \
+            --region="$GCP_REGION" \
+            --quiet
+
+      - name: Verify production engine
+        id: verify_engine
+        env:
+          STAGING_ENGINE_IMAGE: ${{ steps.capture.outputs.staging_engine_image }}
+        run: |
+          set -euo pipefail
+
+          verify_ready_serving_rollout() {
+            local service_name="$1"
+            local label="$2"
+            local expected_image="$3"
+            local service_json ready latest_created latest_ready service_url traffic_percent
+            local revision_json revision_ready deployed_image
+
+            for attempt in $(seq 1 30); do
+              service_json="$(gcloud run services describe "$service_name" \
+                --project="$GCP_PROJECT" \
+                --region="$GCP_REGION" \
+                --format=json)"
+
+              ready="$(jq -r 'first(.status.conditions[]? | select(.type == "Ready") | .status) // empty' <<< "$service_json")"
+              latest_created="$(jq -r '.status.latestCreatedRevisionName // empty' <<< "$service_json")"
+              latest_ready="$(jq -r '.status.latestReadyRevisionName // empty' <<< "$service_json")"
+              service_url="$(jq -r '.status.url // empty' <<< "$service_json")"
+              traffic_percent="$(jq -r --arg revision "$latest_ready" '[.status.traffic[]? | select(.revisionName == $revision) | .percent] | add // 0' <<< "$service_json")"
+
+              if [[ "$ready" == "True" && -n "$latest_created" && "$latest_created" == "$latest_ready" && "$traffic_percent" == "100" ]]; then
+                revision_json="$(gcloud run revisions describe "$latest_ready" \
+                  --project="$GCP_PROJECT" \
+                  --region="$GCP_REGION" \
+                  --format=json)"
+                revision_ready="$(jq -r 'first(.status.conditions[]? | select(.type == "Ready") | .status) // empty' <<< "$revision_json")"
+                deployed_image="$(jq -r '.spec.containers[0].image // empty' <<< "$revision_json")"
+
+                if [[ "$revision_ready" == "True" && "$deployed_image" == "$expected_image" && -n "$service_url" ]]; then
+                  ROLLOUT_SERVICE_URL="$service_url"
+                  {
+                    echo "ready=$ready"
+                    echo "ready_revision=$latest_ready"
+                    echo "service_url=$service_url"
+                  } >> "$GITHUB_OUTPUT"
+                  return 0
+                fi
+              fi
+
+              if [[ "$attempt" == "30" ]]; then
+                echo "$label did not roll out the expected Ready serving revision." >&2
+                echo "Service Ready: ${ready:-empty}" >&2
+                echo "Latest created revision: ${latest_created:-empty}" >&2
+                echo "Latest Ready revision: ${latest_ready:-empty}" >&2
+                echo "Latest Ready traffic percent: ${traffic_percent:-empty}" >&2
+                echo "Revision Ready: ${revision_ready:-not checked}" >&2
+                echo "Revision image: ${deployed_image:-not checked}" >&2
+                echo "Expected image: $expected_image" >&2
+                exit 1
+              fi
+
+              sleep 10
+            done
+          }
+
+          verify_ready_serving_rollout "$PRODUCTION_ENGINE_SERVICE" "Production engine" "$STAGING_ENGINE_IMAGE"
+          service_url="$ROLLOUT_SERVICE_URL"
+
+          private_status="$(curl \
+            --silent \
+            --show-error \
+            --output /dev/null \
+            --write-out '%{http_code}' \
+            --connect-timeout 5 \
+            --max-time 15 \
+            --retry 2 \
+            --retry-delay 1 \
+            "${service_url}/health")"
+          if [[ "$private_status" != "403" ]]; then
+            echo "Expected unauthenticated production engine health request to return 403, got $private_status" >&2
+            exit 1
+          fi
+
+          {
+            echo "private_status=$private_status"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Deploy production frontend digest
+        env:
+          STAGING_FRONTEND_IMAGE: ${{ steps.capture.outputs.staging_frontend_image }}
+        run: |
+          set -euo pipefail
+
+          gcloud run services update "$PRODUCTION_FRONTEND_SERVICE" \
+            --image="$STAGING_FRONTEND_IMAGE" \
+            --project="$GCP_PROJECT" \
+            --region="$GCP_REGION" \
+            --quiet
+
+      - name: Verify production frontend
+        id: verify_frontend
+        env:
+          STAGING_FRONTEND_IMAGE: ${{ steps.capture.outputs.staging_frontend_image }}
+        run: |
+          set -euo pipefail
+
+          verify_ready_serving_rollout() {
+            local service_name="$1"
+            local label="$2"
+            local expected_image="$3"
+            local service_json ready latest_created latest_ready service_url traffic_percent
+            local revision_json revision_ready deployed_image
+
+            for attempt in $(seq 1 30); do
+              service_json="$(gcloud run services describe "$service_name" \
+                --project="$GCP_PROJECT" \
+                --region="$GCP_REGION" \
+                --format=json)"
+
+              ready="$(jq -r 'first(.status.conditions[]? | select(.type == "Ready") | .status) // empty' <<< "$service_json")"
+              latest_created="$(jq -r '.status.latestCreatedRevisionName // empty' <<< "$service_json")"
+              latest_ready="$(jq -r '.status.latestReadyRevisionName // empty' <<< "$service_json")"
+              service_url="$(jq -r '.status.url // empty' <<< "$service_json")"
+              traffic_percent="$(jq -r --arg revision "$latest_ready" '[.status.traffic[]? | select(.revisionName == $revision) | .percent] | add // 0' <<< "$service_json")"
+
+              if [[ "$ready" == "True" && -n "$latest_created" && "$latest_created" == "$latest_ready" && "$traffic_percent" == "100" ]]; then
+                revision_json="$(gcloud run revisions describe "$latest_ready" \
+                  --project="$GCP_PROJECT" \
+                  --region="$GCP_REGION" \
+                  --format=json)"
+                revision_ready="$(jq -r 'first(.status.conditions[]? | select(.type == "Ready") | .status) // empty' <<< "$revision_json")"
+                deployed_image="$(jq -r '.spec.containers[0].image // empty' <<< "$revision_json")"
+
+                if [[ "$revision_ready" == "True" && "$deployed_image" == "$expected_image" && -n "$service_url" ]]; then
+                  ROLLOUT_SERVICE_URL="$service_url"
+                  {
+                    echo "ready=$ready"
+                    echo "ready_revision=$latest_ready"
+                    echo "service_url=$service_url"
+                  } >> "$GITHUB_OUTPUT"
+                  return 0
+                fi
+              fi
+
+              if [[ "$attempt" == "30" ]]; then
+                echo "$label did not roll out the expected Ready serving revision." >&2
+                echo "Service Ready: ${ready:-empty}" >&2
+                echo "Latest created revision: ${latest_created:-empty}" >&2
+                echo "Latest Ready revision: ${latest_ready:-empty}" >&2
+                echo "Latest Ready traffic percent: ${traffic_percent:-empty}" >&2
+                echo "Revision Ready: ${revision_ready:-not checked}" >&2
+                echo "Revision image: ${deployed_image:-not checked}" >&2
+                echo "Expected image: $expected_image" >&2
+                exit 1
+              fi
+
+              sleep 10
+            done
+          }
+
+          verify_ready_serving_rollout "$PRODUCTION_FRONTEND_SERVICE" "Production frontend" "$STAGING_FRONTEND_IMAGE"
+
+          health_file="$(mktemp)"
+          trap 'rm -f "$health_file"' EXIT
+
+          public_status="$(curl \
+            --silent \
+            --show-error \
+            --output "$health_file" \
+            --write-out '%{http_code}' \
+            --connect-timeout 5 \
+            --max-time 15 \
+            --retry 2 \
+            --retry-delay 1 \
+            "${PRODUCTION_FRONTEND_URL}/api/health")"
+          if [[ "$public_status" != "200" ]]; then
+            echo "Expected unauthenticated production frontend health check to return 200, got $public_status" >&2
+            echo "Response body:" >&2
+            cat "$health_file" >&2
+            exit 1
+          fi
+
+          health_status="$(jq -r '.status // empty' "$health_file")"
+          if [[ "$health_status" != "ok" ]]; then
+            echo "Expected production frontend health payload status to be 'ok', got '$health_status'." >&2
+            echo "Response body:" >&2
+            cat "$health_file" >&2
+            exit 1
+          fi
+
+          {
+            echo "public_status=$public_status"
+            echo "health_status=$health_status"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Write production promotion summary
+        if: always()
+        env:
+          STAGING_FRONTEND_IMAGE: ${{ steps.capture.outputs.staging_frontend_image }}
+          STAGING_FRONTEND_REVISION: ${{ steps.capture.outputs.staging_frontend_revision }}
+          STAGING_ENGINE_IMAGE: ${{ steps.capture.outputs.staging_engine_image }}
+          STAGING_ENGINE_REVISION: ${{ steps.capture.outputs.staging_engine_revision }}
+          PREVIOUS_FRONTEND_IMAGE: ${{ steps.capture.outputs.previous_frontend_image }}
+          PREVIOUS_FRONTEND_REVISION: ${{ steps.capture.outputs.previous_frontend_revision }}
+          PREVIOUS_ENGINE_IMAGE: ${{ steps.capture.outputs.previous_engine_image }}
+          PREVIOUS_ENGINE_REVISION: ${{ steps.capture.outputs.previous_engine_revision }}
+          MIGRATION_EXECUTION: ${{ steps.migration.outputs.execution_name }}
+          ENGINE_READY: ${{ steps.verify_engine.outputs.ready }}
+          ENGINE_READY_REVISION: ${{ steps.verify_engine.outputs.ready_revision }}
+          ENGINE_URL: ${{ steps.verify_engine.outputs.service_url }}
+          ENGINE_PRIVATE_STATUS: ${{ steps.verify_engine.outputs.private_status }}
+          FRONTEND_READY: ${{ steps.verify_frontend.outputs.ready }}
+          FRONTEND_READY_REVISION: ${{ steps.verify_frontend.outputs.ready_revision }}
+          FRONTEND_URL: ${{ steps.verify_frontend.outputs.service_url }}
+          FRONTEND_PUBLIC_STATUS: ${{ steps.verify_frontend.outputs.public_status }}
+          FRONTEND_HEALTH_STATUS: ${{ steps.verify_frontend.outputs.health_status }}
+        run: |
+          {
+            echo "## Production Promotion"
+            echo
+            echo "### Promoted immutable artifacts"
+            printf -- '- Frontend: %s\n' "${STAGING_FRONTEND_IMAGE:-not captured}"
+            printf -- '- Frontend staging Ready serving revision: %s\n' "${STAGING_FRONTEND_REVISION:-not captured}"
+            printf -- '- Engine: %s\n' "${STAGING_ENGINE_IMAGE:-not captured}"
+            printf -- '- Engine staging Ready serving revision: %s\n' "${STAGING_ENGINE_REVISION:-not captured}"
+            echo
+            echo "### Previous production artifacts"
+            printf -- '- Frontend: %s\n' "${PREVIOUS_FRONTEND_IMAGE:-not captured}"
+            printf -- '- Frontend serving revision snapshot: %s\n' "${PREVIOUS_FRONTEND_REVISION:-not captured}"
+            printf -- '- Engine: %s\n' "${PREVIOUS_ENGINE_IMAGE:-not captured}"
+            printf -- '- Engine serving revision snapshot: %s\n' "${PREVIOUS_ENGINE_REVISION:-not captured}"
+            echo
+            echo "### Migration"
+            printf -- '- Job: %s\n' "$PRODUCTION_MIGRATION_JOB"
+            printf -- '- Execution: %s\n' "${MIGRATION_EXECUTION:-not completed}"
+            printf -- '- Image: %s\n' "${STAGING_ENGINE_IMAGE:-not captured}"
+            echo
+            echo "### Verification"
+            printf -- '- Engine Ready status: %s\n' "${ENGINE_READY:-not verified}"
+            printf -- '- Engine Ready serving revision: %s\n' "${ENGINE_READY_REVISION:-not verified}"
+            printf -- '- Engine URL: %s\n' "${ENGINE_URL:-not verified}"
+            printf -- '- Engine unauthenticated /health status: %s\n' "${ENGINE_PRIVATE_STATUS:-not verified}"
+            printf -- '- Frontend Ready status: %s\n' "${FRONTEND_READY:-not verified}"
+            printf -- '- Frontend Ready serving revision: %s\n' "${FRONTEND_READY_REVISION:-not verified}"
+            printf -- '- Frontend URL: %s\n' "${FRONTEND_URL:-not verified}"
+            printf -- '- Frontend public /api/health HTTP status: %s\n' "${FRONTEND_PUBLIC_STATUS:-not verified}"
+            printf -- '- Frontend health application status: %s\n' "${FRONTEND_HEALTH_STATUS:-not verified}"
+            echo
+            echo "Rollback metadata is above. To roll back, manually update production services to the previous production digests and run the appropriate migration/backout procedure if required."
+          } >> "$GITHUB_STEP_SUMMARY"

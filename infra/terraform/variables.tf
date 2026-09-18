@@ -67,8 +67,20 @@ variable "database_password_version" {
   default     = 1
 }
 
+variable "staging_database_password_version" {
+  description = "Version for staging database password rotation. Increment to rotate staging credentials."
+  type        = number
+  default     = 1
+}
+
 variable "internal_service_token_version" {
   description = "Version for internal service token rotation. Increment to rotate credentials."
+  type        = number
+  default     = 1
+}
+
+variable "staging_internal_service_token_version" {
+  description = "Version for staging internal service token rotation. Increment to rotate staging credentials."
   type        = number
   default     = 1
 }
@@ -79,8 +91,20 @@ variable "nextauth_secret_version" {
   default     = 1
 }
 
+variable "staging_nextauth_secret_version" {
+  description = "Version for staging NextAuth secret rotation. Increment to rotate staging credentials."
+  type        = number
+  default     = 1
+}
+
 variable "application_services_enabled" {
   description = "Whether Terraform should manage the frontend and engine Cloud Run services and their IAM bindings. Keep false until the migration job has successfully executed."
+  type        = bool
+  default     = false
+}
+
+variable "staging_application_services_enabled" {
+  description = "Whether Terraform should manage staging Cloud Run services, the staging migration job, custom domain mapping, and their IAM bindings. Enable and apply before switching automatic deployments to staging."
   type        = bool
   default     = false
 }
@@ -104,6 +128,7 @@ variable "frontend_custom_domain" {
     )
     error_message = "frontend_custom_domain must be empty or a valid hostname such as haunted-halls.tesolin.us."
   }
+
 }
 
 variable "frontend_image" {
@@ -120,10 +145,29 @@ variable "engine_image" {
     condition     = length(trimspace(var.engine_image)) > 0
     error_message = "engine_image must be provided."
   }
+
+}
+
+variable "staging_frontend_image" {
+  description = "Initial immutable container image reference for the staging frontend Cloud Run service. GitHub Actions owns subsequent image revisions."
+  type        = string
+  default     = ""
+}
+
+variable "staging_engine_image" {
+  description = "Initial immutable container image reference for the staging engine service and staging migration job. Defaults to engine_image when empty; GitHub Actions owns subsequent image revisions."
+  type        = string
+  default     = ""
 }
 
 variable "google_oauth_client_id" {
   description = "Google OAuth Web Application client ID for the production frontend."
+  type        = string
+  default     = ""
+}
+
+variable "staging_google_oauth_client_id" {
+  description = "Google OAuth Web Application client ID for the staging frontend. Configure its authorized redirect URI for https://staging.haunted-halls.tesolin.us/api/auth/callback/google."
   type        = string
   default     = ""
 }
@@ -147,5 +191,17 @@ variable "google_client_secret_version" {
   validation {
     condition     = var.google_client_secret_version >= 0 && floor(var.google_client_secret_version) == var.google_client_secret_version
     error_message = "google_client_secret_version must be zero or a positive integer."
+  }
+
+}
+
+variable "staging_google_client_secret_version" {
+  description = "Secret Manager version for the operator-managed staging Google OAuth client secret."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.staging_google_client_secret_version >= 0 && floor(var.staging_google_client_secret_version) == var.staging_google_client_secret_version
+    error_message = "staging_google_client_secret_version must be zero or a positive integer."
   }
 }

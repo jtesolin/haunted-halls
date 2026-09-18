@@ -14,6 +14,18 @@ ephemeral "random_password" "nextauth_secret" {
   override_special = ""
 }
 
+ephemeral "random_password" "staging_internal_service_token" {
+  length           = 64
+  special          = false
+  override_special = ""
+}
+
+ephemeral "random_password" "staging_nextauth_secret" {
+  length           = 64
+  special          = false
+  override_special = ""
+}
+
 # DATABASE_URL secret
 # Contains the full PostgreSQL connection string with ephemeral password
 resource "google_secret_manager_secret" "database_url" {
@@ -29,7 +41,8 @@ resource "google_secret_manager_secret" "database_url" {
 # Construct DATABASE_URL using ephemeral password and Cloud SQL connection name
 # Note: This is a local value, not an ephemeral resource
 locals {
-  database_url_value = "postgresql+psycopg://${google_sql_user.app.name}:${ephemeral.random_password.db_password.result}@/${google_sql_database.haunted_halls.name}?host=/cloudsql/${google_sql_database_instance.postgres.connection_name}"
+  database_url_value         = "postgresql+psycopg://${google_sql_user.app.name}:${ephemeral.random_password.db_password.result}@/${google_sql_database.haunted_halls.name}?host=/cloudsql/${google_sql_database_instance.postgres.connection_name}"
+  staging_database_url_value = "postgresql+psycopg://${google_sql_user.app_staging.name}:${ephemeral.random_password.staging_db_password.result}@/${google_sql_database.haunted_halls_staging.name}?host=/cloudsql/${google_sql_database_instance.postgres.connection_name}"
 }
 
 # Create initial version of DATABASE_URL with ephemeral write-only data
@@ -37,6 +50,24 @@ resource "google_secret_manager_secret_version" "database_url_initial" {
   secret                 = google_secret_manager_secret.database_url.id
   secret_data_wo         = local.database_url_value
   secret_data_wo_version = var.database_password_version
+}
+
+# Staging DATABASE_URL secret
+# Contains the full PostgreSQL connection string with isolated staging credentials
+resource "google_secret_manager_secret" "database_url_staging" {
+  secret_id = "hh-database-url-staging"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.secret_manager]
+}
+
+resource "google_secret_manager_secret_version" "database_url_staging_initial" {
+  secret                 = google_secret_manager_secret.database_url_staging.id
+  secret_data_wo         = local.staging_database_url_value
+  secret_data_wo_version = var.staging_database_password_version
 }
 
 # Internal service token secret (used by frontend and engine for mutual auth)
@@ -57,6 +88,23 @@ resource "google_secret_manager_secret_version" "internal_service_token_initial"
   secret_data_wo_version = var.internal_service_token_version
 }
 
+# Staging internal service token secret (isolates staging frontend/engine auth)
+resource "google_secret_manager_secret" "internal_service_token_staging" {
+  secret_id = "hh-internal-engine-service-token-staging"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.secret_manager]
+}
+
+resource "google_secret_manager_secret_version" "internal_service_token_staging_initial" {
+  secret                 = google_secret_manager_secret.internal_service_token_staging.id
+  secret_data_wo         = ephemeral.random_password.staging_internal_service_token.result
+  secret_data_wo_version = var.staging_internal_service_token_version
+}
+
 # NextAuth secret (used by frontend for session encryption)
 resource "google_secret_manager_secret" "nextauth_secret" {
   secret_id = "hh-nextauth-secret"
@@ -75,6 +123,23 @@ resource "google_secret_manager_secret_version" "nextauth_secret_initial" {
   secret_data_wo_version = var.nextauth_secret_version
 }
 
+# Staging NextAuth secret
+resource "google_secret_manager_secret" "nextauth_secret_staging" {
+  secret_id = "hh-nextauth-secret-staging"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.secret_manager]
+}
+
+resource "google_secret_manager_secret_version" "nextauth_secret_staging_initial" {
+  secret                 = google_secret_manager_secret.nextauth_secret_staging.id
+  secret_data_wo         = ephemeral.random_password.staging_nextauth_secret.result
+  secret_data_wo_version = var.staging_nextauth_secret_version
+}
+
 # OpenAI API key secret (operator-supplied, not managed by Terraform data)
 resource "google_secret_manager_secret" "openai_api_key" {
   secret_id = "hh-openai-api-key"
@@ -89,6 +154,17 @@ resource "google_secret_manager_secret" "openai_api_key" {
 # Google OAuth client secret (operator-supplied, not managed by Terraform data)
 resource "google_secret_manager_secret" "google_client_secret" {
   secret_id = "hh-google-client-secret"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.secret_manager]
+}
+
+# Staging Google OAuth client secret (operator-supplied, not managed by Terraform data)
+resource "google_secret_manager_secret" "google_client_secret_staging" {
+  secret_id = "hh-google-client-secret-staging"
 
   replication {
     auto {}
