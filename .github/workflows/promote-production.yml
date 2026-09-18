@@ -1,0 +1,338 @@
+name: Promote Production
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: haunted-halls-production-promotion
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT: haunted-halls-development
+  GCP_REGION: us-east1
+  FRONTEND_IMAGE_REPOSITORY: us-east1-docker.pkg.dev/haunted-halls-development/haunted-halls/frontend
+  ENGINE_IMAGE_REPOSITORY: us-east1-docker.pkg.dev/haunted-halls-development/haunted-halls/engine
+  STAGING_FRONTEND_SERVICE: haunted-halls-frontend-staging
+  STAGING_ENGINE_SERVICE: haunted-halls-engine-staging
+  PRODUCTION_FRONTEND_SERVICE: haunted-halls-frontend
+  PRODUCTION_ENGINE_SERVICE: haunted-halls-engine
+  PRODUCTION_MIGRATION_JOB: haunted-halls-migrate
+  PRODUCTION_FRONTEND_URL: https://haunted-halls.tesolin.us
+  WIF_PROVIDER: projects/458395246135/locations/global/workloadIdentityPools/github-actions/providers/github
+  DEPLOY_SERVICE_ACCOUNT: hh-frontend-deployer@haunted-halls-development.iam.gserviceaccount.com
+
+jobs:
+  promote:
+    name: Promote Staging Artifacts to Production
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Require main branch dispatch
+        env:
+          MANUAL_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$MANUAL_REF" != "refs/heads/main" ]]; then
+            echo "Production promotion is allowed only from refs/heads/main (received $MANUAL_REF)." >&2
+            exit 1
+          fi
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT }}
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Capture and freeze release candidate artifacts
+        id: capture
+        run: |
+          set -euo pipefail
+
+          service_image() {
+            local service_name="$1"
+            gcloud run services describe "$service_name" \
+              --project="$GCP_PROJECT" \
+              --region="$GCP_REGION" \
+              --format='value(spec.template.spec.containers[0].image)'
+          }
+
+          validate_image_ref() {
+            local label="$1"
+            local image_ref="$2"
+            local repository="$3"
+            local digest_prefix="${repository}@"
+            local digest
+
+            if [[ "$image_ref" != "$digest_prefix"* ]]; then
+              echo "$label is not an immutable image from $repository: $image_ref" >&2
+              exit 1
+            fi
+
+            digest="${image_ref#"$digest_prefix"}"
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "$label does not include a valid sha256 digest: $image_ref" >&2
+              exit 1
+            fi
+
+            gcloud artifacts docker images describe "$image_ref" \
+              --project="$GCP_PROJECT" \
+              --format='value(image_summary.digest)' >/dev/null
+          }
+
+          staging_frontend_image="$(service_image "$STAGING_FRONTEND_SERVICE")"
+          staging_engine_image="$(service_image "$STAGING_ENGINE_SERVICE")"
+          previous_frontend_image="$(service_image "$PRODUCTION_FRONTEND_SERVICE")"
+          previous_engine_image="$(service_image "$PRODUCTION_ENGINE_SERVICE")"
+
+          validate_image_ref "Captured staging frontend image" "$staging_frontend_image" "$FRONTEND_IMAGE_REPOSITORY"
+          validate_image_ref "Captured staging engine image" "$staging_engine_image" "$ENGINE_IMAGE_REPOSITORY"
+          validate_image_ref "Current production frontend image" "$previous_frontend_image" "$FRONTEND_IMAGE_REPOSITORY"
+          validate_image_ref "Current production engine image" "$previous_engine_image" "$ENGINE_IMAGE_REPOSITORY"
+
+          {
+            echo "staging_frontend_image=$staging_frontend_image"
+            echo "staging_engine_image=$staging_engine_image"
+            echo "previous_frontend_image=$previous_frontend_image"
+            echo "previous_engine_image=$previous_engine_image"
+          } >> "$GITHUB_OUTPUT"
+
+          printf 'Frozen frontend release candidate: %s\n' "$staging_frontend_image"
+          printf 'Frozen engine release candidate: %s\n' "$staging_engine_image"
+
+      - name: Update production migration job image
+        env:
+          STAGING_ENGINE_IMAGE: ${{ steps.capture.outputs.staging_engine_image }}
+        run: |
+          set -euo pipefail
+
+          gcloud run jobs update "$PRODUCTION_MIGRATION_JOB" \
+            --image="$STAGING_ENGINE_IMAGE" \
+            --project="$GCP_PROJECT" \
+            --region="$GCP_REGION" \
+            --quiet
+
+      - name: Verify production migration job image
+        env:
+          STAGING_ENGINE_IMAGE: ${{ steps.capture.outputs.staging_engine_image }}
+        run: |
+          set -euo pipefail
+
+          configured_image="$(gcloud run jobs describe "$PRODUCTION_MIGRATION_JOB" \
+            --project="$GCP_PROJECT" \
+            --region="$GCP_REGION" \
+            --format='value(spec.template.spec.template.spec.containers[0].image)')"
+
+          if [[ "$configured_image" != "$STAGING_ENGINE_IMAGE" ]]; then
+            echo "Migration job image mismatch: expected $STAGING_ENGINE_IMAGE, got $configured_image" >&2
+            exit 1
+          fi
+
+      - name: Execute production migration
+        id: migration
+        run: |
+          set -euo pipefail
+
+          execution_name="$(gcloud run jobs execute "$PRODUCTION_MIGRATION_JOB" \
+            --project="$GCP_PROJECT" \
+            --region="$GCP_REGION" \
+            --wait \
+            --format='value(metadata.name)')"
+
+          if [[ -z "$execution_name" ]]; then
+            echo "Production migration completed but no execution name was returned." >&2
+            exit 1
+          fi
+
+          echo "execution_name=$execution_name" >> "$GITHUB_OUTPUT"
+          printf 'Production migration execution succeeded: %s\n' "$execution_name"
+
+      - name: Deploy production engine digest
+        env:
+          STAGING_ENGINE_IMAGE: ${{ steps.capture.outputs.staging_engine_image }}
+        run: |
+          set -euo pipefail
+
+          gcloud run services update "$PRODUCTION_ENGINE_SERVICE" \
+            --image="$STAGING_ENGINE_IMAGE" \
+            --project="$GCP_PROJECT" \
+            --region="$GCP_REGION" \
+            --quiet
+
+      - name: Verify production engine
+        id: verify_engine
+        env:
+          STAGING_ENGINE_IMAGE: ${{ steps.capture.outputs.staging_engine_image }}
+        run: |
+          set -euo pipefail
+
+          service_json="$(gcloud run services describe "$PRODUCTION_ENGINE_SERVICE" \
+            --project="$GCP_PROJECT" \
+            --region="$GCP_REGION" \
+            --format=json)"
+
+          ready="$(jq -r 'first(.status.conditions[]? | select(.type == "Ready") | .status) // empty' <<< "$service_json")"
+          deployed_image="$(jq -r '.spec.template.spec.containers[0].image // empty' <<< "$service_json")"
+          service_url="$(jq -r '.status.url // empty' <<< "$service_json")"
+
+          if [[ "$ready" != "True" ]]; then
+            echo "Production engine service is not Ready: $ready" >&2
+            exit 1
+          fi
+          if [[ "$deployed_image" != "$STAGING_ENGINE_IMAGE" ]]; then
+            echo "Production engine image mismatch: expected $STAGING_ENGINE_IMAGE, got $deployed_image" >&2
+            exit 1
+          fi
+          if [[ -z "$service_url" ]]; then
+            echo "Production engine service URL is missing from Cloud Run describe output." >&2
+            exit 1
+          fi
+
+          private_status="$(curl \
+            --silent \
+            --show-error \
+            --output /dev/null \
+            --write-out '%{http_code}' \
+            --connect-timeout 5 \
+            --max-time 15 \
+            --retry 2 \
+            --retry-delay 1 \
+            "${service_url}/health")"
+          if [[ "$private_status" != "403" ]]; then
+            echo "Expected unauthenticated production engine health request to return 403, got $private_status" >&2
+            exit 1
+          fi
+
+          {
+            echo "ready=$ready"
+            echo "service_url=$service_url"
+            echo "private_status=$private_status"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Deploy production frontend digest
+        env:
+          STAGING_FRONTEND_IMAGE: ${{ steps.capture.outputs.staging_frontend_image }}
+        run: |
+          set -euo pipefail
+
+          gcloud run services update "$PRODUCTION_FRONTEND_SERVICE" \
+            --image="$STAGING_FRONTEND_IMAGE" \
+            --project="$GCP_PROJECT" \
+            --region="$GCP_REGION" \
+            --quiet
+
+      - name: Verify production frontend
+        id: verify_frontend
+        env:
+          STAGING_FRONTEND_IMAGE: ${{ steps.capture.outputs.staging_frontend_image }}
+        run: |
+          set -euo pipefail
+
+          service_json="$(gcloud run services describe "$PRODUCTION_FRONTEND_SERVICE" \
+            --project="$GCP_PROJECT" \
+            --region="$GCP_REGION" \
+            --format=json)"
+
+          ready="$(jq -r 'first(.status.conditions[]? | select(.type == "Ready") | .status) // empty' <<< "$service_json")"
+          deployed_image="$(jq -r '.spec.template.spec.containers[0].image // empty' <<< "$service_json")"
+          service_url="$(jq -r '.status.url // empty' <<< "$service_json")"
+
+          if [[ "$ready" != "True" ]]; then
+            echo "Production frontend service is not Ready: $ready" >&2
+            exit 1
+          fi
+          if [[ "$deployed_image" != "$STAGING_FRONTEND_IMAGE" ]]; then
+            echo "Production frontend image mismatch: expected $STAGING_FRONTEND_IMAGE, got $deployed_image" >&2
+            exit 1
+          fi
+          if [[ -z "$service_url" ]]; then
+            echo "Production frontend service URL is missing from Cloud Run describe output." >&2
+            exit 1
+          fi
+
+          health_file="$(mktemp)"
+          trap 'rm -f "$health_file"' EXIT
+
+          public_status="$(curl \
+            --silent \
+            --show-error \
+            --output "$health_file" \
+            --write-out '%{http_code}' \
+            --connect-timeout 5 \
+            --max-time 15 \
+            --retry 2 \
+            --retry-delay 1 \
+            "${PRODUCTION_FRONTEND_URL}/api/health")"
+          if [[ "$public_status" != "200" ]]; then
+            echo "Expected unauthenticated production frontend health check to return 200, got $public_status" >&2
+            echo "Response body:" >&2
+            cat "$health_file" >&2
+            exit 1
+          fi
+
+          health_status="$(jq -r '.status // empty' "$health_file")"
+          if [[ "$health_status" != "ok" ]]; then
+            echo "Expected production frontend health payload status to be 'ok', got '$health_status'." >&2
+            echo "Response body:" >&2
+            cat "$health_file" >&2
+            exit 1
+          fi
+
+          {
+            echo "ready=$ready"
+            echo "service_url=$service_url"
+            echo "public_status=$public_status"
+            echo "health_status=$health_status"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Write production promotion summary
+        if: always()
+        env:
+          STAGING_FRONTEND_IMAGE: ${{ steps.capture.outputs.staging_frontend_image }}
+          STAGING_ENGINE_IMAGE: ${{ steps.capture.outputs.staging_engine_image }}
+          PREVIOUS_FRONTEND_IMAGE: ${{ steps.capture.outputs.previous_frontend_image }}
+          PREVIOUS_ENGINE_IMAGE: ${{ steps.capture.outputs.previous_engine_image }}
+          MIGRATION_EXECUTION: ${{ steps.migration.outputs.execution_name }}
+          ENGINE_READY: ${{ steps.verify_engine.outputs.ready }}
+          ENGINE_URL: ${{ steps.verify_engine.outputs.service_url }}
+          ENGINE_PRIVATE_STATUS: ${{ steps.verify_engine.outputs.private_status }}
+          FRONTEND_READY: ${{ steps.verify_frontend.outputs.ready }}
+          FRONTEND_URL: ${{ steps.verify_frontend.outputs.service_url }}
+          FRONTEND_PUBLIC_STATUS: ${{ steps.verify_frontend.outputs.public_status }}
+          FRONTEND_HEALTH_STATUS: ${{ steps.verify_frontend.outputs.health_status }}
+        run: |
+          {
+            echo "## Production Promotion"
+            echo
+            echo "### Promoted immutable artifacts"
+            printf -- '- Frontend: %s\n' "${STAGING_FRONTEND_IMAGE:-not captured}"
+            printf -- '- Engine: %s\n' "${STAGING_ENGINE_IMAGE:-not captured}"
+            echo
+            echo "### Previous production artifacts"
+            printf -- '- Frontend: %s\n' "${PREVIOUS_FRONTEND_IMAGE:-not captured}"
+            printf -- '- Engine: %s\n' "${PREVIOUS_ENGINE_IMAGE:-not captured}"
+            echo
+            echo "### Migration"
+            printf -- '- Job: %s\n' "$PRODUCTION_MIGRATION_JOB"
+            printf -- '- Execution: %s\n' "${MIGRATION_EXECUTION:-not completed}"
+            printf -- '- Image: %s\n' "${STAGING_ENGINE_IMAGE:-not captured}"
+            echo
+            echo "### Verification"
+            printf -- '- Engine Ready status: %s\n' "${ENGINE_READY:-not verified}"
+            printf -- '- Engine URL: %s\n' "${ENGINE_URL:-not verified}"
+            printf -- '- Engine unauthenticated /health status: %s\n' "${ENGINE_PRIVATE_STATUS:-not verified}"
+            printf -- '- Frontend Ready status: %s\n' "${FRONTEND_READY:-not verified}"
+            printf -- '- Frontend URL: %s\n' "${FRONTEND_URL:-not verified}"
+            printf -- '- Frontend public /api/health HTTP status: %s\n' "${FRONTEND_PUBLIC_STATUS:-not verified}"
+            printf -- '- Frontend health application status: %s\n' "${FRONTEND_HEALTH_STATUS:-not verified}"
+            echo
+            echo "Rollback metadata is above. To roll back, manually update production services to the previous production digests and run the appropriate migration/backout procedure if required."
+          } >> "$GITHUB_STEP_SUMMARY"

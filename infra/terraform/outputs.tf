@@ -22,6 +22,16 @@ output "cloud_sql_database_username" {
   value       = google_sql_user.app.name
 }
 
+output "cloud_sql_staging_database_name" {
+  description = "Staging application database name"
+  value       = google_sql_database.haunted_halls_staging.name
+}
+
+output "cloud_sql_staging_database_username" {
+  description = "Staging application database user name"
+  value       = google_sql_user.app_staging.name
+}
+
 output "secret_database_url_id" {
   description = "Secret Manager secret_id for database URL (secret value not output)"
   value       = google_secret_manager_secret.database_url.secret_id
@@ -47,6 +57,26 @@ output "secret_google_client_secret_id" {
   value       = google_secret_manager_secret.google_client_secret.secret_id
 }
 
+output "secret_staging_database_url_id" {
+  description = "Secret Manager secret_id for staging database URL (secret value not output)"
+  value       = google_secret_manager_secret.database_url_staging.secret_id
+}
+
+output "secret_staging_internal_service_token_id" {
+  description = "Secret Manager secret_id for staging internal service token (secret value not output)"
+  value       = google_secret_manager_secret.internal_service_token_staging.secret_id
+}
+
+output "secret_staging_nextauth_secret_id" {
+  description = "Secret Manager secret_id for staging NextAuth secret (secret value not output)"
+  value       = google_secret_manager_secret.nextauth_secret_staging.secret_id
+}
+
+output "secret_staging_google_client_secret_id" {
+  description = "Secret Manager secret_id for staging Google client secret (operator will populate)"
+  value       = google_secret_manager_secret.google_client_secret_staging.secret_id
+}
+
 output "frontend_cloud_run_url" {
   description = "Deterministic run.app URL for the public frontend service."
   value       = local.cloud_run_urls.frontend
@@ -70,6 +100,31 @@ output "engine_cloud_run_service_name" {
 output "migration_cloud_run_job_name" {
   description = "Cloud Run migration job name."
   value       = local.cloud_run_service_names.migrate
+}
+
+output "frontend_staging_cloud_run_url" {
+  description = "Deterministic run.app URL for the public staging frontend service."
+  value       = local.cloud_run_urls.frontend_staging
+}
+
+output "engine_staging_cloud_run_url" {
+  description = "Deterministic run.app URL for the private staging engine service."
+  value       = local.cloud_run_urls.engine_staging
+}
+
+output "frontend_staging_cloud_run_service_name" {
+  description = "Cloud Run staging frontend service name."
+  value       = local.cloud_run_service_names.frontend_staging
+}
+
+output "engine_staging_cloud_run_service_name" {
+  description = "Cloud Run staging engine service name."
+  value       = local.cloud_run_service_names.engine_staging
+}
+
+output "migration_staging_cloud_run_job_name" {
+  description = "Cloud Run staging migration job name."
+  value       = local.cloud_run_service_names.migrate_staging
 }
 
 output "tesolin_us_name_servers" {

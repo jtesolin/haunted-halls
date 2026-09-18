@@ -50,6 +50,14 @@ resource "google_sql_database" "haunted_halls" {
   depends_on = [google_sql_database_instance.postgres]
 }
 
+# Staging application database on the shared low-cost Cloud SQL instance
+resource "google_sql_database" "haunted_halls_staging" {
+  name     = "haunted_halls_staging"
+  instance = google_sql_database_instance.postgres.name
+
+  depends_on = [google_sql_database_instance.postgres]
+}
+
 # Ephemeral password for the application database user
 ephemeral "random_password" "db_password" {
   length           = 32
@@ -63,4 +71,18 @@ resource "google_sql_user" "app" {
   instance            = google_sql_database_instance.postgres.name
   password_wo         = ephemeral.random_password.db_password.result
   password_wo_version = var.database_password_version
+}
+
+# Staging application database user with isolated credentials
+ephemeral "random_password" "staging_db_password" {
+  length           = 32
+  special          = false
+  override_special = ""
+}
+
+resource "google_sql_user" "app_staging" {
+  name                = "haunted_halls_staging_app"
+  instance            = google_sql_database_instance.postgres.name
+  password_wo         = ephemeral.random_password.staging_db_password.result
+  password_wo_version = var.staging_database_password_version
 }

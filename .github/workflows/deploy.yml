@@ -1,4 +1,4 @@
-name: Frontend Deploy
+name: Frontend Staging Deploy
 
 on:
   workflow_run:
@@ -15,19 +15,21 @@ permissions:
   id-token: write
 
 concurrency:
-  group: haunted-halls-frontend-production
+  group: haunted-halls-frontend-staging
   cancel-in-progress: false
 
 env:
   GCP_PROJECT: haunted-halls-development
   GCP_REGION: us-east1
   IMAGE_REPOSITORY: us-east1-docker.pkg.dev/haunted-halls-development/haunted-halls/frontend
+  STAGING_FRONTEND_SERVICE: haunted-halls-frontend-staging
+  STAGING_FRONTEND_URL: https://staging.haunted-halls.tesolin.us
   WIF_PROVIDER: projects/458395246135/locations/global/workloadIdentityPools/github-actions/providers/github
   DEPLOY_SERVICE_ACCOUNT: hh-frontend-deployer@haunted-halls-development.iam.gserviceaccount.com
 
 jobs:
   deploy:
-    name: Deploy Frontend to Production
+    name: Deploy Frontend to Staging
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' &&
@@ -48,7 +50,7 @@ jobs:
 
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             if [[ "$MANUAL_REF" != "refs/heads/main" ]]; then
-              echo "Manual production deployments are allowed only from refs/heads/main (received $MANUAL_REF)." >&2
+              echo "Manual staging deployments are allowed only from refs/heads/main (received $MANUAL_REF)." >&2
               exit 1
             fi
             deploy_sha="$MANUAL_SHA"
@@ -110,7 +112,7 @@ jobs:
           fi
 
           image_ref="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
-          previous_frontend_image="$(gcloud run services describe haunted-halls-frontend \
+          previous_frontend_image="$(gcloud run services describe "$STAGING_FRONTEND_SERVICE" \
             --project="$GCP_PROJECT" \
             --region="$GCP_REGION" \
             --format='value(spec.template.spec.containers[0].image)')"
@@ -123,7 +125,7 @@ jobs:
           IMAGE_REF: ${{ steps.metadata.outputs.image_ref }}
         run: |
           set -euo pipefail
-          gcloud run services update haunted-halls-frontend \
+          gcloud run services update "$STAGING_FRONTEND_SERVICE" \
             --image="$IMAGE_REF" \
             --project="$GCP_PROJECT" \
             --region="$GCP_REGION" \
@@ -133,7 +135,7 @@ jobs:
         id: verify
         run: |
           set -euo pipefail
-          service_json="$(gcloud run services describe haunted-halls-frontend \
+          service_json="$(gcloud run services describe "$STAGING_FRONTEND_SERVICE" \
             --project="$GCP_PROJECT" \
             --region="$GCP_REGION" \
             --format=json)"
@@ -168,9 +170,9 @@ jobs:
             --max-time 15 \
             --retry 2 \
             --retry-delay 1 \
-            "${service_url}/api/health")"
+            "${STAGING_FRONTEND_URL}/api/health")"
           if [[ "$public_status" != "200" ]]; then
-            echo "Expected unauthenticated frontend health check to return 200, got $public_status" >&2
+            echo "Expected unauthenticated staging frontend health check to return 200, got $public_status" >&2
             echo "Response body:" >&2
             cat "$health_file" >&2
             exit 1
@@ -187,6 +189,7 @@ jobs:
           echo "ready=$ready" >> "$GITHUB_OUTPUT"
           echo "public_status=$public_status" >> "$GITHUB_OUTPUT"
           echo "health_status=$health_status" >> "$GITHUB_OUTPUT"
+          echo "service_url=$service_url" >> "$GITHUB_OUTPUT"
 
       - name: Write deployment summary
         if: always()
@@ -196,19 +199,24 @@ jobs:
           IMAGE_REF: ${{ steps.metadata.outputs.image_ref }}
           PREVIOUS_FRONTEND_IMAGE: ${{ steps.metadata.outputs.previous_frontend_image }}
           FRONTEND_READY: ${{ steps.verify.outputs.ready }}
+          FRONTEND_SERVICE_URL: ${{ steps.verify.outputs.service_url }}
+          FRONTEND_PUBLIC_URL: ${{ env.STAGING_FRONTEND_URL }}
           PUBLIC_HEALTH_STATUS: ${{ steps.verify.outputs.public_status }}
           HEALTH_STATUS: ${{ steps.verify.outputs.health_status }}
         run: |
           {
-            echo "## Frontend Deploy"
+            echo "## Frontend Staging Deploy"
             echo
             printf -- '- Deployment Git SHA: %s\n' "${DEPLOY_SHA:-not available}"
             printf -- '- Immutable image digest: %s\n' "${IMAGE_DIGEST:-not available}"
-            printf -- '- Previous frontend image: %s\n' "${PREVIOUS_FRONTEND_IMAGE:-not available}"
-            printf -- '- Deployed frontend image: %s\n' "${IMAGE_REF:-not available}"
-            printf -- '- Frontend Ready status: %s\n' "${FRONTEND_READY:-not verified}"
-            printf -- '- Health HTTP status: %s\n' "${PUBLIC_HEALTH_STATUS:-not verified}"
+            printf -- '- Previous staging frontend image: %s\n' "${PREVIOUS_FRONTEND_IMAGE:-not available}"
+            printf -- '- Deployed staging frontend image: %s\n' "${IMAGE_REF:-not available}"
+            printf -- '- Staging Cloud Run URL: %s\n' "${FRONTEND_SERVICE_URL:-not verified}"
+            printf -- '- Staging public URL: %s\n' "${FRONTEND_PUBLIC_URL:-not available}"
+            printf -- '- Staging frontend Ready status: %s\n' "${FRONTEND_READY:-not verified}"
+            printf -- '- Staging health HTTP status: %s\n' "${PUBLIC_HEALTH_STATUS:-not verified}"
             printf -- '- Health application status: %s\n' "${HEALTH_STATUS:-not verified}"
             echo
-            echo "Rollback is manual: redeploy the previous frontend image or another known-good digest."
+            echo "Production is not modified by this workflow. Promote production with the manual production promotion workflow."
+            echo "Staging rollback is manual: redeploy the previous staging frontend image or another known-good digest."
           } >> "$GITHUB_STEP_SUMMARY"

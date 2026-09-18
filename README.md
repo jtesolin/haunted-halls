@@ -497,39 +497,56 @@ CI updated to Terraform 1.11.0; local `.terraform.lock.hcl` locks the specific G
 
 The `google` provider explicitly sets `user_project_override = true` and `billing_project = var.project_id`, so API usage (including APIs like Billing Budgets that require an explicit quota project) is billed/quota-charged to the configured GCP project rather than relying on ambient Application Default Credentials configuration.
 
-### No runtime deployment yet
+### Cloud Run runtime environments
 
-D4C Terraform now configures the first-deployment runtime, but it has not been applied. The code defines:
+Terraform manages the shared Cloud SQL instance and both Cloud Run environments. Production and staging share the low-cost Cloud SQL instance but use isolated application databases and credentials:
 
-- public Cloud Run service `haunted-halls-frontend` as the browser-facing boundary
+- production database: `haunted_halls`
+- staging database: `haunted_halls_staging`
+- production database user: `haunted_halls_app`
+- staging database user: `haunted_halls_staging_app`
+- production `DATABASE_URL` secret: `hh-database-url`
+- staging `DATABASE_URL` secret: `hh-database-url-staging`
+
+Production runtime resources:
+
+- public Cloud Run service `haunted-halls-frontend`
 - private IAM-protected Cloud Run service `haunted-halls-engine`
-- migration job `haunted-halls-migrate`, using the same engine image and explicit `python -m alembic upgrade head` command
-- separate frontend, engine, and migration runtime service accounts
-- minimum instances of `0`, maximum instances of `2`, request-based CPU allocation, and modest `1` CPU / `512Mi` resources
-- Cloud SQL connector integration mounted at `/cloudsql` for the engine and migration job
+- migration job `haunted-halls-migrate`, using the promoted engine image and explicit `python -m alembic upgrade head` command
 
-The frontend BFF keeps the existing application bearer token in `Authorization`. When `ENGINE_ID_TOKEN_AUDIENCE` is configured, it obtains an ADC-backed Google-signed ID token for that audience and sends it only in `X-Serverless-Authorization`; local Compose leaves that header absent. The engine remains private, and only `hh-frontend-runtime` receives its `roles/run.invoker` binding. The frontend receives public Cloud Run invocation access.
+Staging runtime resources:
 
-The configured deterministic URLs are derived from the project number and region and are used for `NEXTAUTH_URL`, `ENGINE_BASE_URL`, and `ENGINE_ID_TOKEN_AUDIENCE`. Before a real apply, create the production Google OAuth Web Application using the Terraform output frontend URL and its `/api/auth/callback/google` callback, populate `hh-google-client-secret`, and provide immutable frontend/engine image references plus the operator-managed secret versions in ignored `terraform.tfvars`.
+- public Cloud Run service `haunted-halls-frontend-staging`
+- private IAM-protected Cloud Run service `haunted-halls-engine-staging`
+- migration job `haunted-halls-migrate-staging`, using the staging engine image and explicit `python -m alembic upgrade head` command
+- public staging URL `https://staging.haunted-halls.tesolin.us`
 
-The intended manual first-deployment order is:
+Both environments keep minimum instances at `0`, maximum instances at `2`, request-based CPU allocation, and modest `1` CPU / `512Mi` resources. The engine and migration workloads mount the Cloud SQL connector at `/cloudsql`. The staging frontend is wired only to `haunted-halls-engine-staging`, and its runtime identity receives `roles/run.invoker` only on the staging engine. The staging engine is not public; the staging frontend is public.
 
-1. Build and push reviewed immutable images.
-2. Keep `application_services_enabled = false`.
-3. Run `terraform plan` and `terraform apply`.
-4. Terraform creates or updates `haunted-halls-migrate`, but does not create the engine or frontend services or their IAM bindings.
-5. Execute `haunted-halls-migrate` manually and wait for successful completion.
-6. Set `application_services_enabled = true` and provide the frontend image and production OAuth values.
-7. Run a fresh `terraform plan`.
-8. Apply to create or update the engine and frontend services and their IAM bindings.
-9. Verify runtime behavior.
-10. Run a final `terraform plan`; it should report `No changes`.
+The frontend BFF keeps the existing application bearer token in `Authorization`. When `ENGINE_ID_TOKEN_AUDIENCE` is configured, it obtains an ADC-backed Google-signed ID token for that audience and sends it only in `X-Serverless-Authorization`; local Compose leaves that header absent.
 
-Creating the migration job is not equivalent to successfully executing the migration. The gate keeps application service presence separate from migration execution while preserving the normal Terraform workflow. After the first successful migration and deployment, `application_services_enabled = true` is the steady-state value; future D5 automation will still execute migrations before deploying new application revisions. No Cloud Run resources have been created by this implementation pass, and custom domains, DNS, VPC expansion, and GitHub Actions deployment automation remain out of scope.
+The configured deterministic URLs are derived from the project number and region and are used for `NEXTAUTH_URL`, `ENGINE_BASE_URL`, and `ENGINE_ID_TOKEN_AUDIENCE`. Staging uses separate internal service token, NextAuth, Google OAuth client secret, database URL, and runtime identities. The OpenAI API key remains an operator-managed shared secret because it is a provider credential rather than environment-specific application state.
 
-## D5A: GitHub Actions CD Ownership Foundation
+Before enabling staging application services, create/configure a Google OAuth Web Application client for staging with:
 
-D5A establishes the operational boundary between Terraform-managed infrastructure and GitHub Actions-driven deployment.
+- Authorized JavaScript origin: `https://staging.haunted-halls.tesolin.us`
+- Authorized redirect URI: `https://staging.haunted-halls.tesolin.us/api/auth/callback/google`
+
+Then add its client secret as a new version of `hh-google-client-secret-staging`, set `staging_google_oauth_client_id`, set `staging_google_client_secret_version`, provide reviewed immutable initial frontend/engine images, and set `staging_application_services_enabled = true` in the operator-local `terraform.tfvars`.
+
+The safe staging rollout order is:
+
+1. Keep production values unchanged and set the staging variables in ignored `terraform.tfvars`.
+2. Run `terraform plan` and verify it creates staging resources without replacing or destroying production infrastructure.
+3. Run `terraform apply` to create the staging database, staging secrets, staging runtime identities, staging Cloud Run services/job, staging DNS, and staging IAM.
+4. Coordinate with `jtesolin/haunted-halls-engine#72` so the engine repository deploys automatically to `haunted-halls-engine-staging` and `haunted-halls-migrate-staging`.
+5. Merge the frontend staging deploy workflow after staging infrastructure exists; successful `main` CI then deploys the frontend to `haunted-halls-frontend-staging`.
+6. Verify `https://staging.haunted-halls.tesolin.us/api/health` returns `200` with application status `ok`, and verify unauthenticated staging-engine `/health` returns `403`.
+7. Promote to production only with the manual production promotion workflow.
+
+## GitHub Actions CD Ownership Foundation
+
+The Terraform CD foundation establishes the operational boundary between Terraform-managed infrastructure and GitHub Actions-driven deployment.
 
 ### Deployment vs. Configuration Ownership
 
@@ -546,35 +563,38 @@ GitHub Actions CD workflows own **only image revisions**:
 
 - Building application Docker images
 - Pushing immutable SHA-tagged images to Artifact Registry
-- Updating Cloud Run service and job image attributes to point to new revisions
-- Executing database migrations before engine rollout
+- Updating staging Cloud Run service and job image attributes to point to new revisions
+- Executing staging database migrations before staging engine rollout
+- Promoting captured staging frontend and engine digests to production without rebuilding
 
 This separation prevents normal application deployments from requiring a Terraform `apply`.
 
 ### Deployment Service Accounts
 
-D5A adds least-privilege IAM bindings for the two deployment service accounts:
+Terraform adds least-privilege IAM bindings for the two deployment service accounts:
 
 #### Frontend Deployer (`hh-frontend-deployer`)
 
 - **Artifact Registry**: `roles/artifactregistry.writer` on the `haunted-halls` repository
   - Allows pushing and tagging images from CI/CD
-- **Cloud Run**: `roles/run.developer` on `haunted-halls-frontend` service only
-  - Allows updating the frontend Cloud Run service (including its image); CD workflows should only change the image field.
-- **Service Account User**: `roles/iam.serviceAccountUser` on `hh-frontend-runtime`
-  - Allows deployment workflows to run Cloud Run operations as the frontend runtime identity
-- **Scope**: Frontend repository only; no access to engine, migrations, or secrets
+- **Cloud Run**:
+  - `roles/run.developer` on `haunted-halls-frontend-staging` for automatic staging deploys
+  - `roles/run.developer` on production `haunted-halls-frontend`, `haunted-halls-engine`, and `haunted-halls-migrate` for the centralized manual production promotion workflow
+- **Service Account User**:
+  - `roles/iam.serviceAccountUser` on `hh-frontend-runtime-staging` for staging deploys
+  - `roles/iam.serviceAccountUser` on `hh-frontend-runtime`, `hh-engine-runtime`, and `hh-migration-runtime` for manual production promotion
+- **Scope**: Frontend repository only; no Secret Manager accessor or Cloud SQL client access
 
 #### Engine Deployer (`hh-engine-deployer`)
 
 - **Artifact Registry**: `roles/artifactregistry.writer` on the `haunted-halls` repository
   - Allows pushing and tagging images from CI/CD
 - **Cloud Run**: `roles/run.developer` on:
-  - `haunted-halls-engine` service — allows updating the service (including its image); workflows should only change the image field
-  - `haunted-halls-migrate` job — allows updating the job (including its image) and executing migrations
-- **Service Account User**: `roles/iam.serviceAccountUser` on `hh-engine-runtime` and `hh-migration-runtime` — allows deployment workflows to impersonate the runtime identities
+  - `haunted-halls-engine-staging` service — allows updating the staging service image
+  - `haunted-halls-migrate-staging` job — allows updating the staging migration job image and executing staging migrations
+- **Service Account User**: `roles/iam.serviceAccountUser` on `hh-engine-runtime-staging` and `hh-migration-runtime-staging` — allows deployment workflows to impersonate the staging runtime identities
   - Allows deployment workflows to run Cloud Run operations as those service accounts
-- **Scope**: Engine repository only; no access to frontend or user secrets
+- **Scope**: Engine repository staging deployment only; production engine changes are centralized in the frontend repository's manual promotion workflow
 
 Neither deployer receives:
 
@@ -585,46 +605,59 @@ Neither deployer receives:
 
 ### Workload Identity Federation Hardening
 
-The existing GitHub OIDC provider condition is now restricted to deployment workflows:
+The existing GitHub OIDC provider condition is now restricted to deployment and production-promotion workflows:
 
 ```
 attribute.repository_owner == "jtesolin"
 AND attribute.ref == "refs/heads/main"
 AND one of:
   - attribute.repository == "jtesolin/haunted-halls" AND attribute.workflow_ref == "jtesolin/haunted-halls/.github/workflows/deploy.yml@refs/heads/main"
+  - attribute.repository == "jtesolin/haunted-halls" AND attribute.workflow_ref == "jtesolin/haunted-halls/.github/workflows/promote-production.yml@refs/heads/main"
   - attribute.repository == "jtesolin/haunted-halls-engine" AND attribute.workflow_ref == "jtesolin/haunted-halls-engine/.github/workflows/deploy.yml@refs/heads/main"
 ```
 
-Deployments can only run from `main` branch and only from dedicated `deploy.yml` workflows in each repository. CI workflows, pull requests, arbitrary branches, forks, and other workflow files are not permitted to authenticate.
+Deployments can only run from `main` branch and only from dedicated deployment or promotion workflows. CI workflows, pull requests, arbitrary branches, forks, and other workflow files are not permitted to authenticate.
 
-### Future Deployment Workflow Contract
+### Deployment Workflow Contract
 
-D5 deployment workflows are not yet implemented. When they are, the expected behavior is:
+Automatic deployment targets staging. Production is updated only by the manual production promotion workflow in this repository.
 
-**Engine deployment workflow:**
+**Engine staging deployment workflow (`jtesolin/haunted-halls-engine#72`):**
 
 1. Trigger on push to `main` or manual dispatch
 2. Authenticate using GitHub OIDC → `hh-engine-deployer`
 3. Build immutable engine image, tag with commit SHA
 4. Push to Artifact Registry, resolve sha256 digest
-5. Update `haunted-halls-migrate` job image to new digest
-6. Execute migration job and wait for completion
-7. If migration fails, stop (do not deploy engine)
-8. Update `haunted-halls-engine` service image to new digest
-9. Wait for readiness
-10. Run authenticated health/smoke test
+5. Update `haunted-halls-migrate-staging` job image to new digest
+6. Execute staging migration job and wait for completion
+7. If migration fails, stop
+8. Update `haunted-halls-engine-staging` service image to new digest
+9. Verify readiness, exact digest, and private unauthenticated boundary
 
-**Frontend deployment workflow:**
+**Frontend staging deployment workflow:**
 
 1. Trigger on push to `main` or manual dispatch
 2. Authenticate using GitHub OIDC → `hh-frontend-deployer`
 3. Build immutable frontend image, tag with commit SHA
 4. Push to Artifact Registry, resolve sha256 digest
-5. Update `haunted-halls-frontend` service image to new digest
-6. Wait for readiness
-7. Run public health/smoke test
+5. Update `haunted-halls-frontend-staging` service image to new digest
+6. Verify readiness and exact digest
+7. Verify `https://staging.haunted-halls.tesolin.us/api/health`
 
-Each repository deploys only its own application responsibility. The frontend workflow cannot deploy the engine, and the engine workflow cannot deploy the frontend.
+**Manual production promotion workflow:**
+
+1. Capture and freeze the exact frontend and engine image digests currently running in staging.
+2. Capture current production frontend and engine image digests for rollback metadata.
+3. Validate the captured image references in Artifact Registry.
+4. Update `haunted-halls-migrate` to the captured staging engine image and verify the configured image.
+5. Execute production `alembic upgrade head` and wait for success.
+6. Deploy the captured staging engine digest to `haunted-halls-engine`.
+7. Verify production engine readiness, exact digest, and private unauthenticated boundary.
+8. Deploy the captured staging frontend digest to `haunted-halls-frontend`.
+9. Verify production frontend readiness, exact digest, and public `/api/health`.
+10. Write the promoted digests, previous production digests, migration execution, and verification results to the GitHub Actions summary.
+
+The promotion workflow never rebuilds images. The staging digests captured at promotion start remain the release candidate even if staging receives newer deployments while promotion is running.
 
 ### Image Lifecycle Ownership
 
@@ -643,27 +676,27 @@ Terraform preserves all other configuration:
 - Probes and startup configuration
 - commands and arguments (for the migration job, the alembic command is Terraform-owned)
 
-### Production Deployment Concurrency
+### Deployment Concurrency
 
-Each repository serializes its own production deployments independently using GitHub Actions concurrency groups. The current production deployment groups are:
+The frontend repository serializes staging deployments and production promotions independently:
 
 ```yaml
-# Frontend
+# Frontend staging
 concurrency:
-  group: haunted-halls-frontend-production
+  group: haunted-halls-frontend-staging
   cancel-in-progress: false
 
-# Engine
+# Production promotion
 concurrency:
-  group: haunted-halls-engine-production
+  group: haunted-halls-production-promotion
   cancel-in-progress: false
 ```
 
-GitHub Actions concurrency groups are repository-scoped, so using the same group name in two different repositories would not provide cross-repository serialization. Never use `cancel-in-progress: true` for production deployments; a newer commit must not cancel a migration or rollout halfway through. Queued deployments are preferred to cancellation.
+GitHub Actions concurrency groups are repository-scoped, so using the same group name in two different repositories would not provide cross-repository serialization. Never use `cancel-in-progress: true` for staging deployments or production promotions; a newer commit must not cancel a migration or rollout halfway through. Queued deployments are preferred to cancellation.
 
 ### Rollback Model
 
-Application rollback in D5 means deploying a prior known-good image revision. Database migrations are not automatically downgraded; the system follows the expand-contract principle for schema changes. Rollback automation is out of scope for D5A; it will be addressed in later work.
+Application rollback means deploying a prior known-good image revision. The production promotion workflow records previous production frontend and engine digests in the release summary for rollback metadata. Database migrations are not automatically downgraded; the system follows the expand-contract principle for schema changes.
 
 ## CI
 

@@ -29,3 +29,16 @@ resource "google_dns_record_set" "frontend_custom_domain" {
   ttl          = 300
   rrdatas      = ["ghs.googlehosted.com."]
 }
+
+resource "google_dns_record_set" "frontend_staging_custom_domain" {
+  count = (
+    var.staging_application_services_enabled &&
+    length(trimspace(var.staging_frontend_custom_domain)) > 0
+  ) ? 1 : 0
+
+  managed_zone = google_dns_managed_zone.tesolin_us.name
+  name         = "${var.staging_frontend_custom_domain}."
+  type         = "CNAME"
+  ttl          = 300
+  rrdatas      = ["ghs.googlehosted.com."]
+}
