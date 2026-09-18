@@ -578,16 +578,18 @@ The schema grants are required because the `public` schema is owned by `pg_datab
 
 The verification queries are included at the end of the `cloud_sql_database_privilege_hardening_sql` output. Do not enable staging application services or run migrations until all checks pass.
 
-The safe staging rollout order is:
+The safe staging rollout order uses **two applies**, because the database privilege controls must be in place before any staging service or migration job can reach the database:
 
-1. Keep production values unchanged and set the staging variables in ignored `terraform.tfvars`.
+1. Keep production values unchanged and set the staging variables in ignored `terraform.tfvars`, with `staging_application_services_enabled = false`.
 2. Run `terraform plan` and verify it creates staging resources without replacing or destroying production infrastructure.
-3. Run `terraform apply` to create the staging database, staging secrets, staging runtime identities, staging Cloud Run services/job, staging DNS, and staging IAM.
-4. Apply **Control A** (`gcloud sql users assign-roles ... --revoke-existing-roles` for both application users) and **Control B** (the `cloud_sql_database_privilege_hardening_sql` output), then run the verification queries. Both controls must pass before any migration job runs or staging application services are enabled.
-5. Coordinate with `jtesolin/haunted-halls-engine#72` so the engine repository deploys automatically to `haunted-halls-engine-staging` and `haunted-halls-migrate-staging`.
-6. Merge the frontend staging deploy workflow after staging infrastructure exists; successful `main` CI then deploys the frontend to `haunted-halls-frontend-staging`.
-7. Verify `https://staging.haunted-halls.tesolin.us/api/health` returns `200` with application status `ok`, and verify unauthenticated staging-engine `/health` returns `403`.
-8. Promote to production only with the manual production promotion workflow, after confirming the companion engine staging cutover is active and the old engine production auto-deploy path is disabled.
+3. Run `terraform apply`. With the gate still `false` this creates the staging foundation only — staging database, staging secrets, staging runtime identities, and staging IAM — and does not create the staging Cloud Run services, migration job, or domain mapping.
+4. Apply **Control A** (`gcloud sql users assign-roles ... --revoke-existing-roles` for both application users) and **Control B** (the `cloud_sql_database_privilege_hardening_sql` output), then run the verification queries. Both controls must pass before continuing.
+5. Create the staging Google OAuth client and add its client secret to `hh-google-client-secret-staging`, then set the staging OAuth variables in `terraform.tfvars`.
+6. Set `staging_application_services_enabled = true` and run a second `terraform plan` and `terraform apply` to create the staging Cloud Run services, migration job, and DNS.
+7. Coordinate with `jtesolin/haunted-halls-engine#72` so the engine repository deploys automatically to `haunted-halls-engine-staging` and `haunted-halls-migrate-staging`.
+8. Merge the frontend staging deploy workflow after staging infrastructure exists; successful `main` CI then deploys the frontend to `haunted-halls-frontend-staging`.
+9. Verify `https://staging.haunted-halls.tesolin.us/api/health` returns `200` with application status `ok`, and verify unauthenticated staging-engine `/health` returns `403`.
+10. Promote to production only with the manual production promotion workflow, after confirming the companion engine staging cutover is active and the old engine production auto-deploy path is disabled.
 
 ## GitHub Actions CD Ownership Foundation
 
