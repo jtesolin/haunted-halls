@@ -112,12 +112,59 @@ jobs:
           fi
 
           image_ref="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
+
+          # docker/build-push-action returns the top-level digest of the pushed
+          # artifact. With provenance/attestation metadata enabled that artifact
+          # is an OCI image index containing the runnable linux/amd64 manifest
+          # plus non-runtime attestation manifests. Cloud Run resolves an index
+          # to the platform manifest, so the serving revision reports the child
+          # digest. Resolve the runtime manifest here so rollout verification
+          # compares the revision against the artifact it actually runs.
+          raw_manifest="$(docker buildx imagetools inspect "$image_ref" --raw)"
+
+          if [[ "$(jq -r 'has("manifests")' <<< "$raw_manifest")" == "true" ]]; then
+            runtime_digests="$(jq -r '
+              [
+                .manifests[]?
+                | select(.platform.os == "linux" and .platform.architecture == "amd64")
+                | select((.annotations["vnd.docker.reference.type"] // "") != "attestation-manifest")
+                | .digest
+              ]
+              | unique
+              | .[]
+            ' <<< "$raw_manifest")"
+
+            runtime_digest_count="$(grep -c . <<< "$runtime_digests" || true)"
+            if [[ "$runtime_digest_count" != "1" ]]; then
+              echo "Expected exactly one runnable linux/amd64 manifest in $image_ref, found ${runtime_digest_count}." >&2
+              echo "Cloud Run runs Linux x86_64, so the built artifact must contain exactly one linux/amd64 manifest." >&2
+              jq -r '.manifests[]? | "  \(.platform.os)/\(.platform.architecture) \(.digest)"' <<< "$raw_manifest" >&2
+              exit 1
+            fi
+
+            runtime_digest="$runtime_digests"
+            if [[ ! "$runtime_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "Resolved runtime manifest digest is not a valid sha256 digest: $runtime_digest" >&2
+              exit 1
+            fi
+          else
+            # Single image manifest: the built artifact is already the runtime manifest.
+            runtime_digest="$IMAGE_DIGEST"
+          fi
+
+          expected_runtime_image="${IMAGE_REPOSITORY}@${runtime_digest}"
+
           previous_frontend_image="$(gcloud run services describe "$STAGING_FRONTEND_SERVICE" \
             --project="$GCP_PROJECT" \
             --region="$GCP_REGION" \
             --format='value(spec.template.spec.containers[0].image)')"
 
+          echo "Built OCI artifact: $image_ref"
+          echo "Expected Cloud Run runtime manifest: $expected_runtime_image"
+
           echo "image_ref=$image_ref" >> "$GITHUB_OUTPUT"
+          echo "runtime_digest=$runtime_digest" >> "$GITHUB_OUTPUT"
+          echo "expected_runtime_image=$expected_runtime_image" >> "$GITHUB_OUTPUT"
           echo "previous_frontend_image=$previous_frontend_image" >> "$GITHUB_OUTPUT"
 
       - name: Update frontend service image
@@ -133,9 +180,12 @@ jobs:
 
       - name: Verify frontend rollout and public health
         id: verify
+        env:
+          IMAGE_REF: ${{ steps.metadata.outputs.image_ref }}
+          EXPECTED_RUNTIME_IMAGE: ${{ steps.metadata.outputs.expected_runtime_image }}
         run: |
           set -euo pipefail
-          expected_image="${IMAGE_REPOSITORY}@${{ steps.image.outputs.digest }}"
+          expected_image="$EXPECTED_RUNTIME_IMAGE"
 
           for attempt in $(seq 1 30); do
             service_json="$(gcloud run services describe "$STAGING_FRONTEND_SERVICE" \
@@ -170,7 +220,8 @@ jobs:
               echo "Latest Ready traffic percent: ${traffic_percent:-empty}" >&2
               echo "Revision Ready: ${revision_ready:-not checked}" >&2
               echo "Revision image: ${deployed_image:-not checked}" >&2
-              echo "Expected image: $expected_image" >&2
+              echo "Built OCI artifact: $IMAGE_REF" >&2
+              echo "Expected Cloud Run runtime manifest: $expected_image" >&2
               exit 1
             fi
 
@@ -217,6 +268,8 @@ jobs:
           DEPLOY_SHA: ${{ steps.revision.outputs.deploy_sha }}
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
           IMAGE_REF: ${{ steps.metadata.outputs.image_ref }}
+          RUNTIME_DIGEST: ${{ steps.metadata.outputs.runtime_digest }}
+          EXPECTED_RUNTIME_IMAGE: ${{ steps.metadata.outputs.expected_runtime_image }}
           PREVIOUS_FRONTEND_IMAGE: ${{ steps.metadata.outputs.previous_frontend_image }}
           FRONTEND_READY: ${{ steps.verify.outputs.ready }}
           FRONTEND_READY_REVISION: ${{ steps.verify.outputs.ready_revision }}
@@ -229,9 +282,11 @@ jobs:
             echo "## Frontend Staging Deploy"
             echo
             printf -- '- Deployment Git SHA: %s\n' "${DEPLOY_SHA:-not available}"
-            printf -- '- Immutable image digest: %s\n' "${IMAGE_DIGEST:-not available}"
+            printf -- '- Immutable image digest (built OCI artifact): %s\n' "${IMAGE_DIGEST:-not available}"
+            printf -- '- Resolved Cloud Run runtime manifest digest: %s\n' "${RUNTIME_DIGEST:-not available}"
             printf -- '- Previous staging frontend image: %s\n' "${PREVIOUS_FRONTEND_IMAGE:-not available}"
             printf -- '- Deployed staging frontend image: %s\n' "${IMAGE_REF:-not available}"
+            printf -- '- Verified staging runtime image: %s\n' "${EXPECTED_RUNTIME_IMAGE:-not available}"
             printf -- '- Staging Cloud Run URL: %s\n' "${FRONTEND_SERVICE_URL:-not verified}"
             printf -- '- Staging public URL: %s\n' "${FRONTEND_PUBLIC_URL:-not available}"
             printf -- '- Staging frontend Ready status: %s\n' "${FRONTEND_READY:-not verified}"
