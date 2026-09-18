@@ -57,14 +57,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          service_image() {
-            local service_name="$1"
-            gcloud run services describe "$service_name" \
-              --project="$GCP_PROJECT" \
-              --region="$GCP_REGION" \
-              --format='value(spec.template.spec.containers[0].image)'
-          }
-
           validate_image_ref() {
             local label="$1"
             local image_ref="$2"
@@ -88,25 +80,70 @@ jobs:
               --format='value(image_summary.digest)' >/dev/null
           }
 
-          staging_frontend_image="$(service_image "$STAGING_FRONTEND_SERVICE")"
-          staging_engine_image="$(service_image "$STAGING_ENGINE_SERVICE")"
-          previous_frontend_image="$(service_image "$PRODUCTION_FRONTEND_SERVICE")"
-          previous_engine_image="$(service_image "$PRODUCTION_ENGINE_SERVICE")"
+          capture_ready_serving_image() {
+            local output_prefix="$1"
+            local service_name="$2"
+            local label="$3"
+            local repository="$4"
+            local require_latest_ready="$5"
+            local service_json ready latest_created latest_ready traffic_percent
+            local revision_json revision_ready image_ref
 
-          validate_image_ref "Captured staging frontend image" "$staging_frontend_image" "$FRONTEND_IMAGE_REPOSITORY"
-          validate_image_ref "Captured staging engine image" "$staging_engine_image" "$ENGINE_IMAGE_REPOSITORY"
-          validate_image_ref "Current production frontend image" "$previous_frontend_image" "$FRONTEND_IMAGE_REPOSITORY"
-          validate_image_ref "Current production engine image" "$previous_engine_image" "$ENGINE_IMAGE_REPOSITORY"
+            service_json="$(gcloud run services describe "$service_name" \
+              --project="$GCP_PROJECT" \
+              --region="$GCP_REGION" \
+              --format=json)"
 
-          {
-            echo "staging_frontend_image=$staging_frontend_image"
-            echo "staging_engine_image=$staging_engine_image"
-            echo "previous_frontend_image=$previous_frontend_image"
-            echo "previous_engine_image=$previous_engine_image"
-          } >> "$GITHUB_OUTPUT"
+            ready="$(jq -r 'first(.status.conditions[]? | select(.type == "Ready") | .status) // empty' <<< "$service_json")"
+            latest_created="$(jq -r '.status.latestCreatedRevisionName // empty' <<< "$service_json")"
+            latest_ready="$(jq -r '.status.latestReadyRevisionName // empty' <<< "$service_json")"
 
-          printf 'Frozen frontend release candidate: %s\n' "$staging_frontend_image"
-          printf 'Frozen engine release candidate: %s\n' "$staging_engine_image"
+            if [[ "$ready" != "True" ]]; then
+              echo "$label service is not Ready: $ready" >&2
+              exit 1
+            fi
+            if [[ -z "$latest_created" || -z "$latest_ready" ]]; then
+              echo "$label service is missing latest created/ready revision metadata." >&2
+              exit 1
+            fi
+            if [[ "$require_latest_ready" == "true" && "$latest_created" != "$latest_ready" ]]; then
+              echo "$label latest created revision is not Ready: latestCreated=$latest_created latestReady=$latest_ready" >&2
+              exit 1
+            fi
+
+            traffic_percent="$(jq -r --arg revision "$latest_ready" '[.status.traffic[]? | select(.revisionName == $revision) | .percent] | add // 0' <<< "$service_json")"
+            if [[ "$traffic_percent" != "100" ]]; then
+              echo "$label latest Ready revision is not serving 100% of traffic: revision=$latest_ready percent=$traffic_percent" >&2
+              exit 1
+            fi
+
+            revision_json="$(gcloud run revisions describe "$latest_ready" \
+              --project="$GCP_PROJECT" \
+              --region="$GCP_REGION" \
+              --format=json)"
+            revision_ready="$(jq -r 'first(.status.conditions[]? | select(.type == "Ready") | .status) // empty' <<< "$revision_json")"
+            image_ref="$(jq -r '.spec.containers[0].image // empty' <<< "$revision_json")"
+
+            if [[ "$revision_ready" != "True" ]]; then
+              echo "$label serving revision is not Ready: revision=$latest_ready ready=$revision_ready" >&2
+              exit 1
+            fi
+
+            validate_image_ref "$label serving revision image" "$image_ref" "$repository"
+
+            {
+              echo "${output_prefix}_image=$image_ref"
+              echo "${output_prefix}_revision=$latest_ready"
+            } >> "$GITHUB_OUTPUT"
+
+            printf '%s verified Ready serving revision: %s\n' "$label" "$latest_ready"
+            printf '%s image: %s\n' "$label" "$image_ref"
+          }
+
+          capture_ready_serving_image "staging_frontend" "$STAGING_FRONTEND_SERVICE" "Staging frontend" "$FRONTEND_IMAGE_REPOSITORY" "true"
+          capture_ready_serving_image "staging_engine" "$STAGING_ENGINE_SERVICE" "Staging engine" "$ENGINE_IMAGE_REPOSITORY" "true"
+          capture_ready_serving_image "previous_frontend" "$PRODUCTION_FRONTEND_SERVICE" "Current production frontend" "$FRONTEND_IMAGE_REPOSITORY" "false"
+          capture_ready_serving_image "previous_engine" "$PRODUCTION_ENGINE_SERVICE" "Current production engine" "$ENGINE_IMAGE_REPOSITORY" "false"
 
       - name: Update production migration job image
         env:

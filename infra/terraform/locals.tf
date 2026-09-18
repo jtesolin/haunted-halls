@@ -6,6 +6,13 @@ locals {
   }
 
   artifact_repository_name = "haunted-halls"
+  frontend_image_repository = (
+    "${var.region}-docker.pkg.dev/${var.project_id}/${local.artifact_repository_name}/frontend"
+  )
+  engine_image_repository = (
+    "${var.region}-docker.pkg.dev/${var.project_id}/${local.artifact_repository_name}/engine"
+  )
+  staging_frontend_hostname = "staging.haunted-halls.tesolin.us"
 
   runtime_service_accounts = {
     frontend         = "hh-frontend-runtime"
@@ -45,11 +52,7 @@ locals {
     : local.cloud_run_urls.frontend
   )
 
-  staging_frontend_canonical_url = (
-    length(trimspace(var.staging_frontend_custom_domain)) > 0
-    ? "https://${trimspace(var.staging_frontend_custom_domain)}"
-    : local.cloud_run_urls.frontend_staging
-  )
+  staging_frontend_canonical_url = "https://${local.staging_frontend_hostname}"
 
   staging_engine_image = (
     length(trimspace(var.staging_engine_image)) > 0

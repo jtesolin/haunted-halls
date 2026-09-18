@@ -521,6 +521,8 @@ Staging runtime resources:
 - migration job `haunted-halls-migrate-staging`, using the staging engine image and explicit `python -m alembic upgrade head` command
 - public staging URL `https://staging.haunted-halls.tesolin.us`
 
+The staging hostname is fixed for this project. Terraform `NEXTAUTH_URL`, DNS, Cloud Run domain mapping, OAuth documentation, and deployment health verification all use `https://staging.haunted-halls.tesolin.us`.
+
 Both environments keep minimum instances at `0`, maximum instances at `2`, request-based CPU allocation, and modest `1` CPU / `512Mi` resources. The engine and migration workloads mount the Cloud SQL connector at `/cloudsql`. The staging frontend is wired only to `haunted-halls-engine-staging`, and its runtime identity receives `roles/run.invoker` only on the staging engine. The staging engine is not public; the staging frontend is public.
 
 The frontend BFF keeps the existing application bearer token in `Authorization`. When `ENGINE_ID_TOKEN_AUDIENCE` is configured, it obtains an ADC-backed Google-signed ID token for that audience and sends it only in `X-Serverless-Authorization`; local Compose leaves that header absent.
@@ -594,7 +596,8 @@ Terraform adds least-privilege IAM bindings for the two deployment service accou
   - `haunted-halls-migrate-staging` job — allows updating the staging migration job image and executing staging migrations
 - **Service Account User**: `roles/iam.serviceAccountUser` on `hh-engine-runtime-staging` and `hh-migration-runtime-staging` — allows deployment workflows to impersonate the staging runtime identities
   - Allows deployment workflows to run Cloud Run operations as those service accounts
-- **Scope**: Engine repository staging deployment only; production engine changes are centralized in the frontend repository's manual promotion workflow
+- **Rollout bridge**: this PR intentionally preserves existing `roles/run.developer` and `roles/iam.serviceAccountUser` bindings for production `haunted-halls-engine`, `haunted-halls-migrate`, `hh-engine-runtime`, and `hh-migration-runtime` so the current engine `main` production deploy path continues working until staging is provisioned and `jtesolin/haunted-halls-engine#72` is merged/verified.
+- **Steady-state scope**: engine repository staging deployment only; production engine changes are centralized in the frontend repository's manual promotion workflow. Remove the preserved production engine-deployer bindings in a later hardening change after the cutover is complete.
 
 Neither deployer receives:
 

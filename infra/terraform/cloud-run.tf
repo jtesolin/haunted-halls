@@ -217,6 +217,17 @@ resource "google_cloud_run_v2_service" "engine_staging" {
       client_version,
       template[0].containers[0].image,
     ]
+
+    precondition {
+      condition = (
+        startswith(local.staging_engine_image, "${local.engine_image_repository}@") &&
+        length(regexall(
+          "^sha256:[0-9a-f]{64}$",
+          replace(local.staging_engine_image, "${local.engine_image_repository}@", "")
+        )) == 1
+      )
+      error_message = "The effective staging engine image must be an immutable digest reference under the engine Artifact Registry repository."
+    }
   }
 }
 
@@ -455,8 +466,30 @@ resource "google_cloud_run_v2_service" "frontend_staging" {
     }
 
     precondition {
+      condition = (
+        startswith(var.staging_frontend_image, "${local.frontend_image_repository}@") &&
+        length(regexall(
+          "^sha256:[0-9a-f]{64}$",
+          replace(var.staging_frontend_image, "${local.frontend_image_repository}@", "")
+        )) == 1
+      )
+      error_message = "staging_frontend_image must be an immutable digest reference under the frontend Artifact Registry repository."
+    }
+
+    precondition {
       condition     = length(trimspace(local.staging_engine_image)) > 0
       error_message = "staging_engine_image or engine_image is required when staging_application_services_enabled is true."
+    }
+
+    precondition {
+      condition = (
+        startswith(local.staging_engine_image, "${local.engine_image_repository}@") &&
+        length(regexall(
+          "^sha256:[0-9a-f]{64}$",
+          replace(local.staging_engine_image, "${local.engine_image_repository}@", "")
+        )) == 1
+      )
+      error_message = "The effective staging engine image must be an immutable digest reference under the engine Artifact Registry repository."
     }
 
     precondition {
@@ -490,12 +523,9 @@ resource "google_cloud_run_domain_mapping" "frontend" {
 }
 
 resource "google_cloud_run_domain_mapping" "frontend_staging" {
-  count = (
-    var.staging_application_services_enabled &&
-    length(trimspace(var.staging_frontend_custom_domain)) > 0
-  ) ? 1 : 0
+  count = var.staging_application_services_enabled ? 1 : 0
 
-  name     = var.staging_frontend_custom_domain
+  name     = local.staging_frontend_hostname
   location = google_cloud_run_v2_service.frontend_staging[0].location
 
   metadata {
@@ -614,6 +644,17 @@ resource "google_cloud_run_v2_job" "migration_staging" {
       client_version,
       template[0].template[0].containers[0].image,
     ]
+
+    precondition {
+      condition = (
+        startswith(local.staging_engine_image, "${local.engine_image_repository}@") &&
+        length(regexall(
+          "^sha256:[0-9a-f]{64}$",
+          replace(local.staging_engine_image, "${local.engine_image_repository}@", "")
+        )) == 1
+      )
+      error_message = "The effective staging engine image must be an immutable digest reference under the engine Artifact Registry repository."
+    }
   }
 }
 

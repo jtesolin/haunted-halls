@@ -39,7 +39,6 @@ google_client_secret_version = 0
 # Staging environment. Apply these resources before merging workflow changes
 # that redirect automatic frontend deployment to staging.
 staging_application_services_enabled = false
-staging_frontend_custom_domain = "staging.haunted-halls.tesolin.us"
 staging_frontend_image = "replace-with-reviewed-immutable-frontend-image"
 staging_engine_image = "replace-with-reviewed-immutable-engine-image"
 

@@ -29,8 +29,21 @@ resource "google_service_account_iam_member" "frontend_deployer_acts_as_migratio
   member             = "serviceAccount:${google_service_account.frontend_deployer.email}"
 }
 
+# Preserve current engine production deployment while staging rollout is applied.
+resource "google_service_account_iam_member" "engine_deployer_acts_as_engine_runtime" {
+  service_account_id = google_service_account.engine_runtime.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.engine_deployer.email}"
+}
+
 resource "google_service_account_iam_member" "engine_deployer_acts_as_engine_staging_runtime" {
   service_account_id = google_service_account.engine_staging_runtime.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.engine_deployer.email}"
+}
+
+resource "google_service_account_iam_member" "engine_deployer_acts_as_migration_runtime" {
+  service_account_id = google_service_account.migration_runtime.name
   role               = "roles/iam.serviceAccountUser"
   member             = "serviceAccount:${google_service_account.engine_deployer.email}"
 }

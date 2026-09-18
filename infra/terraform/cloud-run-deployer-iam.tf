@@ -34,6 +34,17 @@ resource "google_cloud_run_v2_service_iam_member" "frontend_deployer_engine_prom
   member   = "serviceAccount:${google_service_account.frontend_deployer.email}"
 }
 
+# Preserve current engine production deployment while staging rollout is applied.
+resource "google_cloud_run_v2_service_iam_member" "engine_service_deployer" {
+  count = var.application_services_enabled ? 1 : 0
+
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.engine[0].name
+  role     = "roles/run.developer"
+  member   = "serviceAccount:${google_service_account.engine_deployer.email}"
+}
+
 resource "google_cloud_run_v2_service_iam_member" "engine_staging_service_deployer" {
   count = var.staging_application_services_enabled ? 1 : 0
 
@@ -50,6 +61,14 @@ resource "google_cloud_run_v2_job_iam_member" "migration_staging_deployer" {
   project  = var.project_id
   location = var.region
   name     = google_cloud_run_v2_job.migration_staging[0].name
+  role     = "roles/run.developer"
+  member   = "serviceAccount:${google_service_account.engine_deployer.email}"
+}
+
+resource "google_cloud_run_v2_job_iam_member" "migration_deployer" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_job.migration.name
   role     = "roles/run.developer"
   member   = "serviceAccount:${google_service_account.engine_deployer.email}"
 }

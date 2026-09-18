@@ -131,27 +131,6 @@ variable "frontend_custom_domain" {
 
 }
 
-variable "staging_frontend_custom_domain" {
-  description = "Custom hostname mapped to the public staging frontend Cloud Run service."
-  type        = string
-  default     = "staging.haunted-halls.tesolin.us"
-
-  validation {
-    condition = (
-      var.staging_frontend_custom_domain == "" ||
-      (
-        var.staging_frontend_custom_domain == trimspace(var.staging_frontend_custom_domain) &&
-        length(var.staging_frontend_custom_domain) <= 253 &&
-        can(regex(
-          "^([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$",
-          var.staging_frontend_custom_domain
-        ))
-      )
-    )
-    error_message = "staging_frontend_custom_domain must be empty or a valid hostname such as staging.haunted-halls.tesolin.us."
-  }
-}
-
 variable "frontend_image" {
   description = "Immutable container image reference for the frontend Cloud Run service."
   type        = string
