@@ -33,12 +33,22 @@ output "cloud_sql_staging_database_username" {
 }
 
 output "cloud_sql_database_privilege_hardening_sql" {
-  description = "PostgreSQL statements for an operator to run as a privileged database admin after apply to revoke default cross-database CONNECT and grant each application user only its own database."
+  description = "PostgreSQL statements for an operator to run as a privileged database admin after apply to revoke default cross-database CONNECT, grant each application user only its own database, and grant the public schema privileges that are no longer inherited from cloudsqlsuperuser."
   value       = <<-SQL
+    -- Run from any database on the instance as a privileged administrator.
     REVOKE CONNECT ON DATABASE ${google_sql_database.haunted_halls.name} FROM PUBLIC;
     REVOKE CONNECT ON DATABASE ${google_sql_database.haunted_halls_staging.name} FROM PUBLIC;
     GRANT CONNECT ON DATABASE ${google_sql_database.haunted_halls.name} TO ${google_sql_user.app.name};
     GRANT CONNECT ON DATABASE ${google_sql_database.haunted_halls_staging.name} TO ${google_sql_user.app_staging.name};
+
+    -- Terraform assigns no Cloud SQL database roles, so the application users do
+    -- not inherit cloudsqlsuperuser and the public schema is owned by
+    -- pg_database_owner. Each user needs explicit schema privileges before
+    -- Alembic can create objects. Run while connected to ${google_sql_database.haunted_halls.name}:
+    GRANT USAGE, CREATE ON SCHEMA public TO ${google_sql_user.app.name};
+
+    -- Run while connected to ${google_sql_database.haunted_halls_staging.name}:
+    GRANT USAGE, CREATE ON SCHEMA public TO ${google_sql_user.app_staging.name};
   SQL
 }
 

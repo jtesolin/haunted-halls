@@ -71,6 +71,11 @@ resource "google_sql_user" "app" {
   instance            = google_sql_database_instance.postgres.name
   password_wo         = ephemeral.random_password.db_password.result
   password_wo_version = var.database_password_version
+
+  # Cloud SQL grants cloudsqlsuperuser to built-in PostgreSQL users by default,
+  # which would bypass the per-database CONNECT isolation below. Declaring an
+  # explicit empty set makes Terraform authoritative and removes that membership.
+  database_roles = []
 }
 
 # Staging application database user with isolated credentials
@@ -85,4 +90,8 @@ resource "google_sql_user" "app_staging" {
   instance            = google_sql_database_instance.postgres.name
   password_wo         = ephemeral.random_password.staging_db_password.result
   password_wo_version = var.staging_database_password_version
+
+  # See google_sql_user.app: no Cloud SQL database roles, so the staging user
+  # cannot inherit cloudsqlsuperuser and reach the production database.
+  database_roles = []
 }

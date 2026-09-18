@@ -536,14 +536,26 @@ Before enabling staging application services, create/configure a Google OAuth We
 
 Then add its client secret as a new version of `hh-google-client-secret-staging`, set `staging_google_oauth_client_id`, set `staging_google_client_secret_version`, provide reviewed immutable initial frontend/engine images, and set `staging_application_services_enabled = true` in the operator-local `terraform.tfvars`.
 
-After Terraform creates the staging database and user, run the SQL from Terraform output `cloud_sql_database_privilege_hardening_sql` as a privileged PostgreSQL administrator. This revokes PostgreSQL's default cross-database `CONNECT` grant from `PUBLIC` and grants each application user `CONNECT` only to its own database. The SQL is an explicit operator step because safely applying PostgreSQL grants from this Terraform stack would require introducing privileged database credentials into Terraform state or local execution.
+#### Database privilege isolation
+
+Terraform declares `database_roles = []` on both `google_sql_user.app` and `google_sql_user.app_staging`. Cloud SQL otherwise grants `cloudsqlsuperuser` to built-in PostgreSQL users by default, and that membership would bypass the per-database isolation described below. Declaring an explicit empty set makes Terraform authoritative over each user's database-role set, so neither application user is a `cloudsqlsuperuser` and neither can reach the other environment's database.
+
+`CONNECT` isolation is enforced per database:
+
+- `haunted_halls_app` has `CONNECT` on `haunted_halls` only
+- `haunted_halls_staging_app` has `CONNECT` on `haunted_halls_staging` only
+- PostgreSQL's default `PUBLIC` `CONNECT` grant is revoked from both databases
+
+Because the application users no longer inherit `cloudsqlsuperuser`, and the `public` schema is owned by `pg_database_owner`, each application user also needs explicit `USAGE, CREATE ON SCHEMA public` in its own database. These schema grants must exist **before** Alembic migrations run in a newly provisioned environment; without them `alembic upgrade head` fails when it attempts to create objects.
+
+After Terraform creates the staging database and user, run the SQL from Terraform output `cloud_sql_database_privilege_hardening_sql` as a privileged PostgreSQL administrator. That output contains both the `CONNECT` hardening and the per-database schema grants, and it notes which statements must run while connected to each application database. The SQL is an explicit operator step because safely applying PostgreSQL grants from this Terraform stack would require introducing privileged database credentials into Terraform state or local execution; this project deliberately does not adopt a PostgreSQL Terraform provider or store privileged database credentials.
 
 The safe staging rollout order is:
 
 1. Keep production values unchanged and set the staging variables in ignored `terraform.tfvars`.
 2. Run `terraform plan` and verify it creates staging resources without replacing or destroying production infrastructure.
 3. Run `terraform apply` to create the staging database, staging secrets, staging runtime identities, staging Cloud Run services/job, staging DNS, and staging IAM.
-4. Run the `cloud_sql_database_privilege_hardening_sql` output as a privileged PostgreSQL administrator.
+4. Run the `cloud_sql_database_privilege_hardening_sql` output as a privileged PostgreSQL administrator, including the per-database `public` schema grants, before any migration job runs.
 5. Coordinate with `jtesolin/haunted-halls-engine#72` so the engine repository deploys automatically to `haunted-halls-engine-staging` and `haunted-halls-migrate-staging`.
 6. Merge the frontend staging deploy workflow after staging infrastructure exists; successful `main` CI then deploys the frontend to `haunted-halls-frontend-staging`.
 7. Verify `https://staging.haunted-halls.tesolin.us/api/health` returns `200` with application status `ok`, and verify unauthenticated staging-engine `/health` returns `403`.
