@@ -65,17 +65,16 @@ ephemeral "random_password" "db_password" {
   override_special = ""
 }
 
-# Application database user with ephemeral write-only password
+# Application database user with ephemeral write-only password.
+# Cloud SQL grants cloudsqlsuperuser to built-in PostgreSQL users, and that
+# membership is NOT managed here: the google_sql_user resource cannot revoke it.
+# Removing it requires the supported operator command documented in the README
+# (gcloud sql users assign-roles ... --database-roles= --revoke-existing-roles).
 resource "google_sql_user" "app" {
   name                = "haunted_halls_app"
   instance            = google_sql_database_instance.postgres.name
   password_wo         = ephemeral.random_password.db_password.result
   password_wo_version = var.database_password_version
-
-  # Cloud SQL grants cloudsqlsuperuser to built-in PostgreSQL users by default,
-  # which would bypass the per-database CONNECT isolation below. Declaring an
-  # explicit empty set makes Terraform authoritative and removes that membership.
-  database_roles = []
 }
 
 # Staging application database user with isolated credentials
@@ -85,13 +84,11 @@ ephemeral "random_password" "staging_db_password" {
   override_special = ""
 }
 
+# See google_sql_user.app: cloudsqlsuperuser membership is removed by an
+# explicit operator command, not by this resource.
 resource "google_sql_user" "app_staging" {
   name                = "haunted_halls_staging_app"
   instance            = google_sql_database_instance.postgres.name
   password_wo         = ephemeral.random_password.staging_db_password.result
   password_wo_version = var.staging_database_password_version
-
-  # See google_sql_user.app: no Cloud SQL database roles, so the staging user
-  # cannot inherit cloudsqlsuperuser and reach the production database.
-  database_roles = []
 }
