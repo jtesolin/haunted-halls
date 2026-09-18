@@ -2,6 +2,12 @@ name: Promote Production
 
 on:
   workflow_dispatch:
+    inputs:
+      engine_staging_cutover_verified:
+        description: Confirm the companion engine workflow deploys only staging and production auto-deploy is disabled.
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
@@ -39,6 +45,17 @@ jobs:
 
           if [[ "$MANUAL_REF" != "refs/heads/main" ]]; then
             echo "Production promotion is allowed only from refs/heads/main (received $MANUAL_REF)." >&2
+            exit 1
+          fi
+
+      - name: Require engine staging cutover confirmation
+        env:
+          ENGINE_STAGING_CUTOVER_VERIFIED: ${{ inputs.engine_staging_cutover_verified }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$ENGINE_STAGING_CUTOVER_VERIFIED" != "true" ]]; then
+            echo "Production promotion requires confirming the companion engine workflow deploys only staging and no longer automatically deploys production." >&2
             exit 1
           fi
 

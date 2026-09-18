@@ -547,7 +547,7 @@ The safe staging rollout order is:
 5. Coordinate with `jtesolin/haunted-halls-engine#72` so the engine repository deploys automatically to `haunted-halls-engine-staging` and `haunted-halls-migrate-staging`.
 6. Merge the frontend staging deploy workflow after staging infrastructure exists; successful `main` CI then deploys the frontend to `haunted-halls-frontend-staging`.
 7. Verify `https://staging.haunted-halls.tesolin.us/api/health` returns `200` with application status `ok`, and verify unauthenticated staging-engine `/health` returns `403`.
-8. Promote to production only with the manual production promotion workflow.
+8. Promote to production only with the manual production promotion workflow, after confirming the companion engine staging cutover is active and the old engine production auto-deploy path is disabled.
 
 ## GitHub Actions CD Ownership Foundation
 
@@ -652,16 +652,17 @@ Automatic deployment targets staging. Production is updated only by the manual p
 
 **Manual production promotion workflow:**
 
-1. Capture and freeze the exact frontend and engine image digests currently running in staging.
-2. Capture current production frontend and engine image digests for rollback metadata.
-3. Validate the captured image references in Artifact Registry.
-4. Update `haunted-halls-migrate` to the captured staging engine image and verify the configured image.
-5. Execute production `alembic upgrade head` and wait for success.
-6. Deploy the captured staging engine digest to `haunted-halls-engine`.
-7. Verify production engine readiness, exact digest, and private unauthenticated boundary.
-8. Deploy the captured staging frontend digest to `haunted-halls-frontend`.
-9. Verify production frontend readiness, exact digest, and public `/api/health`.
-10. Write the promoted digests, previous production digests, migration execution, and verification results to the GitHub Actions summary.
+1. Require a manual dispatch confirmation that the companion engine workflow deploys only staging and no longer automatically deploys production.
+2. Capture and freeze the exact frontend and engine image digests currently running in staging.
+3. Capture current production frontend and engine serving image digests for rollback metadata.
+4. Validate the captured image references in Artifact Registry.
+5. Update `haunted-halls-migrate` to the captured staging engine image and verify the configured image.
+6. Execute production `alembic upgrade head` and wait for success.
+7. Deploy the captured staging engine digest to `haunted-halls-engine`.
+8. Verify production engine readiness, exact digest, and private unauthenticated boundary.
+9. Deploy the captured staging frontend digest to `haunted-halls-frontend`.
+10. Verify production frontend readiness, exact digest, and public `/api/health`.
+11. Write the promoted digests, previous production digests, migration execution, and verification results to the GitHub Actions summary.
 
 The promotion workflow never rebuilds images. The staging digests captured at promotion start remain the release candidate even if staging receives newer deployments while promotion is running.
 
@@ -699,6 +700,8 @@ concurrency:
 ```
 
 GitHub Actions concurrency groups are repository-scoped, so using the same group name in two different repositories would not provide cross-repository serialization. Never use `cancel-in-progress: true` for staging deployments or production promotions; a newer commit must not cancel a migration or rollout halfway through. Queued deployments are preferred to cancellation.
+
+Because the engine repository retains its production deploy IAM during the initial staging rollout, the production promotion workflow also refuses to run until the operator confirms the companion engine staging cutover is active and the old engine production auto-deploy path is disabled. This prevents a concurrent engine production deployment from racing with the centralized promotion while still allowing staging infrastructure to be applied before the engine workflow change merges.
 
 ### Rollback Model
 
