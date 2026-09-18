@@ -536,15 +536,18 @@ Before enabling staging application services, create/configure a Google OAuth We
 
 Then add its client secret as a new version of `hh-google-client-secret-staging`, set `staging_google_oauth_client_id`, set `staging_google_client_secret_version`, provide reviewed immutable initial frontend/engine images, and set `staging_application_services_enabled = true` in the operator-local `terraform.tfvars`.
 
+After Terraform creates the staging database and user, run the SQL from Terraform output `cloud_sql_database_privilege_hardening_sql` as a privileged PostgreSQL administrator. This revokes PostgreSQL's default cross-database `CONNECT` grant from `PUBLIC` and grants each application user `CONNECT` only to its own database. The SQL is an explicit operator step because safely applying PostgreSQL grants from this Terraform stack would require introducing privileged database credentials into Terraform state or local execution.
+
 The safe staging rollout order is:
 
 1. Keep production values unchanged and set the staging variables in ignored `terraform.tfvars`.
 2. Run `terraform plan` and verify it creates staging resources without replacing or destroying production infrastructure.
 3. Run `terraform apply` to create the staging database, staging secrets, staging runtime identities, staging Cloud Run services/job, staging DNS, and staging IAM.
-4. Coordinate with `jtesolin/haunted-halls-engine#72` so the engine repository deploys automatically to `haunted-halls-engine-staging` and `haunted-halls-migrate-staging`.
-5. Merge the frontend staging deploy workflow after staging infrastructure exists; successful `main` CI then deploys the frontend to `haunted-halls-frontend-staging`.
-6. Verify `https://staging.haunted-halls.tesolin.us/api/health` returns `200` with application status `ok`, and verify unauthenticated staging-engine `/health` returns `403`.
-7. Promote to production only with the manual production promotion workflow.
+4. Run the `cloud_sql_database_privilege_hardening_sql` output as a privileged PostgreSQL administrator.
+5. Coordinate with `jtesolin/haunted-halls-engine#72` so the engine repository deploys automatically to `haunted-halls-engine-staging` and `haunted-halls-migrate-staging`.
+6. Merge the frontend staging deploy workflow after staging infrastructure exists; successful `main` CI then deploys the frontend to `haunted-halls-frontend-staging`.
+7. Verify `https://staging.haunted-halls.tesolin.us/api/health` returns `200` with application status `ok`, and verify unauthenticated staging-engine `/health` returns `403`.
+8. Promote to production only with the manual production promotion workflow.
 
 ## GitHub Actions CD Ownership Foundation
 

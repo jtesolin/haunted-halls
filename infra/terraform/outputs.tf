@@ -32,6 +32,16 @@ output "cloud_sql_staging_database_username" {
   value       = google_sql_user.app_staging.name
 }
 
+output "cloud_sql_database_privilege_hardening_sql" {
+  description = "PostgreSQL statements for an operator to run as a privileged database admin after apply to revoke default cross-database CONNECT and grant each application user only its own database."
+  value       = <<-SQL
+    REVOKE CONNECT ON DATABASE ${google_sql_database.haunted_halls.name} FROM PUBLIC;
+    REVOKE CONNECT ON DATABASE ${google_sql_database.haunted_halls_staging.name} FROM PUBLIC;
+    GRANT CONNECT ON DATABASE ${google_sql_database.haunted_halls.name} TO ${google_sql_user.app.name};
+    GRANT CONNECT ON DATABASE ${google_sql_database.haunted_halls_staging.name} TO ${google_sql_user.app_staging.name};
+  SQL
+}
+
 output "secret_database_url_id" {
   description = "Secret Manager secret_id for database URL (secret value not output)"
   value       = google_secret_manager_secret.database_url.secret_id
