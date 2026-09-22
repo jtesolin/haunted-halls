@@ -24,8 +24,9 @@ locals {
   }
 
   deployment_service_accounts = {
-    frontend = "hh-frontend-deployer"
-    engine   = "hh-engine-deployer"
+    frontend            = "hh-frontend-deployer"
+    engine              = "hh-engine-deployer"
+    production_promoter = "hh-production-promoter"
   }
 
   cloud_run_service_names = {

@@ -620,7 +620,8 @@ This separation prevents normal application deployments from requiring a Terrafo
 
 ### Deployment Service Accounts
 
-Terraform adds least-privilege IAM bindings for the two deployment service accounts:
+Terraform adds least-privilege IAM bindings for two staging deployers and a
+dedicated production promoter:
 
 #### Frontend Deployer (`hh-frontend-deployer`)
 
@@ -628,10 +629,8 @@ Terraform adds least-privilege IAM bindings for the two deployment service accou
   - Allows pushing and tagging images from CI/CD
 - **Cloud Run**:
   - `roles/run.developer` on `haunted-halls-frontend-staging` for automatic staging deploys
-  - `roles/run.developer` on production `haunted-halls-frontend`, `haunted-halls-engine`, and `haunted-halls-migrate` for the centralized manual production promotion workflow
 - **Service Account User**:
   - `roles/iam.serviceAccountUser` on `hh-frontend-runtime-staging` for staging deploys
-  - `roles/iam.serviceAccountUser` on `hh-frontend-runtime`, `hh-engine-runtime`, and `hh-migration-runtime` for manual production promotion
 - **Scope**: Frontend repository only; no Secret Manager accessor or Cloud SQL client access
 
 #### Engine Deployer (`hh-engine-deployer`)
@@ -643,10 +642,24 @@ Terraform adds least-privilege IAM bindings for the two deployment service accou
   - `haunted-halls-migrate-staging` job — allows updating the staging migration job image and executing staging migrations
 - **Service Account User**: `roles/iam.serviceAccountUser` on `hh-engine-runtime-staging` and `hh-migration-runtime-staging` — allows deployment workflows to impersonate the staging runtime identities
   - Allows deployment workflows to run Cloud Run operations as those service accounts
-- **Rollout bridge**: this PR intentionally preserves existing `roles/run.developer` and `roles/iam.serviceAccountUser` bindings for production `haunted-halls-engine`, `haunted-halls-migrate`, `hh-engine-runtime`, and `hh-migration-runtime` so the current engine `main` production deploy path continues working until staging is provisioned and `jtesolin/haunted-halls-engine#72` is merged/verified.
-- **Steady-state scope**: engine repository staging deployment only; production engine changes are centralized in the frontend repository's manual promotion workflow. Remove the preserved production engine-deployer bindings in a later hardening change after the cutover is complete.
+- **Scope**: Engine repository staging deployment only; no production deployment authority.
 
-Neither deployer receives:
+#### Production Promoter (`hh-production-promoter`)
+
+- **Artifact Registry**: `roles/artifactregistry.reader` on the `haunted-halls`
+  repository, used only to validate immutable release-candidate digests.
+- **Cloud Run staging**: `roles/run.viewer` on
+  `haunted-halls-frontend-staging` and `haunted-halls-engine-staging` to
+  capture Ready serving revisions. It cannot mutate staging services or jobs.
+- **Cloud Run production**: `roles/run.developer` on
+  `haunted-halls-frontend`, `haunted-halls-engine`, and
+  `haunted-halls-migrate`.
+- **Service Account User**: `roles/iam.serviceAccountUser` on
+  `hh-frontend-runtime`, `hh-engine-runtime`, and `hh-migration-runtime`.
+- **Scope**: The manual production-promotion workflow only. It has no Artifact
+  Registry Writer grant and no staging deployment authority.
+
+None of these deployment identities receives:
 
 - `roles/artifactregistry.admin`, `roles/run.admin`, or project-wide privileges
 - Secret Manager accessor roles (deployment does not decrypt secrets; runtime identities do)
@@ -655,18 +668,28 @@ Neither deployer receives:
 
 ### Workload Identity Federation Hardening
 
-The existing GitHub OIDC provider condition is now restricted to deployment and production-promotion workflows:
+The shared GitHub OIDC provider condition is restricted to the two staging
+deployment workflows:
 
 ```
 attribute.repository_owner == "jtesolin"
 AND attribute.ref == "refs/heads/main"
 AND one of:
   - attribute.repository == "jtesolin/haunted-halls" AND attribute.workflow_ref == "jtesolin/haunted-halls/.github/workflows/deploy.yml@refs/heads/main"
-  - attribute.repository == "jtesolin/haunted-halls" AND attribute.workflow_ref == "jtesolin/haunted-halls/.github/workflows/promote-production.yml@refs/heads/main"
   - attribute.repository == "jtesolin/haunted-halls-engine" AND attribute.workflow_ref == "jtesolin/haunted-halls-engine/.github/workflows/deploy.yml@refs/heads/main"
 ```
 
-Deployments can only run from `main` branch and only from dedicated deployment or promotion workflows. CI workflows, pull requests, arbitrary branches, forks, and other workflow files are not permitted to authenticate.
+A dedicated `github-production-promotion` provider within the same pool admits
+only `jtesolin/haunted-halls`,
+`refs/heads/main`, and the exact workflow ref
+`jtesolin/haunted-halls/.github/workflows/promote-production.yml@refs/heads/main`.
+The `hh-production-promoter` Workload Identity User binding is also scoped to
+that exact mapped `attribute.workflow_ref`; this is required because workload
+identity principal sets are pool-scoped rather than provider-scoped.
+
+Deployments can only run from `main` branch and only from their dedicated
+workflow. CI workflows, pull requests, arbitrary branches, forks, and other
+workflow files are not permitted to authenticate.
 
 ### Deployment Workflow Contract
 
@@ -696,17 +719,19 @@ Automatic deployment targets staging. Production is updated only by the manual p
 
 **Manual production promotion workflow:**
 
-1. Require a manual dispatch confirmation that the companion engine workflow deploys only staging and no longer automatically deploys production.
-2. Capture and freeze the exact frontend and engine image digests currently running in staging.
-3. Capture current production frontend and engine serving image digests for rollback metadata.
-4. Validate the captured image references in Artifact Registry.
-5. Update `haunted-halls-migrate` to the captured staging engine image and verify the configured image.
-6. Execute production `alembic upgrade head` and wait for success.
-7. Deploy the captured staging engine digest to `haunted-halls-engine`.
-8. Verify production engine readiness, exact digest, and private unauthenticated boundary.
-9. Deploy the captured staging frontend digest to `haunted-halls-frontend`.
-10. Verify production frontend readiness, exact digest, and public `/api/health`.
-11. Write the promoted digests, previous production digests, migration execution, and verification results to the GitHub Actions summary.
+1. Authenticate using the dedicated GitHub OIDC promotion provider →
+   `hh-production-promoter`.
+2. Require a manual dispatch confirmation that the companion engine workflow deploys only staging and no longer automatically deploys production.
+3. Capture and freeze the exact frontend and engine image digests currently running in staging.
+4. Capture current production frontend and engine serving image digests for rollback metadata.
+5. Validate the captured image references in Artifact Registry.
+6. Update `haunted-halls-migrate` to the captured staging engine image and verify the configured image.
+7. Execute production `alembic upgrade head` and wait for success.
+8. Deploy the captured staging engine digest to `haunted-halls-engine`.
+9. Verify production engine readiness, exact digest, and private unauthenticated boundary.
+10. Deploy the captured staging frontend digest to `haunted-halls-frontend`.
+11. Verify production frontend readiness, exact digest, and public `/api/health`.
+12. Write the promoted digests, previous production digests, migration execution, and verification results to the GitHub Actions summary.
 
 The promotion workflow never rebuilds images. The staging digests captured at promotion start remain the release candidate even if staging receives newer deployments while promotion is running.
 
@@ -745,7 +770,10 @@ concurrency:
 
 GitHub Actions concurrency groups are repository-scoped, so using the same group name in two different repositories would not provide cross-repository serialization. Never use `cancel-in-progress: true` for staging deployments or production promotions; a newer commit must not cancel a migration or rollout halfway through. Queued deployments are preferred to cancellation.
 
-Because the engine repository retains its production deploy IAM during the initial staging rollout, the production promotion workflow also refuses to run until the operator confirms the companion engine staging cutover is active and the old engine production auto-deploy path is disabled. This prevents a concurrent engine production deployment from racing with the centralized promotion while still allowing staging infrastructure to be applied before the engine workflow change merges.
+The production promotion workflow refuses to run until the operator confirms the
+companion engine staging cutover is active and the old engine production
+auto-deploy path is disabled. The dedicated promoter is the only production
+deployment identity, preventing normal staging deployers from racing it.
 
 ### Rollback Model
 
