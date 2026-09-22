@@ -46,6 +46,12 @@ resource "google_service_account" "engine_deployer" {
   description  = "GitHub Actions deployer identity for the haunted-halls-engine repository."
 }
 
+resource "google_service_account" "production_promoter" {
+  account_id   = local.deployment_service_accounts.production_promoter
+  display_name = "Haunted Halls production promoter service account"
+  description  = "GitHub Actions identity for manual Haunted Halls production promotion."
+}
+
 output "runtime_service_account_frontend_email" {
   value = google_service_account.frontend_runtime.email
 }
@@ -76,4 +82,8 @@ output "deployment_service_account_frontend_email" {
 
 output "deployment_service_account_engine_email" {
   value = google_service_account.engine_deployer.email
+}
+
+output "deployment_service_account_production_promoter_email" {
+  value = google_service_account.production_promoter.email
 }

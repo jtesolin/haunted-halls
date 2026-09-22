@@ -11,17 +11,18 @@ resource "google_iam_workload_identity_pool" "github_actions" {
 # D5A: GitHub Actions CD ownership boundaries
 # Terraform manages all Cloud Run configuration.
 # GitHub Actions CD workflows own only image revisions.
-# WIF restricts federation to known deployment/promotion workflows on main branch only.
+# The shared provider restricts staging deployment federation to known workflows
+# on main. Production promotion has a separate provider and exact workflow binding.
 locals {
   frontend_repository = "${var.github_owner}/${var.frontend_repo_name}"
   engine_repository   = "${var.github_owner}/${var.engine_repo_name}"
   frontend_workflow_refs = [
     "${local.frontend_repository}/.github/workflows/deploy.yml@refs/heads/main",
-    "${local.frontend_repository}/.github/workflows/promote-production.yml@refs/heads/main",
   ]
   engine_workflow_refs = [
     "${local.engine_repository}/.github/workflows/deploy.yml@refs/heads/main",
   ]
+  production_promotion_workflow_ref = "${local.frontend_repository}/.github/workflows/promote-production.yml@refs/heads/main"
 }
 
 resource "google_iam_workload_identity_pool_provider" "github" {
@@ -48,10 +49,34 @@ resource "google_iam_workload_identity_pool_provider" "github" {
   attribute_condition = "attribute.repository_owner == \"${var.github_owner}\" && attribute.ref == \"refs/heads/main\" && ((attribute.repository == \"${local.frontend_repository}\" && attribute.workflow_ref in ${jsonencode(local.frontend_workflow_refs)}) || (attribute.repository == \"${local.engine_repository}\" && attribute.workflow_ref in ${jsonencode(local.engine_workflow_refs)}))"
 }
 
+resource "google_iam_workload_identity_pool_provider" "github_production_promotion" {
+  workload_identity_pool_id          = google_iam_workload_identity_pool.github_actions.workload_identity_pool_id
+  workload_identity_pool_provider_id = "github-production-promotion"
+  display_name                       = "GitHub OIDC Production Promotion"
+  description                        = "GitHub Actions OIDC provider for manual Haunted Halls production promotion."
+  attribute_mapping = {
+    "google.subject"                  = "assertion.sub"
+    "attribute.repository"            = "assertion.repository"
+    "attribute.repository_owner"      = "assertion.repository_owner"
+    "attribute.ref"                   = "assertion.ref"
+    "attribute.repository_visibility" = "assertion.repository_visibility"
+    "attribute.aud"                   = "assertion.aud"
+    "attribute.environment"           = "assertion.environment"
+    "attribute.workflow_ref"          = "assertion.workflow_ref"
+    "attribute.workflow_sha"          = "assertion.workflow_sha"
+  }
+
+  oidc {
+    issuer_uri = "https://token.actions.githubusercontent.com"
+  }
+
+  attribute_condition = "attribute.repository_owner == \"${var.github_owner}\" && attribute.repository == \"${local.frontend_repository}\" && attribute.ref == \"refs/heads/main\" && attribute.workflow_ref == \"${local.production_promotion_workflow_ref}\""
+}
+
 resource "google_service_account_iam_member" "frontend_repository_federation" {
   service_account_id = google_service_account.frontend_deployer.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github_actions.name}/attribute.repository/${local.frontend_repository}"
+  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github_actions.name}/attribute.workflow_ref/${local.frontend_workflow_refs[0]}"
 }
 
 resource "google_service_account_iam_member" "engine_repository_federation" {
@@ -60,10 +85,20 @@ resource "google_service_account_iam_member" "engine_repository_federation" {
   member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github_actions.name}/attribute.repository/${local.engine_repository}"
 }
 
+resource "google_service_account_iam_member" "production_promoter_workflow_federation" {
+  service_account_id = google_service_account.production_promoter.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github_actions.name}/attribute.workflow_ref/${local.production_promotion_workflow_ref}"
+}
+
 output "github_actions_workload_identity_pool_name" {
   value = google_iam_workload_identity_pool.github_actions.name
 }
 
 output "github_actions_workload_identity_provider_name" {
   value = google_iam_workload_identity_pool_provider.github.name
+}
+
+output "github_actions_production_promotion_workload_identity_provider_name" {
+  value = google_iam_workload_identity_pool_provider.github_production_promotion.name
 }

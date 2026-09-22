@@ -28,8 +28,8 @@ env:
   PRODUCTION_ENGINE_SERVICE: haunted-halls-engine
   PRODUCTION_MIGRATION_JOB: haunted-halls-migrate
   PRODUCTION_FRONTEND_URL: https://haunted-halls.tesolin.us
-  WIF_PROVIDER: projects/458395246135/locations/global/workloadIdentityPools/github-actions/providers/github
-  DEPLOY_SERVICE_ACCOUNT: hh-frontend-deployer@haunted-halls-development.iam.gserviceaccount.com
+  WIF_PROVIDER: projects/458395246135/locations/global/workloadIdentityPools/github-actions/providers/github-production-promotion
+  DEPLOY_SERVICE_ACCOUNT: hh-production-promoter@haunted-halls-development.iam.gserviceaccount.com
 
 jobs:
   promote:

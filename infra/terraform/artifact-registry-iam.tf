@@ -18,3 +18,12 @@ resource "google_artifact_registry_repository_iam_member" "engine_deployer_write
   role       = "roles/artifactregistry.writer"
   member     = "serviceAccount:${google_service_account.engine_deployer.email}"
 }
+
+# The production promoter validates immutable staging artifacts but never builds
+# or pushes images.
+resource "google_artifact_registry_repository_iam_member" "production_promoter_reader" {
+  repository = google_artifact_registry_repository.app.name
+  location   = var.region
+  role       = "roles/artifactregistry.reader"
+  member     = "serviceAccount:${google_service_account.production_promoter.email}"
+}
