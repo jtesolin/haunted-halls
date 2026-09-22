@@ -683,9 +683,11 @@ A dedicated `github-production-promotion` provider within the same pool admits
 only `jtesolin/haunted-halls`,
 `refs/heads/main`, and the exact workflow ref
 `jtesolin/haunted-halls/.github/workflows/promote-production.yml@refs/heads/main`.
-The `hh-production-promoter` Workload Identity User binding is also scoped to
-that exact mapped `attribute.workflow_ref`; this is required because workload
-identity principal sets are pool-scoped rather than provider-scoped.
+The `hh-frontend-deployer` and `hh-production-promoter` Workload Identity User
+bindings are each scoped to their exact mapped `attribute.workflow_ref`; this
+is required because workload identity principal sets are pool-scoped rather
+than provider-scoped. The promotion provider must not be able to impersonate
+the staging frontend deployer.
 
 Deployments can only run from `main` branch and only from their dedicated
 workflow. CI workflows, pull requests, arbitrary branches, forks, and other
