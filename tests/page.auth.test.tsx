@@ -83,6 +83,100 @@ describe("home auth gating", () => {
     expect(screen.getByRole("button", { name: "Create new campaign" })).toBeEnabled();
   });
 
+  it("does not automatically retry failed initial creation and allows an explicit retry", async () => {
+    vi.mocked(useSession).mockReturnValue({
+      data: {
+        user: { name: "Player One", email: "player@example.com", image: null },
+        expires: "2099-01-01T00:00:00.000Z",
+      },
+      status: "authenticated",
+      update: vi.fn(),
+    });
+
+    let campaignListCalls = 0;
+    let campaignPostCalls = 0;
+    vi.mocked(global.fetch).mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/campaigns") {
+        campaignListCalls += 1;
+        return Promise.resolve(new Response("[]", { status: 200 }));
+      }
+
+      if (String(input) === "/api/campaign" && init?.method === "POST") {
+        campaignPostCalls += 1;
+        return Promise.resolve(
+          new Response(JSON.stringify({ error: "Campaign creation failed." }), { status: 502 })
+        );
+      }
+
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    });
+
+    const { rerender } = render(<Home />);
+    await waitFor(() => expect(campaignPostCalls).toBe(1));
+
+    await waitFor(() => {
+      expect(screen.getByText(AMBIGUOUS_RETRY_MESSAGE)).toBeInTheDocument();
+    });
+    expect(campaignPostCalls).toBe(1);
+    expect(campaignListCalls).toBe(1);
+    expect(screen.queryByText("Loading opening...")).not.toBeInTheDocument();
+
+    rerender(<Home />);
+
+    expect(screen.getByText(AMBIGUOUS_RETRY_MESSAGE)).toBeInTheDocument();
+    expect(campaignPostCalls).toBe(1);
+    expect(campaignListCalls).toBe(1);
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Create new campaign" })[0]!);
+
+    await waitFor(() => {
+      expect(campaignPostCalls).toBe(2);
+    });
+    expect(screen.getByText(AMBIGUOUS_RETRY_MESSAGE)).toBeInTheDocument();
+    expect(campaignListCalls).toBe(1);
+  });
+
+  it("automatically creates and hydrates one campaign when the player has none", async () => {
+    vi.mocked(useSession).mockReturnValue({
+      data: {
+        user: { name: "Player One", email: "player@example.com", image: null },
+        expires: "2099-01-01T00:00:00.000Z",
+      },
+      status: "authenticated",
+      update: vi.fn(),
+    });
+
+    let campaignPostCalls = 0;
+    vi.mocked(global.fetch).mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/campaigns") {
+        return Promise.resolve(new Response("[]", { status: 200 }));
+      }
+
+      if (String(input) === "/api/campaign" && init?.method === "POST") {
+        campaignPostCalls += 1;
+        return Promise.resolve(
+          new Response(JSON.stringify({
+            campaign_id: "campaign-first",
+            name: "The First Haunting",
+            description: null,
+            messages: [{ turn_id: "opening-turn", role: "assistant", content: "The road begins." }],
+            truncated: false,
+          }), { status: 200 })
+        );
+      }
+
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    });
+
+    render(<Home />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("The road begins.").length).toBeGreaterThan(0);
+    });
+    expect(campaignPostCalls).toBe(1);
+    expect(screen.getByText("The First Haunting")).toBeInTheDocument();
+  });
+
   it("shows generic auth error and keeps sign-in retry action", () => {
     vi.mocked(useSession).mockReturnValue({
       data: null,

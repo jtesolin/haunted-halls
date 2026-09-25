@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useCallback, useEffect, useMemo, useState, useTransition, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition, type CSSProperties } from "react";
 import { signIn, signOut, useSession } from "next-auth/react";
 import ChatInput from "@/components/ChatInput";
 import CampaignSidebar from "@/components/CampaignSidebar";
@@ -252,6 +252,8 @@ export default function Home() {
   const [requestError, setRequestError] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
+  const isCreatingSessionRef = useRef(false);
+  const hasLoadedCampaignSummariesRef = useRef(false);
   const [deletingSessionIds, setDeletingSessionIds] = useState<string[]>([]);
   const [isDeletingAllSessions, setIsDeletingAllSessions] = useState(false);
   const [isCreatingTransitionPending, startCreateTransition] = useTransition();
@@ -375,10 +377,11 @@ export default function Home() {
   }, [isAuthenticated, isAuthLoading]);
 
   const createAndHydrateSession = useCallback(async () => {
-    if (isCreatingSession || !isAuthenticated) {
+    if (isCreatingSessionRef.current || !isAuthenticated) {
       return;
     }
 
+    isCreatingSessionRef.current = true;
     setRequestError("");
     setIsCreatingSession(true);
 
@@ -452,14 +455,25 @@ export default function Home() {
       setActiveSessionId((current) => (current === optimisticSessionId ? "" : current));
       setRequestError("Unable to create a new campaign right now. Please try again shortly.");
     } finally {
+      isCreatingSessionRef.current = false;
       setIsCreatingSession(false);
     }
-  }, [isAuthenticated, isCreatingSession]);
+  }, [isAuthenticated]);
 
   useEffect(() => {
-    if (!isAuthenticated || isAuthLoading) {
+    if (isAuthLoading) {
       return;
     }
+
+    if (!isAuthenticated) {
+      hasLoadedCampaignSummariesRef.current = false;
+      return;
+    }
+
+    if (hasLoadedCampaignSummariesRef.current) {
+      return;
+    }
+    hasLoadedCampaignSummariesRef.current = true;
 
     const loadCampaignSummaries = async () => {
       try {
