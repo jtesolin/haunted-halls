@@ -590,6 +590,9 @@ export default function Home() {
           );
         }
       } catch {
+        if (authGeneration !== authGenerationRef.current) {
+          return;
+        }
         // Keep local session flow intact if history cannot be loaded.
         setSessions((currentSessions) =>
           currentSessions.length > 0 ? currentSessions : [createSession("New adventure")]
