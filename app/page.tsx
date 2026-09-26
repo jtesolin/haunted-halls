@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useCallback, useEffect, useMemo, useState, useTransition, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition, type CSSProperties } from "react";
 import { signIn, signOut, useSession } from "next-auth/react";
 import ChatInput from "@/components/ChatInput";
 import CampaignSidebar from "@/components/CampaignSidebar";
@@ -252,6 +252,12 @@ export default function Home() {
   const [requestError, setRequestError] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
+  const isCreatingSessionRef = useRef(false);
+  const hasLoadedCampaignSummariesRef = useRef(false);
+  const authGenerationRef = useRef(0);
+  const creationOperationCounterRef = useRef(0);
+  const activeCreationOperationRef = useRef<number | null>(null);
+  const authenticatedSessionKeyRef = useRef<string | null>(null);
   const [deletingSessionIds, setDeletingSessionIds] = useState<string[]>([]);
   const [isDeletingAllSessions, setIsDeletingAllSessions] = useState(false);
   const [isCreatingTransitionPending, startCreateTransition] = useTransition();
@@ -268,6 +274,9 @@ export default function Home() {
   const isSidebarVisible = isMobileViewport ? isMobileDrawerOpen : !isSidebarCollapsed;
   const isAuthLoading = authStatus === "loading";
   const isAuthenticated = authStatus === "authenticated";
+  const authenticatedSessionKey = isAuthenticated
+    ? session?.internalUserId?.trim() || session?.user?.email?.trim() || "authenticated"
+    : null;
   const disableGameActions = isAuthLoading || !isAuthenticated;
   const isInputLocked = disableGameActions || isCreatingSession;
   const isSendDisabled =
@@ -356,6 +365,30 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    if (authenticatedSessionKeyRef.current === authenticatedSessionKey) {
+      return;
+    }
+
+    const previousSessionKey = authenticatedSessionKeyRef.current;
+    authenticatedSessionKeyRef.current = authenticatedSessionKey;
+    authGenerationRef.current += 1;
+    activeCreationOperationRef.current = null;
+    isCreatingSessionRef.current = false;
+    hasLoadedCampaignSummariesRef.current = false;
+    setIsCreatingSession(false);
+
+    if (previousSessionKey !== null) {
+      setSessions([]);
+      setActiveSessionId("");
+      setMessageText("");
+      setRequestError("");
+      setIsSending(false);
+      setDeletingSessionIds([]);
+      setIsDeletingAllSessions(false);
+    }
+  }, [authenticatedSessionKey]);
+
+  useEffect(() => {
     if (isAuthLoading) {
       return;
     }
@@ -375,10 +408,19 @@ export default function Home() {
   }, [isAuthenticated, isAuthLoading]);
 
   const createAndHydrateSession = useCallback(async () => {
-    if (isCreatingSession || !isAuthenticated) {
+    if (isCreatingSessionRef.current || !isAuthenticated) {
       return;
     }
 
+    const authGeneration = authGenerationRef.current;
+    const operationId = ++creationOperationCounterRef.current;
+    const isCurrentOperation = () =>
+      authGenerationRef.current === authGeneration &&
+      authenticatedSessionKeyRef.current === authenticatedSessionKey &&
+      activeCreationOperationRef.current === operationId;
+
+    activeCreationOperationRef.current = operationId;
+    isCreatingSessionRef.current = true;
     setRequestError("");
     setIsCreatingSession(true);
 
@@ -404,9 +446,15 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
+      if (!isCurrentOperation()) {
+        return;
+      }
 
       if (!response.ok) {
         const result = await response.json().catch(() => ({}));
+        if (!isCurrentOperation()) {
+          return;
+        }
         const userMessage = getUserFacingErrorMessage(
           response.status,
           typeof result?.error === "string" ? result.error : "Unable to create a new campaign."
@@ -419,6 +467,9 @@ export default function Home() {
       }
 
       const campaign: CreateCampaignResponse = await response.json();
+      if (!isCurrentOperation()) {
+        return;
+      }
       const fallbackTitle = "New adventure";
       const hydratedMessages = campaign.messages.map((entry) => ({
         id: entry.turn_id,
@@ -448,27 +499,51 @@ export default function Home() {
       setActiveSessionId(nextSession.id);
       setMessageText("");
     } catch {
+      if (!isCurrentOperation()) {
+        return;
+      }
       setSessions((current) => current.filter((session) => session.id !== optimisticSessionId));
       setActiveSessionId((current) => (current === optimisticSessionId ? "" : current));
       setRequestError("Unable to create a new campaign right now. Please try again shortly.");
     } finally {
-      setIsCreatingSession(false);
+      if (isCurrentOperation()) {
+        activeCreationOperationRef.current = null;
+        isCreatingSessionRef.current = false;
+        setIsCreatingSession(false);
+      }
     }
-  }, [isAuthenticated, isCreatingSession]);
+  }, [authenticatedSessionKey, isAuthenticated]);
 
   useEffect(() => {
-    if (!isAuthenticated || isAuthLoading) {
+    if (isAuthLoading) {
       return;
     }
 
+    if (!isAuthenticated) {
+      hasLoadedCampaignSummariesRef.current = false;
+      return;
+    }
+
+    if (hasLoadedCampaignSummariesRef.current) {
+      return;
+    }
+    hasLoadedCampaignSummariesRef.current = true;
+
     const loadCampaignSummaries = async () => {
+      const authGeneration = authGenerationRef.current;
       try {
         const response = await fetch("/api/campaigns");
+        if (authGeneration !== authGenerationRef.current) {
+          return;
+        }
         if (!response.ok) {
           return;
         }
 
         const data: CampaignSummary[] = await response.json();
+        if (authGeneration !== authGenerationRef.current) {
+          return;
+        }
         setSessions((currentSessions) => {
           const now = Date.now();
           const remoteCampaignIds = new Set(data.map((campaign) => campaign.campaign_id));
@@ -515,6 +590,9 @@ export default function Home() {
           );
         }
       } catch {
+        if (authGeneration !== authGenerationRef.current) {
+          return;
+        }
         // Keep local session flow intact if history cannot be loaded.
         setSessions((currentSessions) =>
           currentSessions.length > 0 ? currentSessions : [createSession("New adventure")]
@@ -523,7 +601,7 @@ export default function Home() {
     };
 
     void loadCampaignSummaries();
-  }, [createAndHydrateSession, isAuthenticated, isAuthLoading]);
+  }, [authenticatedSessionKey, createAndHydrateSession, isAuthenticated, isAuthLoading]);
 
   async function loadCampaignConversation(sessionId: string, campaignId: string) {
     try {
