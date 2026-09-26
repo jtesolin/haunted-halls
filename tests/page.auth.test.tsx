@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Home from "@/app/page";
@@ -175,6 +175,98 @@ describe("home auth gating", () => {
     });
     expect(campaignPostCalls).toBe(1);
     expect(screen.getByText("The First Haunting")).toBeInTheDocument();
+  });
+
+  it("ignores pending campaign creations from replaced authenticated sessions", async () => {
+    const sessionFor = (internalUserId: string) => ({
+      data: {
+        internalUserId,
+        user: {
+          name: internalUserId,
+          email: `${internalUserId}@example.com`,
+          image: null,
+        },
+        expires: "2099-01-01T00:00:00.000Z",
+      },
+      status: "authenticated" as const,
+      update: vi.fn(),
+    });
+
+    const pendingCampaignPosts: Array<(response: Response) => void> = [];
+    vi.mocked(useSession).mockReturnValue(sessionFor("user-a"));
+    vi.mocked(global.fetch).mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/campaigns") {
+        return Promise.resolve(new Response("[]", { status: 200 }));
+      }
+
+      if (String(input) === "/api/campaign" && init?.method === "POST") {
+        return new Promise<Response>((resolve) => pendingCampaignPosts.push(resolve));
+      }
+
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    });
+
+    const { rerender } = render(<Home />);
+    await waitFor(() => expect(pendingCampaignPosts).toHaveLength(1));
+
+    vi.mocked(useSession).mockReturnValue({ data: null, status: "unauthenticated", update: vi.fn() });
+    rerender(<Home />);
+    expect(await screen.findByText("Sign in to play")).toBeInTheDocument();
+
+    vi.mocked(useSession).mockReturnValue(sessionFor("user-b"));
+    rerender(<Home />);
+    await waitFor(() => expect(pendingCampaignPosts).toHaveLength(2));
+
+    await act(async () => {
+      pendingCampaignPosts[0]?.(new Response(JSON.stringify({
+        campaign_id: "stale-success",
+        name: "Old Session Campaign",
+        description: null,
+        messages: [{ turn_id: "old-turn", role: "assistant", content: "Old session narrative." }],
+        truncated: false,
+      }), { status: 200 }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText("Old Session Campaign")).not.toBeInTheDocument();
+    expect(screen.queryByText("Old session narrative.")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Create new campaign" }).every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+
+    vi.mocked(useSession).mockReturnValue({ data: null, status: "unauthenticated", update: vi.fn() });
+    rerender(<Home />);
+    expect(await screen.findByText("Sign in to play")).toBeInTheDocument();
+
+    vi.mocked(useSession).mockReturnValue(sessionFor("user-c"));
+    rerender(<Home />);
+    await waitFor(() => expect(pendingCampaignPosts).toHaveLength(3));
+
+    await act(async () => {
+      pendingCampaignPosts[1]?.(new Response(JSON.stringify({ error: "Old session failure." }), { status: 502 }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText(AMBIGUOUS_RETRY_MESSAGE)).not.toBeInTheDocument();
+    expect(screen.queryByText("Old session failure.")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Create new campaign" }).every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+
+    await act(async () => {
+      pendingCampaignPosts[2]?.(new Response(JSON.stringify({
+        campaign_id: "current-success",
+        name: "Current Session Campaign",
+        description: null,
+        messages: [{ turn_id: "current-turn", role: "assistant", content: "Current session narrative." }],
+        truncated: false,
+      }), { status: 200 }));
+    });
+
+    expect(await screen.findByText("Current Session Campaign")).toBeInTheDocument();
+    expect(screen.getAllByText("Current session narrative.").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Old Session Campaign")).not.toBeInTheDocument();
+    expect(screen.queryByText("Old session narrative.")).not.toBeInTheDocument();
+    expect(screen.queryByText(AMBIGUOUS_RETRY_MESSAGE)).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Create new campaign" }).every((button) => !(button as HTMLButtonElement).disabled)).toBe(true);
   });
 
   it("shows generic auth error and keeps sign-in retry action", () => {
