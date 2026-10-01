@@ -1,3 +1,4 @@
-project_id       = "hh-preview-458395246135"
-region           = "us-east1"
-state_bucket_name = "hh-preview-458395246135-tf-state"
+project_id                   = "hh-preview-458395246135"
+region                       = "us-east1"
+foundation_state_bucket_name = "hh-preview-458395246135-foundation-tf-state"
+per_pr_state_bucket_name     = "hh-preview-458395246135-per-pr-tf-state"

@@ -56,7 +56,6 @@ resource "google_secret_manager_secret_iam_member" "engine_openai" {
 }
 
 resource "google_secret_manager_secret_iam_member" "db_provisioner_password" {
-  provider  = google.existing
   secret_id = google_secret_manager_secret.preview_provisioner_password.id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.db_provisioner.email}"
@@ -70,7 +69,7 @@ resource "google_project_iam_member" "iap_run_invoker" {
   condition {
     title       = "IAP can invoke preview frontends only"
     description = "IAP's Cloud Run invoker permission is limited to preview frontend service names."
-    expression  = "resource.type == \"run.googleapis.com/Service\" && resource.name.startsWith(\"projects/${var.preview_project_id}/locations/${var.region}/services/hh-preview-frontend\")"
+    expression  = "resource.type == \"run.googleapis.com/Service\" && resource.name.matches(\"^projects/${var.preview_project_id}/locations/${var.region}/services/hh-(web|engine)-pr-[1-9][0-9]*-frontend$\")"
   }
 }
 

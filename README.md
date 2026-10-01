@@ -996,14 +996,16 @@ ID above is fixed by the operator; do not substitute the production/staging
 project. The Terraform roots are:
 
 - `infra/terraform/preview-foundation/backend-bootstrap`: creates a
-  non-public, versioned GCS state bucket in the preview project. This one-time
-  bootstrap root uses local state; retain that local state securely.
+  pair of non-public, versioned GCS state buckets in the preview project. This
+  one-time bootstrap root uses local state; retain that local state securely.
 - `infra/terraform/preview-foundation`: manages the durable shared foundation
-  using GCS prefix `preview-foundation`.
+  using the separate foundation bucket and GCS prefix `preview-foundation`.
 - Later isolated per-PR roots use separate deterministic prefixes such as
-  `previews/web-pr-123` and `previews/engine-pr-84`. Each preview has its own
-  state object/lock; previews do not contend on one global ephemeral-state
-  lock and never write to production/staging state.
+  `previews/web-pr-123` and `previews/engine-pr-84` in the per-PR bucket. Each
+  preview has its own state object/lock; previews do not contend on one global
+  ephemeral-state lock and never write to production/staging or durable
+  foundation state. `hh-preview-deployer` receives object-admin access only to
+  the separate per-PR bucket.
 
 Bootstrap example:
 
@@ -1017,20 +1019,41 @@ terraform -chdir=infra/terraform/preview-foundation/backend-bootstrap apply
 Then copy
 `infra/terraform/preview-foundation/terraform.tfvars.example` to
 `infra/terraform/preview-foundation/terraform.tfvars`, set the existing
-Haunted Halls project ID, billing account, and a digest-pinned
-`provisioner_image`, and initialize the foundation backend:
+Haunted Halls project ID and billing account. Do not commit the ignored vars
+file.
+
+#### Two-phase foundation and DB control-plane setup
+
+A clean project must not need an image before the repository exists. Initialize
+the foundation backend using the dedicated **foundation** bucket:
 
 ```bash
 terraform -chdir=infra/terraform/preview-foundation init \
-  -backend-config="bucket=hh-preview-458395246135-tf-state" \
+  -backend-config="bucket=hh-preview-458395246135-foundation-tf-state" \
   -backend-config="prefix=preview-foundation"
 ```
 
-The database provisioner image must be built from the reviewed
-`db-provisioner/` source on default-branch code, pushed to the preview-only
-Artifact Registry repository, and configured by immutable SHA-256 digest.
-Never use a mutable tag. The provided example inputs are placeholders; do not
-commit operator values or plan files.
+**Phase one:** leave `provisioner_image = ""` in the ignored Terraform vars
+file. Review and apply the foundation to create APIs, identities, WIF, secrets,
+Cloud SQL logins, repository, IAM, and the two isolated state buckets. The
+trusted Cloud Run provisioner service is intentionally absent in this phase.
+After the apply, the preview repository exists and the preview deployer has
+writer permission.
+
+Build the image from reviewed default-branch `db-provisioner/` source, push it
+to `us-east1-docker.pkg.dev/hh-preview-458395246135/haunted-halls-preview/db-provisioner`,
+and resolve its immutable SHA-256 digest. Do not run PR-controlled code with
+deployment credentials or use mutable image tags.
+
+**Phase two:** set `provisioner_image` to the full digest-pinned image URL in
+the ignored vars file, then review and apply the foundation again. Terraform
+creates the fixed control-plane service only after repository readiness and
+the service-agent image-reader grant. The service reads the precise provisioner
+secret version configured by `preview_provisioner_password_version`; changing
+the version rotates the DB login/secret and Cloud Run revision together.
+
+The provided example inputs are placeholders; do not commit operator values
+or plan files.
 
 The foundation creates a modest USD 20 monthly budget when
 `billing_account_id` is set. Preview image cleanup deletes images older than
@@ -1053,15 +1076,21 @@ The deployer has two exact pool-scoped bindings:
 - `principalSet://iam.googleapis.com/projects/PREVIEW_PROJECT_NUMBER/locations/global/workloadIdentityPools/hh-preview-github/attribute.workflow_ref/jtesolin/haunted-halls-engine/.github/workflows/preview-deploy.yml@refs/heads/main`
 
 No repository-wide principal binding or production/staging WIF change is
-introduced. Future IAP frontend service names must begin
-`hh-preview-frontend`; the invoker grant is conditionally limited to those
-Cloud Run service resources. The intended grants are:
+introduced. Follow-up issues #41 and
+[jtesolin/haunted-halls-engine#85](https://github.com/jtesolin/haunted-halls-engine/issues/85)
+use deterministic names:
+`hh-web-pr-<N>-frontend`, `hh-web-pr-<N>-engine`,
+`hh-web-pr-<N>-migrate`, `hh-engine-pr-<N>-frontend`,
+`hh-engine-pr-<N>-engine`, and `hh-engine-pr-<N>-migrate`.
+The IAP invoker condition matches only the two frontend name forms ending in
+`-frontend`; it does not match preview engine services or migration jobs.
+The intended grants are:
 
 | Principal | Scope | Grant |
 | --- | --- | --- |
 | `hh-preview-deployer` | Preview project | `roles/run.admin` (dynamic runtime/control resources only in this dedicated project) |
 | `hh-preview-deployer` | Preview Artifact Registry repository | `roles/artifactregistry.writer` |
-| `hh-preview-deployer` | Preview state bucket | `roles/storage.objectAdmin` |
+| `hh-preview-deployer` | `hh-preview-458395246135-per-pr-tf-state` only | `roles/storage.objectAdmin`; no access to `hh-preview-458395246135-foundation-tf-state` |
 | `hh-preview-deployer` | Three preview runtime service accounts | `roles/iam.serviceAccountUser`; no ability to act as the DB provisioner |
 | `hh-preview-deployer` | Preview project | Custom secret metadata/version management; no `secretmanager.versions.access` |
 | `hh-preview-deployer` | Fixed DB control-plane service | `roles/run.invoker` on this service only; no command/entrypoint overrides or Cloud SQL access |
@@ -1071,7 +1100,7 @@ Cloud Run service resources. The intended grants are:
 | Preview DB control-plane runtime | Provisioner password secret | `roles/secretmanager.secretAccessor` on that one secret |
 | Preview engine runtime | Preview DB password and OpenAI secrets | `roles/secretmanager.secretAccessor` on those secrets |
 | Existing project Cloud Run service agent | Preview Artifact Registry repository | `roles/artifactregistry.reader` on the provisioner image repository only |
-| IAP service agent | Preview project, conditional on `run.googleapis.com/Service` names beginning `hh-preview-frontend` | `roles/run.invoker`; direct IAP frontends must also be configured with `iap_enabled = true` |
+| IAP service agent | Preview project, conditionally matching `hh-web-pr-<N>-frontend` and `hh-engine-pr-<N>-frontend` services only | `roles/run.invoker`; direct IAP frontends must also be configured with `iap_enabled = true` |
 | Configured tester principals only | Preview project | `roles/iap.httpsResourceAccessor`; empty by default |
 
 The existing production/staging project receives only the two preview DB

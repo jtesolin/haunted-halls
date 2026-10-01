@@ -30,7 +30,7 @@ resource "google_project_iam_member" "deployer_secret_manager" {
 }
 
 resource "google_storage_bucket_iam_member" "deployer_preview_state" {
-  bucket = var.preview_state_bucket_name
+  bucket = var.preview_per_pr_state_bucket_name
   role   = "roles/storage.objectAdmin"
   member = "serviceAccount:${google_service_account.deployer.email}"
 }

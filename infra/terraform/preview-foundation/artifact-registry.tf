@@ -25,7 +25,7 @@ resource "google_artifact_registry_repository_iam_member" "deployer_writer" {
 }
 
 resource "google_artifact_registry_repository_iam_member" "control_plane_reader" {
-  provider   = google.existing
+  project    = var.preview_project_id
   location   = google_artifact_registry_repository.preview.location
   repository = google_artifact_registry_repository.preview.name
   role       = "roles/artifactregistry.reader"

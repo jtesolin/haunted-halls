@@ -56,19 +56,34 @@ variable "iap_tester_principals" {
   }
 }
 
-variable "preview_state_bucket_name" {
-  description = "Dedicated GCS bucket in the preview project for foundation and isolated preview Terraform state."
+variable "preview_per_pr_state_bucket_name" {
+  description = "Dedicated GCS bucket for per-preview state. Do not use this bucket for durable preview-foundation state."
   type        = string
-  default     = "hh-preview-458395246135-tf-state"
+  default     = "hh-preview-458395246135-per-pr-tf-state"
+
+  validation {
+    condition     = var.preview_per_pr_state_bucket_name != var.preview_foundation_state_bucket_name
+    error_message = "Per-PR state must use a bucket separate from durable preview-foundation state."
+  }
+}
+
+variable "preview_foundation_state_bucket_name" {
+  description = "Bucket name reserved for durable foundation state; the preview deployer must never receive access to it."
+  type        = string
+  default     = "hh-preview-458395246135-foundation-tf-state"
 }
 
 variable "provisioner_image" {
-  description = "Immutable SHA-256 image digest for the reviewed preview database provisioning control plane."
+  description = "Optional immutable SHA-256 image digest for phase two, after the preview Artifact Registry repository is ready."
   type        = string
+  default     = ""
 
   validation {
-    condition     = can(regex("^${var.region}-docker\\.pkg\\.dev/${var.preview_project_id}/haunted-halls-preview/db-provisioner@sha256:[0-9a-f]{64}$", var.provisioner_image))
-    error_message = "provisioner_image must be an immutable digest in the preview-only Artifact Registry repository."
+    condition = (
+      var.provisioner_image == "" ||
+      can(regex("^${var.region}-docker\\.pkg\\.dev/${var.preview_project_id}/haunted-halls-preview/db-provisioner@sha256:[0-9a-f]{64}$", var.provisioner_image))
+    )
+    error_message = "provisioner_image must be empty for phase one or an immutable digest in the preview-only Artifact Registry repository."
   }
 }
 

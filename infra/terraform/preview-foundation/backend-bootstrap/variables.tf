@@ -10,8 +10,14 @@ variable "region" {
   default     = "us-east1"
 }
 
-variable "state_bucket_name" {
-  description = "Globally unique bucket name in the preview project. Defaults to the project ID with a state suffix."
+variable "foundation_state_bucket_name" {
+  description = "Globally unique private bucket for durable preview-foundation Terraform state."
   type        = string
-  default     = "hh-preview-458395246135-tf-state"
+  default     = "hh-preview-458395246135-foundation-tf-state"
+}
+
+variable "per_pr_state_bucket_name" {
+  description = "Globally unique private bucket for isolated per-PR Terraform states."
+  type        = string
+  default     = "hh-preview-458395246135-per-pr-tf-state"
 }

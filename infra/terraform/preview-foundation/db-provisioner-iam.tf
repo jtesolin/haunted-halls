@@ -24,6 +24,7 @@ resource "google_project_iam_member" "db_provisioner_cloud_sql" {
 }
 
 resource "google_cloud_run_v2_service" "db_provisioner" {
+  count               = var.provisioner_image == "" ? 0 : 1
   provider            = google.existing
   project             = var.existing_project_id
   name                = "hh-preview-db-provisioner"
@@ -70,8 +71,8 @@ resource "google_cloud_run_v2_service" "db_provisioner" {
         name = "DB_PASSWORD"
         value_source {
           secret_key_ref {
-            secret  = google_secret_manager_secret.preview_provisioner_password.secret_id
-            version = "latest"
+            secret  = "projects/${var.preview_project_id}/secrets/${google_secret_manager_secret.preview_provisioner_password.secret_id}"
+            version = tostring(var.preview_provisioner_password_version)
           }
         }
       }
@@ -92,16 +93,21 @@ resource "google_cloud_run_v2_service" "db_provisioner" {
   }
 
   depends_on = [
+    google_artifact_registry_repository.preview,
+    google_artifact_registry_repository_iam_member.control_plane_reader,
     google_project_iam_member.db_provisioner_cloud_sql,
+    google_sql_user.preview_provisioner,
+    google_secret_manager_secret_version.preview_provisioner_password,
     google_secret_manager_secret_iam_member.db_provisioner_password,
   ]
 }
 
 resource "google_cloud_run_v2_service_iam_member" "deployer_db_provisioner_invoker" {
+  count    = var.provisioner_image == "" ? 0 : 1
   provider = google.existing
   project  = var.existing_project_id
   location = var.region
-  name     = google_cloud_run_v2_service.db_provisioner.name
+  name     = google_cloud_run_v2_service.db_provisioner[0].name
   role     = "roles/run.invoker"
   member   = "serviceAccount:${google_service_account.deployer.email}"
 }
