@@ -965,8 +965,10 @@ root. Its dedicated, operator-created GCP project is
 `hh-preview-458395246135`. The project hosts preview-only Cloud Run
 identities/control resources, Artifact Registry, Secret Manager, IAP setup, and
 Terraform state. Dynamic Cloud Run create/update/delete authority exists only
-inside this project. The existing Haunted Halls project retains the existing
-Cloud SQL instance and one fixed, reviewed database-provisioning control plane;
+inside this project. Terraform rejects any configuration where the preview
+project ID equals the existing production/staging project ID. The existing
+Haunted Halls project retains the existing Cloud SQL instance and one fixed,
+reviewed database-provisioning control plane;
 the preview deployer receives no Cloud SQL IAM role, cannot impersonate that
 control plane's service account, and cannot change production/staging Cloud Run
 services.
@@ -1082,8 +1084,11 @@ use deterministic names:
 `hh-web-pr-<N>-frontend`, `hh-web-pr-<N>-engine`,
 `hh-web-pr-<N>-migrate`, `hh-engine-pr-<N>-frontend`,
 `hh-engine-pr-<N>-engine`, and `hh-engine-pr-<N>-migrate`.
-The IAP invoker condition matches only the two frontend name forms ending in
-`-frontend`; it does not match preview engine services or migration jobs.
+Each #41/#85 per-PR Terraform stack must grant the IAP service agent
+`roles/run.invoker` directly on that PR's IAP-enabled frontend Cloud Run
+service. The shared foundation only enables the IAP API and provisions its
+service identity; it has no project-level IAP invoker binding. Preview engine
+services and migration jobs receive no IAP invoker grant.
 The intended grants are:
 
 | Principal | Scope | Grant |
@@ -1092,7 +1097,7 @@ The intended grants are:
 | `hh-preview-deployer` | Preview Artifact Registry repository | `roles/artifactregistry.writer` |
 | `hh-preview-deployer` | `hh-preview-458395246135-per-pr-tf-state` only | `roles/storage.objectAdmin`; no access to `hh-preview-458395246135-foundation-tf-state` |
 | `hh-preview-deployer` | Three preview runtime service accounts | `roles/iam.serviceAccountUser`; no ability to act as the DB provisioner |
-| `hh-preview-deployer` | Preview project | Custom secret metadata/version management; no `secretmanager.versions.access` |
+| `hh-preview-deployer` | Preview project | Custom secret metadata/version and IAM-policy management; no `secretmanager.versions.access` |
 | `hh-preview-deployer` | Fixed DB control-plane service | `roles/run.invoker` on this service only; no command/entrypoint overrides or Cloud SQL access |
 | Preview engine and migration runtime | Existing Cloud SQL project | Conditional `roles/cloudsql.client` on the existing instance only |
 | Preview frontend runtime | Existing Cloud SQL project | No Cloud SQL role |
@@ -1100,7 +1105,7 @@ The intended grants are:
 | Preview DB control-plane runtime | Provisioner password secret | `roles/secretmanager.secretAccessor` on that one secret |
 | Preview engine runtime | Preview DB password and OpenAI secrets | `roles/secretmanager.secretAccessor` on those secrets |
 | Existing project Cloud Run service agent | Preview Artifact Registry repository | `roles/artifactregistry.reader` on the provisioner image repository only |
-| IAP service agent | Preview project, conditionally matching `hh-web-pr-<N>-frontend` and `hh-engine-pr-<N>-frontend` services only | `roles/run.invoker`; direct IAP frontends must also be configured with `iap_enabled = true` |
+| IAP service agent | Each IAP-enabled preview frontend Cloud Run service | `roles/run.invoker`, granted directly on that service by the #41/#85 per-PR Terraform stack; no project-level binding |
 | Configured tester principals only | Preview project | `roles/iap.httpsResourceAccessor`; empty by default |
 
 The existing production/staging project receives only the two preview DB

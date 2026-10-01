@@ -1,4 +1,5 @@
 import re
+from collections.abc import Mapping
 
 
 PROTECTED_DATABASES = frozenset({"haunted_halls", "haunted_halls_staging"})
@@ -9,6 +10,15 @@ _ALLOWED_DATABASE_NAME = re.compile(r"^haunted_halls_(?:web|engine)_pr_[1-9][0-9
 
 class InvalidProvisioningRequest(ValueError):
     pass
+
+
+def validate_role_memberships(memberships: Mapping[str, set[str]]) -> None:
+    expected_memberships = {
+        "haunted_halls_preview_app": set(),
+        "haunted_halls_preview_provisioner": {"haunted_halls_preview_app"},
+    }
+    if memberships != expected_memberships:
+        raise ValueError("preview database role memberships are not hardened")
 
 
 def validate_database_name(database_name: object) -> str:

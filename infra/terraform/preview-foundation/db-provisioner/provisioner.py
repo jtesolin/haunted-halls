@@ -4,7 +4,11 @@ import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
 
-from db_names import InvalidProvisioningRequest, validate_database_name
+from db_names import (
+    InvalidProvisioningRequest,
+    validate_database_name,
+    validate_role_memberships,
+)
 
 
 APP_USER = "haunted_halls_preview_app"
@@ -46,8 +50,6 @@ def assert_database_roles_hardened(connection: psycopg.Connection) -> None:
         SELECT rolname, rolcanlogin, rolsuper, rolcreaterole, rolcreatedb, rolinherit,
                COALESCE(pg_has_role(oid, to_regrole('cloudsqlsuperuser'), 'MEMBER'), false)
                    AS cloudsqlsuperuser_member,
-               COALESCE(pg_has_role(oid, to_regrole('haunted_halls_preview_app'), 'MEMBER'), false)
-                   AS preview_app_member,
                COALESCE(pg_has_role(oid, to_regrole('haunted_halls_app'), 'MEMBER'), false)
                    AS production_role_member,
                COALESCE(pg_has_role(oid, to_regrole('haunted_halls_staging_app'), 'MEMBER'), false)
@@ -68,6 +70,24 @@ def assert_database_roles_hardened(connection: psycopg.Connection) -> None:
     if app_role is None or provisioner_role is None:
         raise RuntimeError("preview database roles are not provisioned")
 
+    membership_rows = connection.execute(
+        """
+        SELECT member_role.rolname AS member_name, granted_role.rolname AS granted_role_name
+        FROM pg_auth_members AS membership
+        JOIN pg_roles AS member_role ON member_role.oid = membership.member
+        JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
+        WHERE member_role.rolname IN (%s, %s)
+        """,
+        (APP_USER, PROVISIONER_USER),
+    ).fetchall()
+    memberships = {APP_USER: set(), PROVISIONER_USER: set()}
+    for row in membership_rows:
+        memberships[row["member_name"]].add(row["granted_role_name"])
+    try:
+        validate_role_memberships(memberships)
+    except ValueError as error:
+        raise RuntimeError("preview database role memberships are not hardened") from error
+
     for role in (app_role, provisioner_role):
         if (
             not role["rolcanlogin"]
@@ -83,7 +103,7 @@ def assert_database_roles_hardened(connection: psycopg.Connection) -> None:
 
     if app_role["rolcreatedb"] or provisioner_role["rolinherit"]:
         raise RuntimeError("preview database role attributes are not hardened")
-    if not provisioner_role["rolcreatedb"] or not provisioner_role["preview_app_member"]:
+    if not provisioner_role["rolcreatedb"]:
         raise RuntimeError("preview provisioner does not have its narrowly scoped role grant")
 
 

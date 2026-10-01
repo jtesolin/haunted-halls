@@ -14,8 +14,8 @@ variable "existing_project_id" {
   type        = string
 
   validation {
-    condition     = length(trimspace(var.existing_project_id)) > 0
-    error_message = "existing_project_id must be provided."
+    condition     = length(trimspace(var.existing_project_id)) > 0 && var.existing_project_id != var.preview_project_id
+    error_message = "existing_project_id must be provided and must differ from preview_project_id."
   }
 }
 

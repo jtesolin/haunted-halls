@@ -20,4 +20,9 @@ variable "per_pr_state_bucket_name" {
   description = "Globally unique private bucket for isolated per-PR Terraform states."
   type        = string
   default     = "hh-preview-458395246135-per-pr-tf-state"
+
+  validation {
+    condition     = var.per_pr_state_bucket_name != var.foundation_state_bucket_name
+    error_message = "per_pr_state_bucket_name must differ from foundation_state_bucket_name."
+  }
 }

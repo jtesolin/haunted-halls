@@ -4,11 +4,53 @@ from db_names import (
     InvalidProvisioningRequest,
     derive_database_name,
     validate_database_name,
+    validate_role_memberships,
     validate_request,
 )
 
 
 class DatabaseNameTests(unittest.TestCase):
+    def test_accepts_only_the_exact_preview_role_memberships(self) -> None:
+        validate_role_memberships(
+            {
+                "haunted_halls_preview_app": set(),
+                "haunted_halls_preview_provisioner": {"haunted_halls_preview_app"},
+            }
+        )
+
+    def test_rejects_app_role_memberships(self) -> None:
+        with self.assertRaises(ValueError):
+            validate_role_memberships(
+                {
+                    "haunted_halls_preview_app": {"haunted_halls_app"},
+                    "haunted_halls_preview_provisioner": {"haunted_halls_preview_app"},
+                }
+            )
+
+    def test_rejects_any_extra_provisioner_membership(self) -> None:
+        with self.assertRaises(ValueError):
+            validate_role_memberships(
+                {
+                    "haunted_halls_preview_app": set(),
+                    "haunted_halls_preview_provisioner": {
+                        "haunted_halls_preview_app",
+                        "unexpected_privileged_role",
+                    },
+                }
+            )
+
+    def test_rejects_missing_or_unexpected_role_entries(self) -> None:
+        for memberships in (
+            {"haunted_halls_preview_app": set()},
+            {
+                "haunted_halls_preview_app": set(),
+                "haunted_halls_preview_provisioner": {"haunted_halls_preview_app"},
+                "unexpected_role": set(),
+            },
+        ):
+            with self.subTest(memberships=memberships), self.assertRaises(ValueError):
+                validate_role_memberships(memberships)
+
     def test_derives_only_supported_preview_names(self) -> None:
         self.assertEqual(
             derive_database_name("web", 123), "haunted_halls_web_pr_123"
