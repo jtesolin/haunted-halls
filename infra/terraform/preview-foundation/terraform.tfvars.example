@@ -1,0 +1,7 @@
+preview_project_id   = "hh-preview-458395246135"
+existing_project_id  = "REPLACE_WITH_EXISTING_HAUNTED_HALLS_PROJECT_ID"
+region               = "us-east1"
+billing_account_id   = "REPLACE_WITH_BILLING_ACCOUNT_ID"
+preview_state_bucket_name = "hh-preview-458395246135-tf-state"
+iap_tester_principals = []
+provisioner_image    = "us-east1-docker.pkg.dev/hh-preview-458395246135/haunted-halls-preview/db-provisioner@sha256:REPLACE_WITH_IMAGE_DIGEST"

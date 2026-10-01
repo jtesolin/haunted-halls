@@ -958,6 +958,243 @@ bypass or special unauthenticated path.
 > `E2E_AUTH_ENABLED=true` outside a disposable, loopback-only E2E stack, and never point
 > it at a non-loopback `NEXTAUTH_URL`.
 
+## PR preview foundation (issue #40)
+
+The shared preview foundation is isolated from the production/staging Terraform
+root. Its dedicated, operator-created GCP project is
+`hh-preview-458395246135`. The project hosts preview-only Cloud Run
+identities/control resources, Artifact Registry, Secret Manager, IAP setup, and
+Terraform state. Dynamic Cloud Run create/update/delete authority exists only
+inside this project. The existing Haunted Halls project retains the existing
+Cloud SQL instance and one fixed, reviewed database-provisioning control plane;
+the preview deployer receives no Cloud SQL IAM role, cannot impersonate that
+control plane's service account, and cannot change production/staging Cloud Run
+services.
+
+The intended trust boundary is:
+
+```text
+untrusted PR code -> build/test without preview credentials
+reviewed default-branch workflow -> fresh deployment job -> exact-ref WIF
+  -> hh-preview-deployer -> preview project only
+  -> invoke fixed DB control-plane endpoint (no command/credential overrides)
+```
+
+The trusted deployment job must not check out or execute PR-controlled scripts
+after federation. It must validate artifact provenance before deploying. Do not
+add a public Cloud Run invoker or run PR code in a credential-bearing job.
+Preview services must use direct Cloud Run IAP, `iap_enabled = true`, scale to
+zero (`min_instance_count = 0`), and the `run.app` URL. This foundation does
+not implement a PR lifecycle, per-PR domain, load balancer, or application IAP
+authentication; #41 owns frontend lifecycle/auth integration.
+
+### Preview project and Terraform state bootstrap
+
+Create the dedicated preview project in the Google Cloud console and attach
+the operator-selected billing account before running Terraform. The project
+ID above is fixed by the operator; do not substitute the production/staging
+project. The Terraform roots are:
+
+- `infra/terraform/preview-foundation/backend-bootstrap`: creates a
+  non-public, versioned GCS state bucket in the preview project. This one-time
+  bootstrap root uses local state; retain that local state securely.
+- `infra/terraform/preview-foundation`: manages the durable shared foundation
+  using GCS prefix `preview-foundation`.
+- Later isolated per-PR roots use separate deterministic prefixes such as
+  `previews/web-pr-123` and `previews/engine-pr-84`. Each preview has its own
+  state object/lock; previews do not contend on one global ephemeral-state
+  lock and never write to production/staging state.
+
+Bootstrap example:
+
+```bash
+cp infra/terraform/preview-foundation/backend-bootstrap/terraform.tfvars.example \
+  infra/terraform/preview-foundation/backend-bootstrap/terraform.tfvars
+terraform -chdir=infra/terraform/preview-foundation/backend-bootstrap init -backend=false
+terraform -chdir=infra/terraform/preview-foundation/backend-bootstrap apply
+```
+
+Then copy
+`infra/terraform/preview-foundation/terraform.tfvars.example` to
+`infra/terraform/preview-foundation/terraform.tfvars`, set the existing
+Haunted Halls project ID, billing account, and a digest-pinned
+`provisioner_image`, and initialize the foundation backend:
+
+```bash
+terraform -chdir=infra/terraform/preview-foundation init \
+  -backend-config="bucket=hh-preview-458395246135-tf-state" \
+  -backend-config="prefix=preview-foundation"
+```
+
+The database provisioner image must be built from the reviewed
+`db-provisioner/` source on default-branch code, pushed to the preview-only
+Artifact Registry repository, and configured by immutable SHA-256 digest.
+Never use a mutable tag. The provided example inputs are placeholders; do not
+commit operator values or plan files.
+
+The foundation creates a modest USD 20 monthly budget when
+`billing_account_id` is set. Preview image cleanup deletes images older than
+30 days when untagged. Preview lifecycle automation must remove tags for closed
+PR images so they become eligible for cleanup. Review budget alerts and cleanup
+settings for actual operator needs.
+No preview Cloud SQL instance or always-on service is created.
+
+### WIF and IAM matrix
+
+The preview WIF provider maps `attribute.workflow_ref` and accepts only the
+default-branch refs
+`jtesolin/haunted-halls/.github/workflows/preview-deploy.yml@refs/heads/main`
+and
+`jtesolin/haunted-halls-engine/.github/workflows/preview-deploy.yml@refs/heads/main`,
+with `repository_owner == "jtesolin"` and `ref == "refs/heads/main"`.
+The deployer has two exact pool-scoped bindings:
+
+- `principalSet://iam.googleapis.com/projects/PREVIEW_PROJECT_NUMBER/locations/global/workloadIdentityPools/hh-preview-github/attribute.workflow_ref/jtesolin/haunted-halls/.github/workflows/preview-deploy.yml@refs/heads/main`
+- `principalSet://iam.googleapis.com/projects/PREVIEW_PROJECT_NUMBER/locations/global/workloadIdentityPools/hh-preview-github/attribute.workflow_ref/jtesolin/haunted-halls-engine/.github/workflows/preview-deploy.yml@refs/heads/main`
+
+No repository-wide principal binding or production/staging WIF change is
+introduced. Future IAP frontend service names must begin
+`hh-preview-frontend`; the invoker grant is conditionally limited to those
+Cloud Run service resources. The intended grants are:
+
+| Principal | Scope | Grant |
+| --- | --- | --- |
+| `hh-preview-deployer` | Preview project | `roles/run.admin` (dynamic runtime/control resources only in this dedicated project) |
+| `hh-preview-deployer` | Preview Artifact Registry repository | `roles/artifactregistry.writer` |
+| `hh-preview-deployer` | Preview state bucket | `roles/storage.objectAdmin` |
+| `hh-preview-deployer` | Three preview runtime service accounts | `roles/iam.serviceAccountUser`; no ability to act as the DB provisioner |
+| `hh-preview-deployer` | Preview project | Custom secret metadata/version management; no `secretmanager.versions.access` |
+| `hh-preview-deployer` | Fixed DB control-plane service | `roles/run.invoker` on this service only; no command/entrypoint overrides or Cloud SQL access |
+| Preview engine and migration runtime | Existing Cloud SQL project | Conditional `roles/cloudsql.client` on the existing instance only |
+| Preview frontend runtime | Existing Cloud SQL project | No Cloud SQL role |
+| Preview DB control-plane runtime | Existing Cloud SQL project | Custom `cloudsql.instances.connect/get`, conditional on the existing instance |
+| Preview DB control-plane runtime | Provisioner password secret | `roles/secretmanager.secretAccessor` on that one secret |
+| Preview engine runtime | Preview DB password and OpenAI secrets | `roles/secretmanager.secretAccessor` on those secrets |
+| Existing project Cloud Run service agent | Preview Artifact Registry repository | `roles/artifactregistry.reader` on the provisioner image repository only |
+| IAP service agent | Preview project, conditional on `run.googleapis.com/Service` names beginning `hh-preview-frontend` | `roles/run.invoker`; direct IAP frontends must also be configured with `iap_enabled = true` |
+| Configured tester principals only | Preview project | `roles/iap.httpsResourceAccessor`; empty by default |
+
+The existing production/staging project receives only the two preview DB
+logins, conditional Cloud SQL connectivity for the preview engine/migration
+identities and fixed DB control-plane identity on the shared instance, the
+trusted control-plane service and its restricted runtime credentials, the
+preview deployer's invoker grant on that one service, and image-read access
+for the Cloud Run service agent to the preview-only provisioner repository.
+No preview runtime identity receives access to production/staging application
+secrets, and no production/staging deployment identity is changed.
+
+### IAP and preview OpenAI setup
+
+After the project is created and before managing Cloud Run IAP settings, perform
+the one-time interactive bootstrap if Google requires an OAuth brand/client for
+this personal project: open **Google Cloud Console → Security → Identity-Aware
+Proxy**, complete the OAuth consent/brand setup using an operator-controlled
+support email, enable IAP for Cloud Run, and accept the console's OAuth
+configuration flow. Do not fake a brand/client or replace IAP with public
+access. Configure explicit `iap_tester_principals` in the ignored Terraform
+vars file before granting tester access. The Terraform list defaults empty and
+therefore grants nobody `roles/iap.httpsResourceAccessor`.
+
+`hh-preview-openai-api-key` is a preview-only, operator-populated secret. After
+foundation deployment, provide the value through an approved secure local
+environment variable without putting it in shell history or output, then add
+the secret version:
+
+```bash
+test -n "$PREVIEW_OPENAI_API_KEY" &&
+  printf '%s' "$PREVIEW_OPENAI_API_KEY" |
+  gcloud secrets versions add hh-preview-openai-api-key \
+    --project=hh-preview-458395246135 --data-file=-
+unset PREVIEW_OPENAI_API_KEY
+```
+
+Never copy or read the production OpenAI key. Rotate the preview key
+independently. Password values for both shared preview database logins are
+generated ephemerally and written to Secret Manager; they are not outputs or
+tracked files.
+
+### Preview database privilege hardening and verification
+
+Cloud SQL may automatically grant `cloudsqlsuperuser` to built-in PostgreSQL
+users. Terraform cannot safely revoke that membership. Before enabling previews,
+use the supported Cloud SQL role-management flow for **both** preview logins:
+
+```bash
+gcloud sql users assign-roles haunted_halls_preview_app \
+  --instance=haunted-halls-postgres --project="$EXISTING_PROJECT_ID" \
+  --database-roles= --revoke-existing-roles
+gcloud sql users assign-roles haunted_halls_preview_provisioner \
+  --instance=haunted-halls-postgres --project="$EXISTING_PROJECT_ID" \
+  --database-roles= --revoke-existing-roles
+```
+
+As the database administrator, apply and verify the PostgreSQL grants below.
+Revoking `PUBLIC` CONNECT is necessary to ensure the preview logins cannot
+connect through inherited public privileges; explicitly retain access for the
+existing production/staging application logins:
+
+```sql
+ALTER ROLE haunted_halls_preview_app LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOINHERIT;
+ALTER ROLE haunted_halls_preview_provisioner LOGIN NOSUPERUSER NOCREATEROLE CREATEDB NOINHERIT;
+ALTER ROLE haunted_halls_preview_provisioner SET search_path = pg_catalog;
+GRANT haunted_halls_preview_app TO haunted_halls_preview_provisioner;
+
+REVOKE CONNECT ON DATABASE haunted_halls FROM PUBLIC;
+REVOKE CONNECT ON DATABASE haunted_halls FROM haunted_halls_preview_app, haunted_halls_preview_provisioner;
+GRANT CONNECT ON DATABASE haunted_halls TO haunted_halls_app;
+REVOKE CONNECT ON DATABASE haunted_halls_staging FROM PUBLIC;
+REVOKE CONNECT ON DATABASE haunted_halls_staging FROM haunted_halls_preview_app, haunted_halls_preview_provisioner;
+GRANT CONNECT ON DATABASE haunted_halls_staging TO haunted_halls_staging_app;
+```
+
+These are explicit post-merge operator steps, not Terraform apply actions.
+Confirm the actual production/staging application login roles before revoking
+`PUBLIC` access, and retain required production/staging connectivity. Verify
+membership, attributes, and database ACLs before enabling any preview:
+
+```sql
+SELECT pg_has_role('haunted_halls_preview_app', 'cloudsqlsuperuser', 'MEMBER'),
+       pg_has_role('haunted_halls_preview_provisioner', 'cloudsqlsuperuser', 'MEMBER');
+SELECT pg_has_role('haunted_halls_preview_provisioner', 'haunted_halls_app', 'MEMBER') AS production_role_member,
+       pg_has_role('haunted_halls_preview_provisioner', 'haunted_halls_staging_app', 'MEMBER') AS staging_role_member;
+SELECT rolname, rolsuper, rolcreaterole, rolcreatedb, rolinherit
+FROM pg_roles
+WHERE rolname IN ('haunted_halls_preview_app', 'haunted_halls_preview_provisioner');
+SELECT datname, has_database_privilege('haunted_halls_preview_app', datname, 'CONNECT') AS app_connect,
+       has_database_privilege('haunted_halls_preview_provisioner', datname, 'CONNECT') AS provisioner_connect
+FROM pg_database
+WHERE datname IN ('haunted_halls', 'haunted_halls_staging');
+```
+
+The trusted fixed control-plane service derives names itself from only `web` or
+`engine` and a positive numeric PR number. It accepts only `create`/`drop`,
+rejects additional fields/arbitrary identifiers/protected names, constructs SQL
+identifiers with psycopg's identifier quoting, creates an empty database owned
+by `haunted_halls_preview_app`, removes public CONNECT/schema privileges, and
+grants only the app and provisioner CONNECT needed for application use and
+teardown. A drop also verifies the generated name and expected owner before
+terminating connections and dropping that database. The provisioner has
+`CREATEDB`, no `CREATEROLE`, no superuser membership, and no production/staging
+role membership; only this reviewed immutable service image receives its
+credential. The deployer invokes its authenticated HTTP endpoint and cannot
+override its command, image, identity, or environment. Every accepted request
+also rechecks role flags, memberships, and production/staging CONNECT access,
+and fails closed until the operator has completed the hardening steps above.
+
+### Validation and lifecycle boundary
+
+Run `make tf-fmt`, `make tf-validate`, and `make tf-preview-db-test`, along with
+the frontend lint, typecheck, test, and build commands before proposing changes.
+Create and inspect a saved plan only when the dedicated project, state bucket,
+existing SQL instance, billing configuration, IAP tester choices, and immutable
+provisioner image are available. A PR must state exact plan action counts and
+confirm that Terraform was not applied. Terraform apply, Cloud SQL role changes,
+IAP OAuth bootstrap, and secret population are separate controlled post-merge
+steps. The canonical engine architecture/status documentation update is deferred
+while [jtesolin/haunted-halls-engine#87](https://github.com/jtesolin/haunted-halls-engine/issues/87)
+is active; record that follow-up in the PR rather than changing the engine
+repository here.
+
 ### Running the E2E stack locally
 
 1. Install Playwright's Chromium browser (and Linux dependencies, if needed):

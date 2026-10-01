@@ -1,0 +1,66 @@
+import unittest
+
+from db_names import (
+    InvalidProvisioningRequest,
+    derive_database_name,
+    validate_database_name,
+    validate_request,
+)
+
+
+class DatabaseNameTests(unittest.TestCase):
+    def test_derives_only_supported_preview_names(self) -> None:
+        self.assertEqual(
+            derive_database_name("web", 123), "haunted_halls_web_pr_123"
+        )
+        self.assertEqual(
+            derive_database_name("engine", 84), "haunted_halls_engine_pr_84"
+        )
+
+    def test_rejects_protected_database_names(self) -> None:
+        for name in ("haunted_halls", "haunted_halls_staging"):
+            with self.subTest(name=name), self.assertRaises(InvalidProvisioningRequest):
+                validate_database_name(name)
+
+    def test_rejects_arbitrary_database_names(self) -> None:
+        for name in (
+            "postgres",
+            "haunted_halls_web_pr_1; DROP DATABASE haunted_halls",
+            "haunted_halls_preview_app",
+            "haunted_halls_web_pr_0",
+        ):
+            with self.subTest(name=name), self.assertRaises(InvalidProvisioningRequest):
+                validate_database_name(name)
+
+    def test_rejects_noncanonical_request_shapes_and_values(self) -> None:
+        invalid_requests = (
+            {"operation": "drop", "repository_key": "web", "pull_request_number": 1,
+             "database_name": "haunted_halls"},
+            {"operation": ["create"], "repository_key": "web", "pull_request_number": 1},
+            {"operation": "create", "repository_key": "unknown", "pull_request_number": 1},
+            {"operation": "delete", "repository_key": "web", "pull_request_number": 1},
+            {"operation": "create", "repository_key": "web", "pull_request_number": True},
+            {"operation": "drop", "repository_key": "engine", "pull_request_number": 0},
+            {"operation": "drop", "repository_key": "web", "pull_request_number": 1_000_000_000},
+        )
+        for request in invalid_requests:
+            with self.subTest(request=request), self.assertRaises(
+                InvalidProvisioningRequest
+            ):
+                validate_request(request)
+
+    def test_accepts_a_minimal_teardown_request(self) -> None:
+        self.assertEqual(
+            validate_request(
+                {
+                    "operation": "drop",
+                    "repository_key": "engine",
+                    "pull_request_number": 84,
+                }
+            ),
+            ("drop", "haunted_halls_engine_pr_84"),
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
