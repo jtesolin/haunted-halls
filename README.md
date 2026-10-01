@@ -1097,7 +1097,8 @@ The intended grants are:
 | `hh-preview-deployer` | Preview Artifact Registry repository | `roles/artifactregistry.writer` |
 | `hh-preview-deployer` | `hh-preview-458395246135-per-pr-tf-state` only | `roles/storage.objectAdmin`; no access to `hh-preview-458395246135-foundation-tf-state` |
 | `hh-preview-deployer` | Three preview runtime service accounts | `roles/iam.serviceAccountUser`; no ability to act as the DB provisioner |
-| `hh-preview-deployer` | Preview project | Custom secret metadata/version and IAM-policy management; no `secretmanager.versions.access` |
+| `hh-preview-deployer` | Preview project | Custom secret metadata/version management; no IAM-policy management or `secretmanager.versions.access` |
+| `hh-preview-deployer` | Secrets named `hh-web-pr-*` or `hh-engine-pr-*` | Separate custom `getIamPolicy`/`setIamPolicy` role, conditionally limited to per-PR secrets; shared DB/OpenAI foundation secrets are excluded |
 | `hh-preview-deployer` | Fixed DB control-plane service | `roles/run.invoker` on this service only; no command/entrypoint overrides or Cloud SQL access |
 | Preview engine and migration runtime | Existing Cloud SQL project | Conditional `roles/cloudsql.client` on the existing instance only |
 | Preview frontend runtime | Existing Cloud SQL project | No Cloud SQL role |
@@ -1146,6 +1147,11 @@ Never copy or read the production OpenAI key. Rotate the preview key
 independently. Password values for both shared preview database logins are
 generated ephemerally and written to Secret Manager; they are not outputs or
 tracked files.
+The deployer's IAM-policy permissions are in a separate custom role with a
+project IAM condition restricted to secret resource names beginning with
+`hh-web-pr-` or `hh-engine-pr-`. It cannot change policies on shared foundation
+DB/OpenAI secrets. Neither custom role includes
+`secretmanager.versions.access`.
 
 ### Preview database privilege hardening and verification
 
@@ -1219,13 +1225,14 @@ and fails closed until the operator has completed the hardening steps above.
 
 Run `make tf-fmt`, `make tf-validate`, and `make tf-preview-db-test`, along with
 the frontend lint, typecheck, test, and build commands before proposing changes.
-Create and inspect a saved plan only when the dedicated project, state bucket,
-existing SQL instance, billing configuration, IAP tester choices, and immutable
-provisioner image are available. A PR must state exact plan action counts and
-confirm that Terraform was not applied. Terraform apply, Cloud SQL role changes,
-IAP OAuth bootstrap, and secret population are separate controlled post-merge
-steps. The canonical engine architecture/status documentation update is deferred
-while [jtesolin/haunted-halls-engine#87](https://github.com/jtesolin/haunted-halls-engine/issues/87)
+The preview project and state backend must exist before a meaningful
+live-backed Terraform plan can be created. After merge, review and save a plan
+before each phase-one and phase-two apply; apply only the reviewed saved plan.
+Complete the final zero-drift plan after live verification. Terraform apply,
+Cloud SQL role changes, IAP OAuth bootstrap, and secret population are separate
+controlled post-merge steps. The canonical engine architecture/status
+documentation update is deferred while
+[jtesolin/haunted-halls-engine#87](https://github.com/jtesolin/haunted-halls-engine/issues/87)
 is active; record that follow-up in the PR rather than changing the engine
 repository here.
 
