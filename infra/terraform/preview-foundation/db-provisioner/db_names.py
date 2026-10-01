@@ -21,6 +21,20 @@ def validate_role_memberships(memberships: Mapping[str, set[str]]) -> None:
         raise ValueError("preview database role memberships are not hardened")
 
 
+def validate_provisioner_search_path(search_path: object, role_config: object) -> None:
+    configured_paths = (
+        [
+            setting.partition("=")[2]
+            for setting in role_config
+            if isinstance(setting, str) and setting.startswith("search_path=")
+        ]
+        if isinstance(role_config, (list, tuple))
+        else []
+    )
+    if search_path != "pg_catalog" or configured_paths != ["pg_catalog"]:
+        raise ValueError("preview provisioner search_path is not hardened")
+
+
 def validate_database_name(database_name: object) -> str:
     if not isinstance(database_name, str):
         raise InvalidProvisioningRequest("database name must be a string")

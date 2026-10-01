@@ -9,6 +9,7 @@ resource "google_project_service" "apis" {
     "run.googleapis.com",
     "secretmanager.googleapis.com",
     "serviceusage.googleapis.com",
+    "sts.googleapis.com",
   ])
 
   project            = var.preview_project_id

@@ -19,5 +19,3 @@ provider "google-beta" {
   user_project_override = true
   billing_project       = var.preview_project_id
 }
-
-provider "random" {}

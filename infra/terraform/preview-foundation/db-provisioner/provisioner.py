@@ -7,6 +7,7 @@ from psycopg.rows import dict_row
 from db_names import (
     InvalidProvisioningRequest,
     validate_database_name,
+    validate_provisioner_search_path,
     validate_role_memberships,
 )
 
@@ -45,6 +46,23 @@ def provision(operation: str, database_name: str) -> dict[str, object]:
 
 
 def assert_database_roles_hardened(connection: psycopg.Connection) -> None:
+    search_path_row = connection.execute(
+        """
+        SELECT pg_catalog.current_setting('search_path') AS search_path,
+               role_config.rolconfig AS role_config
+        FROM pg_catalog.pg_roles AS role_config
+        WHERE role_config.rolname = %s
+        """,
+        (PROVISIONER_USER,),
+    ).fetchone()
+    try:
+        validate_provisioner_search_path(
+            search_path_row["search_path"],
+            search_path_row["role_config"],
+        )
+    except (TypeError, ValueError) as error:
+        raise RuntimeError("preview provisioner search_path is not hardened") from error
+
     rows = connection.execute(
         """
         SELECT rolname, rolcanlogin, rolsuper, rolcreaterole, rolcreatedb, rolinherit,

@@ -4,12 +4,34 @@ from db_names import (
     InvalidProvisioningRequest,
     derive_database_name,
     validate_database_name,
+    validate_provisioner_search_path,
     validate_role_memberships,
     validate_request,
 )
 
 
 class DatabaseNameTests(unittest.TestCase):
+    def test_accepts_only_pg_catalog_search_path(self) -> None:
+        validate_provisioner_search_path(
+            "pg_catalog", ["search_path=pg_catalog", "application_name=preview-db"]
+        )
+
+    def test_rejects_unhardened_search_paths(self) -> None:
+        invalid_settings = (
+            ("$user, public", ["search_path=pg_catalog"]),
+            ("pg_catalog, public", ["search_path=pg_catalog"]),
+            ("pg_catalog", ["search_path=pg_catalog, public"]),
+            ("pg_catalog", ["search_path=pg_catalog", "search_path=public"]),
+            ("pg_catalog", None),
+            (None, ["search_path=pg_catalog"]),
+        )
+        for search_path, role_config in invalid_settings:
+            with (
+                self.subTest(search_path=search_path, role_config=role_config),
+                self.assertRaises(ValueError),
+            ):
+                validate_provisioner_search_path(search_path, role_config)
+
     def test_accepts_only_the_exact_preview_role_memberships(self) -> None:
         validate_role_memberships(
             {

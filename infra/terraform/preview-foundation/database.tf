@@ -1,20 +1,8 @@
-ephemeral "random_password" "preview_app" {
-  length           = 48
-  special          = false
-  override_special = ""
-}
-
-ephemeral "random_password" "preview_provisioner" {
-  length           = 48
-  special          = false
-  override_special = ""
-}
-
 resource "google_sql_user" "preview_app" {
   provider            = google.existing
   name                = "haunted_halls_preview_app"
   instance            = data.google_sql_database_instance.existing.name
-  password_wo         = ephemeral.random_password.preview_app.result
+  password_wo         = var.preview_app_password
   password_wo_version = var.preview_app_password_version
 }
 
@@ -22,7 +10,7 @@ resource "google_sql_user" "preview_provisioner" {
   provider            = google.existing
   name                = "haunted_halls_preview_provisioner"
   instance            = data.google_sql_database_instance.existing.name
-  password_wo         = ephemeral.random_password.preview_provisioner.result
+  password_wo         = var.preview_provisioner_password
   password_wo_version = var.preview_provisioner_password_version
 }
 
@@ -38,7 +26,7 @@ resource "google_secret_manager_secret" "preview_app_password" {
 
 resource "google_secret_manager_secret_version" "preview_app_password" {
   secret                 = google_secret_manager_secret.preview_app_password.id
-  secret_data_wo         = ephemeral.random_password.preview_app.result
+  secret_data_wo         = var.preview_app_password
   secret_data_wo_version = var.preview_app_password_version
 }
 
@@ -54,7 +42,7 @@ resource "google_secret_manager_secret" "preview_provisioner_password" {
 
 resource "google_secret_manager_secret_version" "preview_provisioner_password" {
   secret                 = google_secret_manager_secret.preview_provisioner_password.id
-  secret_data_wo         = ephemeral.random_password.preview_provisioner.result
+  secret_data_wo         = var.preview_provisioner_password
   secret_data_wo_version = var.preview_provisioner_password_version
 }
 

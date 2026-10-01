@@ -93,8 +93,32 @@ variable "preview_app_password_version" {
   default     = 1
 }
 
+variable "preview_app_password" {
+  description = "Operator-generated 64-character hexadecimal password. Keep the same value for planning, applying, and retrying a given preview_app_password_version."
+  type        = string
+  sensitive   = true
+  ephemeral   = true
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{64}$", var.preview_app_password))
+    error_message = "preview_app_password must be a 64-character lowercase hexadecimal value."
+  }
+}
+
 variable "preview_provisioner_password_version" {
   description = "Write-only secret version rotation for the trusted database provisioner login."
   type        = number
   default     = 1
+}
+
+variable "preview_provisioner_password" {
+  description = "Operator-generated 64-character hexadecimal password. Keep the same value for planning, applying, and retrying a given preview_provisioner_password_version."
+  type        = string
+  sensitive   = true
+  ephemeral   = true
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{64}$", var.preview_provisioner_password))
+    error_message = "preview_provisioner_password must be a 64-character lowercase hexadecimal value."
+  }
 }

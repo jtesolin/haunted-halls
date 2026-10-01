@@ -1036,11 +1036,12 @@ terraform -chdir=infra/terraform/preview-foundation init \
 ```
 
 **Phase one:** leave `provisioner_image = ""` in the ignored Terraform vars
-file. Review and apply the foundation to create APIs, identities, WIF, secrets,
-Cloud SQL logins, repository, IAM, and the two isolated state buckets. The
-trusted Cloud Run provisioner service is intentionally absent in this phase.
-After the apply, the preview repository exists and the preview deployer has
-writer permission.
+file. The backend-bootstrap root must already have created both isolated state
+buckets; initialize the foundation backend only after that bootstrap completes.
+Review and apply the foundation to create APIs, identities, WIF, secrets,
+Cloud SQL logins, repository, and IAM. The trusted Cloud Run provisioner service
+is intentionally absent in this phase. After the apply, the preview repository
+exists and the preview deployer has writer permission.
 
 Build the image from reviewed default-branch `db-provisioner/` source, push it
 to `us-east1-docker.pkg.dev/hh-preview-458395246135/haunted-halls-preview/db-provisioner`,
@@ -1056,6 +1057,35 @@ the version rotates the DB login/secret and Cloud Run revision together.
 
 The provided example inputs are placeholders; do not commit operator values
 or plan files.
+
+#### Retry-safe database password rotation
+
+The root requires `TF_VAR_preview_app_password` and
+`TF_VAR_preview_provisioner_password`. Each must be a strong, 64-character
+lowercase hexadecimal value generated once for that login's
+`*_password_version`. Enter the generated values into a trusted password
+manager and load them into a dedicated shell without echoing or putting them in
+command history:
+
+```bash
+read -r -s -p "Preview app password: " TF_VAR_preview_app_password
+printf '\n'
+read -r -s -p "Preview provisioner password: " TF_VAR_preview_provisioner_password
+printf '\n'
+export TF_VAR_preview_app_password TF_VAR_preview_provisioner_password
+```
+
+Use these exact values for the saved plan, its apply, and every retry until
+both the Cloud SQL password and matching Secret Manager version for that
+`*_password_version` have completed and been verified. Do not generate or
+substitute a different password during a retry at the same version; a partial
+apply could otherwise leave SQL and Secret Manager out of sync. Increment the
+corresponding version and generate/store a new value only when intentionally
+rotating that login. Keep the values available in the password manager until
+the rotation succeeds, then clear them from the shell with `unset
+TF_VAR_preview_app_password TF_VAR_preview_provisioner_password`. The variables
+are sensitive and ephemeral, and both provider arguments are write-only, so
+the passwords are omitted from Terraform plan and state.
 
 The foundation creates a modest USD 20 monthly budget when
 `billing_account_id` is set. Preview image cleanup deletes images older than
