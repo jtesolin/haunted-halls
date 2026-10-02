@@ -11,6 +11,8 @@ resource "google_project_iam_custom_role" "preview_per_pr_secret_creator" {
   permissions = [
     "secretmanager.secrets.create",
   ]
+
+  depends_on = [google_project_service.apis["iam.googleapis.com"]]
 }
 
 resource "google_project_iam_custom_role" "preview_per_pr_secret_manager" {
@@ -30,6 +32,8 @@ resource "google_project_iam_custom_role" "preview_per_pr_secret_manager" {
     "secretmanager.versions.get",
     "secretmanager.versions.list",
   ]
+
+  depends_on = [google_project_service.apis["iam.googleapis.com"]]
 }
 
 resource "google_project_iam_member" "deployer_per_pr_secret_creator" {
