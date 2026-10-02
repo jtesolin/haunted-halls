@@ -5,7 +5,7 @@ locals {
 
 resource "google_iam_workload_identity_pool" "github" {
   workload_identity_pool_id = "hh-preview-github"
-  display_name              = "Haunted Halls preview GitHub workflows"
+  display_name              = "Haunted Halls preview GitHub"
   description               = "Only the reviewed default-branch preview deployment workflow files may federate."
 
   depends_on = [google_project_service.apis]
@@ -14,7 +14,7 @@ resource "google_iam_workload_identity_pool" "github" {
 resource "google_iam_workload_identity_pool_provider" "github" {
   workload_identity_pool_id          = google_iam_workload_identity_pool.github.workload_identity_pool_id
   workload_identity_pool_provider_id = "github-preview"
-  display_name                       = "Haunted Halls preview GitHub OIDC"
+  display_name                       = "Haunted Halls preview OIDC"
   attribute_mapping = {
     "google.subject"             = "assertion.sub"
     "attribute.repository"       = "assertion.repository"
