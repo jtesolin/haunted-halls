@@ -122,19 +122,39 @@ jobs:
           terraform_version: 1.11.0
 
       - name: Terraform format check
-        run: terraform -chdir=infra/terraform/bootstrap fmt -check -recursive && terraform -chdir=infra/terraform fmt -check -recursive
+        run: |
+          set -euo pipefail
+          for root in \
+            infra/terraform/bootstrap \
+            infra/terraform \
+            infra/terraform/preview-foundation/backend-bootstrap \
+            infra/terraform/preview-foundation
+          do
+            terraform -chdir="$root" fmt -check -recursive
+          done
 
-      - name: Terraform bootstrap static init
-        run: terraform -chdir=infra/terraform/bootstrap init -backend=false
+      - name: Terraform backend-disabled init and validate
+        run: |
+          set -euo pipefail
+          for root in \
+            infra/terraform/bootstrap \
+            infra/terraform \
+            infra/terraform/preview-foundation/backend-bootstrap \
+            infra/terraform/preview-foundation
+          do
+            terraform -chdir="$root" init -backend=false
+            terraform -chdir="$root" validate
+          done
 
-      - name: Terraform bootstrap validate
-        run: terraform -chdir=infra/terraform/bootstrap validate
+      - name: Set up Python for provider-free DB provisioner tests
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
 
-      - name: Terraform main static init
-        run: terraform -chdir=infra/terraform init -backend=false
-
-      - name: Terraform main validate
-        run: terraform -chdir=infra/terraform validate
+      - name: Run provider-free preview DB provisioner tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -m unittest discover -s infra/terraform/preview-foundation/db-provisioner -p 'test_*.py'
 
   docker-build:
     name: Frontend / Docker Build

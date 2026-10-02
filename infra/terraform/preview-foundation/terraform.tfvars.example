@@ -1,0 +1,7 @@
+preview_project_id   = "hh-preview-458395246135"
+existing_project_id  = "REPLACE_WITH_EXISTING_HAUNTED_HALLS_PROJECT_ID"
+region               = "us-east1"
+billing_account_id   = "REPLACE_WITH_BILLING_ACCOUNT_ID"
+iap_tester_principals = []
+# Phase two: fill in the immutable image digest after the phase-one repository creation.
+provisioner_image = ""
