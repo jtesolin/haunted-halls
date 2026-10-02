@@ -35,12 +35,22 @@ def validate_provisioner_search_path(search_path: object, role_config: object) -
         raise ValueError("preview provisioner search_path is not hardened")
 
 
-def validate_no_replication_or_rls_bypass(roles: list[Mapping[str, object]]) -> None:
-    if not roles or any(
-        role.get("rolreplication") is not False or role.get("rolbypassrls") is not False
-        for role in roles
+def validate_preview_role_attributes(
+    roles: Mapping[str, Mapping[str, object]],
+) -> None:
+    expected_roles = {
+        "haunted_halls_preview_app",
+        "haunted_halls_preview_provisioner",
+    }
+    if set(roles) != expected_roles:
+        raise ValueError("preview database roles are incomplete")
+
+    if any(
+        role.get(attribute) is not False
+        for role in roles.values()
+        for attribute in ("rolinherit", "rolreplication", "rolbypassrls")
     ):
-        raise ValueError("preview database role has elevated replication or RLS bypass")
+        raise ValueError("preview database role attributes are not hardened")
 
 
 def validate_database_name(database_name: object) -> str:

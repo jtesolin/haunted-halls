@@ -7,8 +7,8 @@ from psycopg.rows import dict_row
 from db_names import (
     InvalidProvisioningRequest,
     validate_database_name,
-    validate_no_replication_or_rls_bypass,
     validate_provisioner_search_path,
+    validate_preview_role_attributes,
     validate_role_memberships,
 )
 
@@ -91,9 +91,9 @@ def assert_database_roles_hardened(connection: psycopg.Connection) -> None:
         raise RuntimeError("preview database roles are not provisioned")
 
     try:
-        validate_no_replication_or_rls_bypass([app_role, provisioner_role])
+        validate_preview_role_attributes(roles)
     except ValueError as error:
-        raise RuntimeError("preview database role has elevated replication or RLS bypass") from error
+        raise RuntimeError("preview database role attributes are not hardened") from error
 
     membership_rows = connection.execute(
         """
@@ -128,7 +128,7 @@ def assert_database_roles_hardened(connection: psycopg.Connection) -> None:
         ):
             raise RuntimeError("preview database role hardening is incomplete")
 
-    if app_role["rolcreatedb"] or provisioner_role["rolinherit"]:
+    if app_role["rolcreatedb"]:
         raise RuntimeError("preview database role attributes are not hardened")
     if not provisioner_role["rolcreatedb"]:
         raise RuntimeError("preview provisioner does not have its narrowly scoped role grant")

@@ -4,37 +4,65 @@ from db_names import (
     InvalidProvisioningRequest,
     derive_database_name,
     validate_database_name,
-    validate_no_replication_or_rls_bypass,
     validate_provisioner_search_path,
+    validate_preview_role_attributes,
     validate_role_memberships,
     validate_request,
 )
 
 
 class DatabaseNameTests(unittest.TestCase):
-    def test_accepts_roles_without_replication_or_rls_bypass(self) -> None:
-        validate_no_replication_or_rls_bypass(
-            [
-                {"rolreplication": False, "rolbypassrls": False},
-                {"rolreplication": False, "rolbypassrls": False},
-            ]
+    def test_accepts_only_noinherit_roles_without_replication_or_rls_bypass(self) -> None:
+        validate_preview_role_attributes(
+            {
+                "haunted_halls_preview_app": {
+                    "rolinherit": False,
+                    "rolreplication": False,
+                    "rolbypassrls": False,
+                },
+                "haunted_halls_preview_provisioner": {
+                    "rolinherit": False,
+                    "rolreplication": False,
+                    "rolbypassrls": False,
+                },
+            }
         )
 
-    def test_rejects_replication_or_rls_bypass_for_either_role(self) -> None:
-        for roles in (
-            [
-                {"rolreplication": True, "rolbypassrls": False},
-                {"rolreplication": False, "rolbypassrls": False},
-            ],
-            [
-                {"rolreplication": False, "rolbypassrls": False},
-                {"rolreplication": False, "rolbypassrls": True},
-            ],
-            [{"rolreplication": False}],
-            [],
+    def test_rejects_inheritance_replication_or_rls_bypass(self) -> None:
+        for role_name, attribute in (
+            ("haunted_halls_preview_app", "rolinherit"),
+            ("haunted_halls_preview_provisioner", "rolinherit"),
+            ("haunted_halls_preview_app", "rolreplication"),
+            ("haunted_halls_preview_provisioner", "rolreplication"),
+            ("haunted_halls_preview_app", "rolbypassrls"),
+            ("haunted_halls_preview_provisioner", "rolbypassrls"),
         ):
+            roles = {
+                "haunted_halls_preview_app": {
+                    "rolinherit": False,
+                    "rolreplication": False,
+                    "rolbypassrls": False,
+                },
+                "haunted_halls_preview_provisioner": {
+                    "rolinherit": False,
+                    "rolreplication": False,
+                    "rolbypassrls": False,
+                },
+            }
+            roles[role_name][attribute] = True
             with self.subTest(roles=roles), self.assertRaises(ValueError):
-                validate_no_replication_or_rls_bypass(roles)
+                validate_preview_role_attributes(roles)
+
+    def test_rejects_missing_preview_role_or_attributes(self) -> None:
+        incomplete = {
+            "haunted_halls_preview_app": {
+                "rolinherit": False,
+                "rolreplication": False,
+                "rolbypassrls": False,
+            }
+        }
+        with self.assertRaises(ValueError):
+            validate_preview_role_attributes(incomplete)
 
     def test_accepts_only_pg_catalog_search_path(self) -> None:
         validate_provisioner_search_path(

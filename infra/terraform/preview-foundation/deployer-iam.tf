@@ -51,10 +51,21 @@ resource "google_project_iam_member" "deployer_per_pr_secret_iam" {
   }
 }
 
+data "google_storage_bucket" "preview_per_pr_state" {
+  name = local.preview_per_pr_state_bucket_name
+}
+
 resource "google_storage_bucket_iam_member" "deployer_preview_state" {
   bucket = local.preview_per_pr_state_bucket_name
   role   = "roles/storage.objectAdmin"
   member = "serviceAccount:${google_service_account.deployer.email}"
+
+  lifecycle {
+    precondition {
+      condition     = data.google_storage_bucket.preview_per_pr_state.project_number == data.google_project.preview.number
+      error_message = "The per-PR state bucket must be owned by the dedicated preview project."
+    }
+  }
 }
 
 resource "google_service_account_iam_member" "frontend_act_as" {
