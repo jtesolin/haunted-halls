@@ -88,8 +88,15 @@ class DatabaseNameTests(unittest.TestCase):
     def test_accepts_only_the_exact_preview_role_memberships(self) -> None:
         validate_role_memberships(
             {
-                "haunted_halls_preview_app": set(),
-                "haunted_halls_preview_provisioner": {"haunted_halls_preview_app"},
+                "haunted_halls_preview_app": [],
+                "haunted_halls_preview_provisioner": [
+                    {
+                        "granted_role_name": "haunted_halls_preview_app",
+                        "admin_option": False,
+                        "inherit_option": False,
+                        "set_option": True,
+                    }
+                ],
             }
         )
 
@@ -97,30 +104,60 @@ class DatabaseNameTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_role_memberships(
                 {
-                    "haunted_halls_preview_app": {"haunted_halls_app"},
-                    "haunted_halls_preview_provisioner": {"haunted_halls_preview_app"},
+                    "haunted_halls_preview_app": [
+                        {
+                            "granted_role_name": "haunted_halls_app",
+                            "admin_option": False,
+                            "inherit_option": False,
+                            "set_option": True,
+                        }
+                    ],
+                    "haunted_halls_preview_provisioner": [
+                        {
+                            "granted_role_name": "haunted_halls_preview_app",
+                            "admin_option": False,
+                            "inherit_option": False,
+                            "set_option": True,
+                        }
+                    ],
                 }
             )
 
-    def test_rejects_any_extra_provisioner_membership(self) -> None:
-        with self.assertRaises(ValueError):
-            validate_role_memberships(
-                {
-                    "haunted_halls_preview_app": set(),
-                    "haunted_halls_preview_provisioner": {
-                        "haunted_halls_preview_app",
-                        "unexpected_privileged_role",
-                    },
-                }
-            )
+    def test_rejects_invalid_provisioner_membership_rows(self) -> None:
+        valid_membership = {
+            "granted_role_name": "haunted_halls_preview_app",
+            "admin_option": False,
+            "inherit_option": False,
+            "set_option": True,
+        }
+        invalid_memberships = (
+            [],
+            [valid_membership, valid_membership],
+            [{**valid_membership, "granted_role_name": "unexpected_role"}],
+            [{**valid_membership, "admin_option": True}],
+            [{**valid_membership, "inherit_option": True}],
+            [{**valid_membership, "set_option": False}],
+            [{**valid_membership, "admin_option": 0}],
+            [{**valid_membership, "unexpected_option": False}],
+        )
+        for provisioner_memberships in invalid_memberships:
+            with self.subTest(memberships=provisioner_memberships), self.assertRaises(
+                ValueError
+            ):
+                validate_role_memberships(
+                    {
+                        "haunted_halls_preview_app": [],
+                        "haunted_halls_preview_provisioner": provisioner_memberships,
+                    }
+                )
 
     def test_rejects_missing_or_unexpected_role_entries(self) -> None:
         for memberships in (
-            {"haunted_halls_preview_app": set()},
+            {"haunted_halls_preview_app": []},
             {
-                "haunted_halls_preview_app": set(),
-                "haunted_halls_preview_provisioner": {"haunted_halls_preview_app"},
-                "unexpected_role": set(),
+                "haunted_halls_preview_app": [],
+                "haunted_halls_preview_provisioner": [],
+                "unexpected_role": [],
             },
         ):
             with self.subTest(memberships=memberships), self.assertRaises(ValueError):

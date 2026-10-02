@@ -55,9 +55,3 @@ resource "google_secret_manager_secret" "preview_openai_api_key" {
 
   depends_on = [google_project_service.apis]
 }
-
-resource "google_secret_manager_secret_iam_member" "deployer_openai_secret_version_adder" {
-  secret_id = google_secret_manager_secret.preview_openai_api_key.id
-  role      = "roles/secretmanager.secretVersionAdder"
-  member    = "serviceAccount:${google_service_account.deployer.email}"
-}

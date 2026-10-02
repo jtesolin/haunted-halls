@@ -72,7 +72,7 @@ resource "google_cloud_run_v2_service" "db_provisioner" {
         value_source {
           secret_key_ref {
             secret  = "projects/${var.preview_project_id}/secrets/${google_secret_manager_secret.preview_provisioner_password.secret_id}"
-            version = tostring(var.preview_provisioner_password_version)
+            version = google_secret_manager_secret_version.preview_provisioner_password.version
           }
         }
       }

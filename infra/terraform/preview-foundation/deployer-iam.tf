@@ -4,16 +4,25 @@ resource "google_project_iam_member" "deployer_cloud_run_admin" {
   member  = "serviceAccount:${google_service_account.deployer.email}"
 }
 
-resource "google_project_iam_custom_role" "preview_secret_manager" {
-  role_id     = "previewSecretManager"
-  title       = "Preview secret metadata and version management"
-  description = "Manage preview secret metadata and versions without reading secret payloads or changing secret IAM policies."
+resource "google_project_iam_custom_role" "preview_per_pr_secret_creator" {
+  role_id     = "previewPerPrSecretCreator"
+  title       = "Create per-PR preview secrets"
+  description = "Create disposable per-PR preview secret objects."
   permissions = [
     "secretmanager.secrets.create",
+  ]
+}
+
+resource "google_project_iam_custom_role" "preview_per_pr_secret_manager" {
+  role_id     = "previewPerPrSecretManager"
+  title       = "Manage per-PR preview secrets"
+  description = "Read metadata and manage versions and IAM only for disposable per-PR preview secrets."
+  permissions = [
     "secretmanager.secrets.delete",
     "secretmanager.secrets.get",
-    "secretmanager.secrets.list",
     "secretmanager.secrets.update",
+    "secretmanager.secrets.getIamPolicy",
+    "secretmanager.secrets.setIamPolicy",
     "secretmanager.versions.add",
     "secretmanager.versions.disable",
     "secretmanager.versions.enable",
@@ -23,31 +32,27 @@ resource "google_project_iam_custom_role" "preview_secret_manager" {
   ]
 }
 
-resource "google_project_iam_custom_role" "preview_per_pr_secret_iam" {
-  role_id     = "previewPerPrSecretIam"
-  title       = "Preview per-PR secret IAM policy management"
-  description = "Manage IAM policies only on per-PR preview secrets."
-  permissions = [
-    "secretmanager.secrets.getIamPolicy",
-    "secretmanager.secrets.setIamPolicy",
-  ]
-}
-
-resource "google_project_iam_member" "deployer_secret_manager" {
+resource "google_project_iam_member" "deployer_per_pr_secret_creator" {
   project = var.preview_project_id
-  role    = google_project_iam_custom_role.preview_secret_manager.name
-  member  = "serviceAccount:${google_service_account.deployer.email}"
-}
-
-resource "google_project_iam_member" "deployer_per_pr_secret_iam" {
-  project = var.preview_project_id
-  role    = google_project_iam_custom_role.preview_per_pr_secret_iam.name
+  role    = google_project_iam_custom_role.preview_per_pr_secret_creator.name
   member  = "serviceAccount:${google_service_account.deployer.email}"
 
   condition {
-    title       = "Per-PR preview secrets only"
-    description = "The deployer can manage IAM policies only for disposable per-PR secrets, not shared foundation credentials."
+    title       = "Create per-PR preview secrets only"
+    description = "The deployer can create only disposable per-PR secret objects."
     expression  = "resource.type == \"secretmanager.googleapis.com/Secret\" && (resource.name.startsWith(\"projects/${data.google_project.preview.number}/secrets/hh-web-pr-\") || resource.name.startsWith(\"projects/${data.google_project.preview.number}/secrets/hh-engine-pr-\"))"
+  }
+}
+
+resource "google_project_iam_member" "deployer_per_pr_secret_manager" {
+  project = var.preview_project_id
+  role    = google_project_iam_custom_role.preview_per_pr_secret_manager.name
+  member  = "serviceAccount:${google_service_account.deployer.email}"
+
+  condition {
+    title       = "Manage per-PR preview secrets only"
+    description = "The deployer can mutate metadata, versions, and IAM only on disposable per-PR secrets, not shared foundation credentials."
+    expression  = "(resource.type == \"secretmanager.googleapis.com/Secret\" || resource.type == \"secretmanager.googleapis.com/SecretVersion\") && (resource.name.startsWith(\"projects/${data.google_project.preview.number}/secrets/hh-web-pr-\") || resource.name.startsWith(\"projects/${data.google_project.preview.number}/secrets/hh-engine-pr-\"))"
   }
 }
 

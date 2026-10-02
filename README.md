@@ -1057,8 +1057,13 @@ deployment credentials or use mutable image tags.
 the ignored vars file, then review and apply the foundation again. Terraform
 creates the fixed control-plane service only after repository readiness and
 the service-agent image-reader grant. The service reads the precise provisioner
-secret version configured by `preview_provisioner_password_version`; changing
-the version rotates the DB login/secret and Cloud Run revision together.
+Secret Manager version created by Terraform. The
+`preview_provisioner_password_version` variable is only the write-only rotation
+trigger for the Cloud SQL password and secret payload; it is not a Secret
+Manager version identifier. Terraform pins Cloud Run to the actual
+`google_secret_manager_secret_version.preview_provisioner_password.version`.
+Changing the rotation trigger rotates the DB login, secret, and Cloud Run
+revision together.
 
 The provided example inputs are placeholders; do not commit operator values
 or plan files.
@@ -1132,8 +1137,8 @@ The intended grants are:
 | `hh-preview-deployer` | Preview Artifact Registry repository | `roles/artifactregistry.writer` |
 | `hh-preview-deployer` | `hh-preview-458395246135-per-pr-tf-state` only | `roles/storage.objectAdmin`; no access to `hh-preview-458395246135-foundation-tf-state` |
 | `hh-preview-deployer` | Three preview runtime service accounts | `roles/iam.serviceAccountUser`; no ability to act as the DB provisioner |
-| `hh-preview-deployer` | Preview project | Custom secret metadata/version management; no IAM-policy management or `secretmanager.versions.access` |
-| `hh-preview-deployer` | Secrets named `hh-web-pr-*` or `hh-engine-pr-*` | Separate custom `getIamPolicy`/`setIamPolicy` role, conditionally limited to per-PR secrets; shared DB/OpenAI foundation secrets are excluded |
+| `hh-preview-deployer` | Preview project | `secretmanager.secrets.create` only, conditionally limited to `hh-web-pr-*` / `hh-engine-pr-*` Secret resources |
+| `hh-preview-deployer` | `hh-web-pr-*` / `hh-engine-pr-*` Secret and SecretVersion resources | Custom conditional metadata, version, and IAM-policy mutations; excludes durable foundation secrets and `secretmanager.versions.access` |
 | `hh-preview-deployer` | Fixed DB control-plane service | `roles/run.invoker` on this service only; no command/entrypoint overrides or Cloud SQL access |
 | Preview engine and migration runtime | Existing Cloud SQL project | Conditional `roles/cloudsql.client` on the existing instance only |
 | Preview frontend runtime | Existing Cloud SQL project | No Cloud SQL role |
@@ -1144,14 +1149,17 @@ The intended grants are:
 | IAP service agent | Each IAP-enabled preview frontend Cloud Run service | `roles/run.invoker`, granted directly on that service by the #41/#85 per-PR Terraform stack; no project-level binding |
 | Configured tester principals only | Preview project | `roles/iap.httpsResourceAccessor`; empty by default |
 
-The existing production/staging project receives only the two preview DB
-logins, conditional Cloud SQL connectivity for the preview engine/migration
-identities and fixed DB control-plane identity on the shared instance, the
-trusted control-plane service and its restricted runtime credentials, the
-preview deployer's invoker grant on that one service, and image-read access
-for the Cloud Run service agent to the preview-only provisioner repository.
-No preview runtime identity receives access to production/staging application
-secrets, and no production/staging deployment identity is changed.
+The `hh-preview-deployer` is a trusted preview control-plane identity and must
+be treated as **preview-secret-equivalent**: project-level Cloud Run deployment
+authority plus `iam.serviceAccounts.actAs` on engine/migration runtimes can
+allow it to deploy code that reads secrets available to those identities. It
+has no direct `secretmanager.versions.access` permission, but it does have
+effective access to preview-only application secrets through runtime
+impersonation. Untrusted PR code never runs with deployer credentials. The
+deployer cannot act as the DB-provisioner runtime identity and has no
+production/staging secret access. Preview DB logins cannot CONNECT to
+production/staging databases, and the preview OpenAI key is separate from the
+production key. No production/staging deployment identity is changed.
 
 ### IAP and preview OpenAI setup
 
@@ -1178,6 +1186,8 @@ test -n "$PREVIEW_OPENAI_API_KEY" &&
 unset PREVIEW_OPENAI_API_KEY
 ```
 
+This operator procedure is the only writer for the shared OpenAI key; the
+preview deployer has no version-adder grant on this durable foundation secret.
 Never copy or read the production OpenAI key. Rotate the preview key
 independently. Password values for both shared preview database logins are
 operator-generated sensitive ephemeral Terraform inputs and are written to
@@ -1213,7 +1223,8 @@ existing production/staging application logins:
 ALTER ROLE haunted_halls_preview_app LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOINHERIT NOREPLICATION NOBYPASSRLS;
 ALTER ROLE haunted_halls_preview_provisioner LOGIN NOSUPERUSER NOCREATEROLE CREATEDB NOINHERIT NOREPLICATION NOBYPASSRLS;
 ALTER ROLE haunted_halls_preview_provisioner SET search_path = pg_catalog;
-GRANT haunted_halls_preview_app TO haunted_halls_preview_provisioner;
+GRANT haunted_halls_preview_app TO haunted_halls_preview_provisioner
+  WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
 
 REVOKE CONNECT ON DATABASE haunted_halls FROM PUBLIC;
 REVOKE CONNECT ON DATABASE haunted_halls FROM haunted_halls_preview_app, haunted_halls_preview_provisioner;
@@ -1231,8 +1242,18 @@ membership, attributes, and database ACLs before enabling any preview:
 ```sql
 SELECT pg_has_role('haunted_halls_preview_app', 'cloudsqlsuperuser', 'MEMBER'),
        pg_has_role('haunted_halls_preview_provisioner', 'cloudsqlsuperuser', 'MEMBER');
-SELECT pg_has_role('haunted_halls_preview_provisioner', 'haunted_halls_app', 'MEMBER') AS production_role_member,
-       pg_has_role('haunted_halls_preview_provisioner', 'haunted_halls_staging_app', 'MEMBER') AS staging_role_member;
+SELECT member_role.rolname AS member_name,
+       granted_role.rolname AS granted_role_name,
+       membership.admin_option,
+       membership.inherit_option,
+       membership.set_option
+FROM pg_auth_members AS membership
+JOIN pg_roles AS member_role ON member_role.oid = membership.member
+JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
+WHERE member_role.rolname IN (
+  'haunted_halls_preview_app',
+  'haunted_halls_preview_provisioner'
+);
 SELECT rolname, rolsuper, rolcreaterole, rolcreatedb, rolinherit,
        rolreplication, rolbypassrls
 FROM pg_roles
@@ -1257,6 +1278,9 @@ credential. The deployer invokes its authenticated HTTP endpoint and cannot
 override its command, image, identity, or environment. Every accepted request
 also rechecks role flags, memberships, and production/staging CONNECT access,
 and fails closed until the operator has completed the hardening steps above.
+The app role must have zero direct memberships. The provisioner must have
+exactly one direct membership row for the app role, with `admin_option = false`,
+`inherit_option = false`, and `set_option = true`.
 
 ### Validation and lifecycle boundary
 
@@ -1267,11 +1291,9 @@ live-backed Terraform plan can be created. After merge, review and save a plan
 before each phase-one and phase-two apply; apply only the reviewed saved plan.
 Complete the final zero-drift plan after live verification. Terraform apply,
 Cloud SQL role changes, IAP OAuth bootstrap, and secret population are separate
-controlled post-merge steps. The canonical engine architecture/status
-documentation update is deferred while
-[jtesolin/haunted-halls-engine#87](https://github.com/jtesolin/haunted-halls-engine/issues/87)
-is active; record that follow-up in the PR rather than changing the engine
-repository here.
+controlled post-merge steps. Issue #40 tracks the separate engine canonical
+architecture/status documentation follow-up for after this foundation PR is
+merged and stable. Do not edit the engine repository from this frontend PR.
 
 ### Running the E2E stack locally
 

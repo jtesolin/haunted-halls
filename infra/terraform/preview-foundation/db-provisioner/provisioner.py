@@ -97,7 +97,11 @@ def assert_database_roles_hardened(connection: psycopg.Connection) -> None:
 
     membership_rows = connection.execute(
         """
-        SELECT member_role.rolname AS member_name, granted_role.rolname AS granted_role_name
+        SELECT member_role.rolname AS member_name,
+               granted_role.rolname AS granted_role_name,
+               membership.admin_option,
+               membership.inherit_option,
+               membership.set_option
         FROM pg_auth_members AS membership
         JOIN pg_roles AS member_role ON member_role.oid = membership.member
         JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
@@ -105,9 +109,16 @@ def assert_database_roles_hardened(connection: psycopg.Connection) -> None:
         """,
         (APP_USER, PROVISIONER_USER),
     ).fetchall()
-    memberships = {APP_USER: set(), PROVISIONER_USER: set()}
+    memberships = {APP_USER: [], PROVISIONER_USER: []}
     for row in membership_rows:
-        memberships[row["member_name"]].add(row["granted_role_name"])
+        memberships[row["member_name"]].append(
+            {
+                "granted_role_name": row["granted_role_name"],
+                "admin_option": row["admin_option"],
+                "inherit_option": row["inherit_option"],
+                "set_option": row["set_option"],
+            }
+        )
     try:
         validate_role_memberships(memberships)
     except ValueError as error:

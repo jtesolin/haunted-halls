@@ -1,5 +1,5 @@
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 
 PROTECTED_DATABASES = frozenset({"haunted_halls", "haunted_halls_staging"})
@@ -12,12 +12,40 @@ class InvalidProvisioningRequest(ValueError):
     pass
 
 
-def validate_role_memberships(memberships: Mapping[str, set[str]]) -> None:
-    expected_memberships = {
-        "haunted_halls_preview_app": set(),
-        "haunted_halls_preview_provisioner": {"haunted_halls_preview_app"},
-    }
-    if memberships != expected_memberships:
+def validate_role_memberships(
+    memberships: Mapping[str, Sequence[Mapping[str, object]]],
+) -> None:
+    if set(memberships) != {
+        "haunted_halls_preview_app",
+        "haunted_halls_preview_provisioner",
+    }:
+        raise ValueError("preview database role memberships are not hardened")
+    if memberships["haunted_halls_preview_app"] != []:
+        raise ValueError("preview database role memberships are not hardened")
+
+    provisioner_memberships = memberships["haunted_halls_preview_provisioner"]
+    if len(provisioner_memberships) != 1:
+        raise ValueError("preview database role memberships are not hardened")
+
+    membership = provisioner_memberships[0]
+    if not isinstance(membership, Mapping):
+        raise ValueError("preview database role memberships are not hardened")
+    if (
+        membership.get("granted_role_name") != "haunted_halls_preview_app"
+        or type(membership.get("admin_option")) is not bool
+        or membership["admin_option"] is not False
+        or type(membership.get("inherit_option")) is not bool
+        or membership["inherit_option"] is not False
+        or type(membership.get("set_option")) is not bool
+        or membership["set_option"] is not True
+        or set(membership)
+        != {
+            "granted_role_name",
+            "admin_option",
+            "inherit_option",
+            "set_option",
+        }
+    ):
         raise ValueError("preview database role memberships are not hardened")
 
 
