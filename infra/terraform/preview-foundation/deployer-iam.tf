@@ -67,7 +67,7 @@ resource "google_storage_bucket_iam_member" "deployer_preview_state" {
 
   lifecycle {
     precondition {
-      condition     = data.google_storage_bucket.preview_per_pr_state.project_number == data.google_project.preview.number
+      condition     = tostring(data.google_storage_bucket.preview_per_pr_state.project_number) == tostring(data.google_project.preview.number)
       error_message = "The per-PR state bucket must be owned by the dedicated preview project."
     }
   }
