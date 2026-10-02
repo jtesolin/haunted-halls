@@ -7,6 +7,7 @@ from psycopg.rows import dict_row
 from db_names import (
     InvalidProvisioningRequest,
     validate_database_name,
+    validate_no_replication_or_rls_bypass,
     validate_provisioner_search_path,
     validate_role_memberships,
 )
@@ -66,6 +67,7 @@ def assert_database_roles_hardened(connection: psycopg.Connection) -> None:
     rows = connection.execute(
         """
         SELECT rolname, rolcanlogin, rolsuper, rolcreaterole, rolcreatedb, rolinherit,
+               rolreplication, rolbypassrls,
                COALESCE(pg_has_role(oid, to_regrole('cloudsqlsuperuser'), 'MEMBER'), false)
                    AS cloudsqlsuperuser_member,
                COALESCE(pg_has_role(oid, to_regrole('haunted_halls_app'), 'MEMBER'), false)
@@ -87,6 +89,11 @@ def assert_database_roles_hardened(connection: psycopg.Connection) -> None:
 
     if app_role is None or provisioner_role is None:
         raise RuntimeError("preview database roles are not provisioned")
+
+    try:
+        validate_no_replication_or_rls_bypass([app_role, provisioner_role])
+    except ValueError as error:
+        raise RuntimeError("preview database role has elevated replication or RLS bypass") from error
 
     membership_rows = connection.execute(
         """
@@ -111,6 +118,8 @@ def assert_database_roles_hardened(connection: psycopg.Connection) -> None:
             not role["rolcanlogin"]
             or role["rolsuper"]
             or role["rolcreaterole"]
+            or role["rolreplication"]
+            or role["rolbypassrls"]
             or role["cloudsqlsuperuser_member"]
             or role["production_role_member"]
             or role["staging_role_member"]

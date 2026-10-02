@@ -998,10 +998,15 @@ ID above is fixed by the operator; do not substitute the production/staging
 project. The Terraform roots are:
 
 - `infra/terraform/preview-foundation/backend-bootstrap`: creates a
-  pair of non-public, versioned GCS state buckets in the preview project. This
-  one-time bootstrap root uses local state; retain that local state securely.
+  pair of non-public, versioned GCS state buckets in the preview project,
+  deterministically named `<project_id>-foundation-tf-state` and
+  `<project_id>-per-pr-tf-state`. Names are derived from `project_id` and
+  cannot be overridden. This one-time bootstrap root uses local state; retain
+  that local state securely.
 - `infra/terraform/preview-foundation`: manages the durable shared foundation
-  using the separate foundation bucket and GCS prefix `preview-foundation`.
+  using the separately derived `<preview_project_id>-foundation-tf-state`
+  bucket and GCS prefix `preview-foundation`. Per-PR Terraform state uses the
+  `<preview_project_id>-per-pr-tf-state` bucket.
 - Later isolated per-PR roots use separate deterministic prefixes such as
   `previews/web-pr-123` and `previews/engine-pr-84` in the per-PR bucket. Each
   preview has its own state object/lock; previews do not contend on one global
@@ -1175,8 +1180,9 @@ unset PREVIEW_OPENAI_API_KEY
 
 Never copy or read the production OpenAI key. Rotate the preview key
 independently. Password values for both shared preview database logins are
-generated ephemerally and written to Secret Manager; they are not outputs or
-tracked files.
+operator-generated sensitive ephemeral Terraform inputs and are written to
+Secret Manager using write-only arguments; they are not outputs or tracked
+files.
 The deployer's IAM-policy permissions are in a separate custom role with a
 project IAM condition restricted to secret resource names beginning with
 `hh-web-pr-` or `hh-engine-pr-`. It cannot change policies on shared foundation
@@ -1204,8 +1210,8 @@ connect through inherited public privileges; explicitly retain access for the
 existing production/staging application logins:
 
 ```sql
-ALTER ROLE haunted_halls_preview_app LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOINHERIT;
-ALTER ROLE haunted_halls_preview_provisioner LOGIN NOSUPERUSER NOCREATEROLE CREATEDB NOINHERIT;
+ALTER ROLE haunted_halls_preview_app LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOINHERIT NOREPLICATION NOBYPASSRLS;
+ALTER ROLE haunted_halls_preview_provisioner LOGIN NOSUPERUSER NOCREATEROLE CREATEDB NOINHERIT NOREPLICATION NOBYPASSRLS;
 ALTER ROLE haunted_halls_preview_provisioner SET search_path = pg_catalog;
 GRANT haunted_halls_preview_app TO haunted_halls_preview_provisioner;
 
@@ -1227,7 +1233,8 @@ SELECT pg_has_role('haunted_halls_preview_app', 'cloudsqlsuperuser', 'MEMBER'),
        pg_has_role('haunted_halls_preview_provisioner', 'cloudsqlsuperuser', 'MEMBER');
 SELECT pg_has_role('haunted_halls_preview_provisioner', 'haunted_halls_app', 'MEMBER') AS production_role_member,
        pg_has_role('haunted_halls_preview_provisioner', 'haunted_halls_staging_app', 'MEMBER') AS staging_role_member;
-SELECT rolname, rolsuper, rolcreaterole, rolcreatedb, rolinherit
+SELECT rolname, rolsuper, rolcreaterole, rolcreatedb, rolinherit,
+       rolreplication, rolbypassrls
 FROM pg_roles
 WHERE rolname IN ('haunted_halls_preview_app', 'haunted_halls_preview_provisioner');
 SELECT datname, has_database_privilege('haunted_halls_preview_app', datname, 'CONNECT') AS app_connect,

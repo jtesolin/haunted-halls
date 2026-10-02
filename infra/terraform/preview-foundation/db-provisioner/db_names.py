@@ -35,6 +35,14 @@ def validate_provisioner_search_path(search_path: object, role_config: object) -
         raise ValueError("preview provisioner search_path is not hardened")
 
 
+def validate_no_replication_or_rls_bypass(roles: list[Mapping[str, object]]) -> None:
+    if not roles or any(
+        role.get("rolreplication") is not False or role.get("rolbypassrls") is not False
+        for role in roles
+    ):
+        raise ValueError("preview database role has elevated replication or RLS bypass")
+
+
 def validate_database_name(database_name: object) -> str:
     if not isinstance(database_name, str):
         raise InvalidProvisioningRequest("database name must be a string")

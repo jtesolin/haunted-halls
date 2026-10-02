@@ -1,5 +1,10 @@
+locals {
+  foundation_state_bucket_name = "${var.project_id}-foundation-tf-state"
+  per_pr_state_bucket_name     = "${var.project_id}-per-pr-tf-state"
+}
+
 resource "google_storage_bucket" "foundation_state" {
-  name                        = var.foundation_state_bucket_name
+  name                        = local.foundation_state_bucket_name
   project                     = var.project_id
   location                    = var.region
   storage_class               = "STANDARD"
@@ -19,7 +24,7 @@ resource "google_storage_bucket" "foundation_state" {
 }
 
 resource "google_storage_bucket" "per_pr_state" {
-  name                        = var.per_pr_state_bucket_name
+  name                        = local.per_pr_state_bucket_name
   project                     = var.project_id
   location                    = var.region
   storage_class               = "STANDARD"

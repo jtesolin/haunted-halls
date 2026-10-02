@@ -4,6 +4,7 @@ from db_names import (
     InvalidProvisioningRequest,
     derive_database_name,
     validate_database_name,
+    validate_no_replication_or_rls_bypass,
     validate_provisioner_search_path,
     validate_role_memberships,
     validate_request,
@@ -11,6 +12,30 @@ from db_names import (
 
 
 class DatabaseNameTests(unittest.TestCase):
+    def test_accepts_roles_without_replication_or_rls_bypass(self) -> None:
+        validate_no_replication_or_rls_bypass(
+            [
+                {"rolreplication": False, "rolbypassrls": False},
+                {"rolreplication": False, "rolbypassrls": False},
+            ]
+        )
+
+    def test_rejects_replication_or_rls_bypass_for_either_role(self) -> None:
+        for roles in (
+            [
+                {"rolreplication": True, "rolbypassrls": False},
+                {"rolreplication": False, "rolbypassrls": False},
+            ],
+            [
+                {"rolreplication": False, "rolbypassrls": False},
+                {"rolreplication": False, "rolbypassrls": True},
+            ],
+            [{"rolreplication": False}],
+            [],
+        ):
+            with self.subTest(roles=roles), self.assertRaises(ValueError):
+                validate_no_replication_or_rls_bypass(roles)
+
     def test_accepts_only_pg_catalog_search_path(self) -> None:
         validate_provisioner_search_path(
             "pg_catalog", ["search_path=pg_catalog", "application_name=preview-db"]

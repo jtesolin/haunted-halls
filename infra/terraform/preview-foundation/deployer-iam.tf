@@ -47,12 +47,12 @@ resource "google_project_iam_member" "deployer_per_pr_secret_iam" {
   condition {
     title       = "Per-PR preview secrets only"
     description = "The deployer can manage IAM policies only for disposable per-PR secrets, not shared foundation credentials."
-    expression  = "resource.name.startsWith(\"projects/${var.preview_project_id}/secrets/hh-web-pr-\") || resource.name.startsWith(\"projects/${var.preview_project_id}/secrets/hh-engine-pr-\")"
+    expression  = "resource.type == \"secretmanager.googleapis.com/Secret\" && (resource.name.startsWith(\"projects/${data.google_project.preview.number}/secrets/hh-web-pr-\") || resource.name.startsWith(\"projects/${data.google_project.preview.number}/secrets/hh-engine-pr-\"))"
   }
 }
 
 resource "google_storage_bucket_iam_member" "deployer_preview_state" {
-  bucket = var.preview_per_pr_state_bucket_name
+  bucket = local.preview_per_pr_state_bucket_name
   role   = "roles/storage.objectAdmin"
   member = "serviceAccount:${google_service_account.deployer.email}"
 }

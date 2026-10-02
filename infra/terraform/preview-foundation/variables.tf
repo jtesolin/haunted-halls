@@ -56,23 +56,6 @@ variable "iap_tester_principals" {
   }
 }
 
-variable "preview_per_pr_state_bucket_name" {
-  description = "Dedicated GCS bucket for per-preview state. Do not use this bucket for durable preview-foundation state."
-  type        = string
-  default     = "hh-preview-458395246135-per-pr-tf-state"
-
-  validation {
-    condition     = var.preview_per_pr_state_bucket_name != var.preview_foundation_state_bucket_name
-    error_message = "Per-PR state must use a bucket separate from durable preview-foundation state."
-  }
-}
-
-variable "preview_foundation_state_bucket_name" {
-  description = "Bucket name reserved for durable foundation state; the preview deployer must never receive access to it."
-  type        = string
-  default     = "hh-preview-458395246135-foundation-tf-state"
-}
-
 variable "provisioner_image" {
   description = "Optional immutable SHA-256 image digest for phase two, after the preview Artifact Registry repository is ready."
   type        = string
