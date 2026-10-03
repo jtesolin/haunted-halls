@@ -1163,15 +1163,23 @@ production key. No production/staging deployment identity is changed.
 
 ### IAP and preview OpenAI setup
 
-After the project is created and before managing Cloud Run IAP settings, perform
-the one-time interactive bootstrap if Google requires an OAuth brand/client for
-this personal project: open **Google Cloud Console → Security → Identity-Aware
-Proxy**, complete the OAuth consent/brand setup using an operator-controlled
-support email, enable IAP for Cloud Run, and accept the console's OAuth
-configuration flow. Do not fake a brand/client or replace IAP with public
-access. Configure explicit `iap_tester_principals` in the ignored Terraform
-vars file before granting tester access. The Terraform list defaults empty and
-therefore grants nobody `roles/iap.httpsResourceAccessor`.
+Preview frontends use direct Cloud Run IAP, not a public-access fallback. For
+this personal/no-organization project, complete the one-time interactive
+**Google Auth Platform** consent/brand setup using an operator-controlled
+support email, then configure **Custom OAuth** for Cloud Run IAP in the Cloud
+Console. Auto-generated IAP OAuth credentials are acceptable; do not commit or
+publish downloaded credentials. If the CLI reports that first-time setup
+requires the Console, stop and complete that interactive flow rather than
+working around it.
+
+Grant the IAP service agent `roles/run.invoker` only on each IAP-enabled
+frontend service. Grant explicit testers `roles/iap.httpsResourceAccessor`
+only on that service's IAP resource, not at project scope. The
+`iap_tester_principals` input defaults empty; configuring a tester list does
+not replace the required resource-scoped policy. Verify signed-in browser
+access and signed-out interception by IAP without making Cloud Run public.
+After testing with a disposable bootstrap service, remove only that service;
+retain the consent/brand and custom OAuth configuration for future frontends.
 
 `hh-preview-openai-api-key` is a preview-only, operator-populated secret. After
 foundation deployment, provide the value through an approved secure local
@@ -1208,20 +1216,28 @@ use the supported Cloud SQL role-management flow for **both** preview logins:
 ```bash
 gcloud sql users assign-roles haunted_halls_preview_app \
   --instance=haunted-halls-postgres --project="$EXISTING_PROJECT_ID" \
-  --database-roles= --revoke-existing-roles
+  --type=BUILT_IN --database-roles= --revoke-existing-roles
 gcloud sql users assign-roles haunted_halls_preview_provisioner \
   --instance=haunted-halls-postgres --project="$EXISTING_PROJECT_ID" \
-  --database-roles= --revoke-existing-roles
+  --type=BUILT_IN --database-roles= --revoke-existing-roles
 ```
 
-As the database administrator, apply and verify the PostgreSQL grants below.
+Verify both preview logins have no `cloudsqlsuperuser` membership before
+proceeding. As a privileged database administrator, apply only the permitted
+role settings and PostgreSQL grants below, preferably in one transaction with
+`ON_ERROR_STOP`. Cloud SQL restricts some role-attribute changes even for its
+built-in administrators. The live-tested flow does not ALTER `SUPERUSER`,
+`CREATEROLE`, `INHERIT`, `REPLICATION`, or `BYPASSRLS`; verify their safe values
+with read-only queries instead. If a prerequisite or verification differs,
+stop rather than adding unreviewed grants or revokes.
+
 Revoking `PUBLIC` CONNECT is necessary to ensure the preview logins cannot
 connect through inherited public privileges; explicitly retain access for the
 existing production/staging application logins:
 
 ```sql
-ALTER ROLE haunted_halls_preview_app LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOINHERIT NOREPLICATION NOBYPASSRLS;
-ALTER ROLE haunted_halls_preview_provisioner LOGIN NOSUPERUSER NOCREATEROLE CREATEDB NOINHERIT NOREPLICATION NOBYPASSRLS;
+ALTER ROLE haunted_halls_preview_app LOGIN NOCREATEDB;
+ALTER ROLE haunted_halls_preview_provisioner LOGIN CREATEDB;
 ALTER ROLE haunted_halls_preview_provisioner SET search_path = pg_catalog;
 GRANT haunted_halls_preview_app TO haunted_halls_preview_provisioner
   WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
@@ -1254,15 +1270,36 @@ WHERE member_role.rolname IN (
   'haunted_halls_preview_app',
   'haunted_halls_preview_provisioner'
 );
-SELECT rolname, rolsuper, rolcreaterole, rolcreatedb, rolinherit,
-       rolreplication, rolbypassrls
+SELECT rolname, rolcanlogin, rolsuper, rolcreaterole, rolcreatedb, rolinherit,
+       rolreplication, rolbypassrls, rolconfig
 FROM pg_roles
 WHERE rolname IN ('haunted_halls_preview_app', 'haunted_halls_preview_provisioner');
-SELECT datname, has_database_privilege('haunted_halls_preview_app', datname, 'CONNECT') AS app_connect,
+SELECT datname,
+       has_database_privilege('haunted_halls_app', datname, 'CONNECT') AS production_connect,
+       has_database_privilege('haunted_halls_staging_app', datname, 'CONNECT') AS staging_connect,
+       has_database_privilege('haunted_halls_preview_app', datname, 'CONNECT') AS app_connect,
        has_database_privilege('haunted_halls_preview_provisioner', datname, 'CONNECT') AS provisioner_connect
 FROM pg_database
 WHERE datname IN ('haunted_halls', 'haunted_halls_staging');
 ```
+
+Required results:
+
+- Both `cloudsqlsuperuser` membership checks are false.
+- Preview app has zero direct memberships. Preview provisioner has exactly one,
+  to `haunted_halls_preview_app`, with `admin_option = false`,
+  `inherit_option = false`, and `set_option = true`.
+- Both roles have `rolcanlogin = true`; `rolsuper`, `rolcreaterole`,
+  `rolinherit`, `rolreplication`, and `rolbypassrls` are false. In particular,
+  `NOINHERIT` means `rolinherit = false`, not an ALTER step in this flow.
+- `rolcreatedb` is false for preview app and true for preview provisioner.
+  Provisioner's `rolconfig` contains `search_path=pg_catalog`.
+- The CONNECT matrix must match:
+
+| Database | Production app | Staging app | Preview app | Preview provisioner |
+|---|---|---|---|---|
+| `haunted_halls` | true | false | false | false |
+| `haunted_halls_staging` | false | true | false | false |
 
 The trusted fixed control-plane service derives names itself from only `web` or
 `engine` and a positive numeric PR number. It accepts only `create`/`drop`,
