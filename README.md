@@ -1147,7 +1147,7 @@ The intended grants are:
 | Preview engine runtime | Preview DB password and OpenAI secrets | `roles/secretmanager.secretAccessor` on those secrets |
 | Existing project Cloud Run service agent | Preview Artifact Registry repository | `roles/artifactregistry.reader` on the provisioner image repository only |
 | IAP service agent | Each IAP-enabled preview frontend Cloud Run service | `roles/run.invoker`, granted directly on that service by the #41/#85 per-PR Terraform stack; no project-level binding |
-| Configured tester principals only | Preview project | `roles/iap.httpsResourceAccessor`; empty by default |
+| Authorized preview testers | Each IAP-enabled preview frontend's IAP resource | `roles/iap.httpsResourceAccessor`, granted directly on that resource by the #41/#85 per-PR Terraform stack; no project-level binding |
 
 The `hh-preview-deployer` is a trusted preview control-plane identity and must
 be treated as **preview-secret-equivalent**: project-level Cloud Run deployment
@@ -1163,15 +1163,28 @@ production key. No production/staging deployment identity is changed.
 
 ### IAP and preview OpenAI setup
 
-After the project is created and before managing Cloud Run IAP settings, perform
-the one-time interactive bootstrap if Google requires an OAuth brand/client for
-this personal project: open **Google Cloud Console → Security → Identity-Aware
-Proxy**, complete the OAuth consent/brand setup using an operator-controlled
-support email, enable IAP for Cloud Run, and accept the console's OAuth
-configuration flow. Do not fake a brand/client or replace IAP with public
-access. Configure explicit `iap_tester_principals` in the ignored Terraform
-vars file before granting tester access. The Terraform list defaults empty and
-therefore grants nobody `roles/iap.httpsResourceAccessor`.
+Preview frontends use direct Cloud Run IAP, not a public-access fallback. For
+this personal/no-organization project, complete the one-time interactive
+**Google Auth Platform** consent/brand setup using an operator-controlled
+support email, then configure **Custom OAuth** for Cloud Run IAP in the Cloud
+Console. Auto-generated IAP OAuth credentials are acceptable; do not commit or
+publish downloaded credentials. If the CLI reports that first-time setup
+requires the Console, stop and complete that interactive flow rather than
+working around it.
+
+Grant the IAP service agent `roles/run.invoker` only on each IAP-enabled
+frontend service. Grant explicit testers `roles/iap.httpsResourceAccessor`
+only on that service's IAP resource, not at project scope. Keep the foundation
+`iap_tester_principals` input at `[]` and do not use it to authorize testers:
+its current Terraform implementation is project-scoped and is intentionally
+unused (it is slated for removal in a separate issue #40 cleanup). The
+#41/#85 per-PR Terraform stack grants the resource-scoped binding on each
+preview frontend. The disposable live bootstrap used the correct
+resource-scoped grant, which does not justify a project-level grant. There is
+no public fallback. Verify signed-in browser
+access and signed-out interception by IAP without making Cloud Run public.
+After testing with a disposable bootstrap service, remove only that service;
+retain the consent/brand and custom OAuth configuration for future frontends.
 
 `hh-preview-openai-api-key` is a preview-only, operator-populated secret. After
 foundation deployment, provide the value through an approved secure local
@@ -1208,20 +1221,30 @@ use the supported Cloud SQL role-management flow for **both** preview logins:
 ```bash
 gcloud sql users assign-roles haunted_halls_preview_app \
   --instance=haunted-halls-postgres --project="$EXISTING_PROJECT_ID" \
-  --database-roles= --revoke-existing-roles
+  --type=BUILT_IN --database-roles= --revoke-existing-roles
 gcloud sql users assign-roles haunted_halls_preview_provisioner \
   --instance=haunted-halls-postgres --project="$EXISTING_PROJECT_ID" \
-  --database-roles= --revoke-existing-roles
+  --type=BUILT_IN --database-roles= --revoke-existing-roles
 ```
 
-As the database administrator, apply and verify the PostgreSQL grants below.
+Verify both preview logins have no `cloudsqlsuperuser` membership before
+proceeding. As a privileged database administrator, apply only the permitted
+role settings and PostgreSQL grants below, preferably in one transaction with
+`ON_ERROR_STOP`. Cloud SQL restricts some role-attribute changes even for its
+built-in administrators. The live-tested flow does not ALTER `SUPERUSER`,
+`REPLICATION`, or `BYPASSRLS`; verify their safe values with read-only queries
+instead. `NOCREATEROLE` and `NOINHERIT` remain explicit hardening steps below. If a prerequisite or verification differs,
+stop rather than adding unreviewed grants or revokes.
+
 Revoking `PUBLIC` CONNECT is necessary to ensure the preview logins cannot
 connect through inherited public privileges; explicitly retain access for the
 existing production/staging application logins:
 
 ```sql
-ALTER ROLE haunted_halls_preview_app LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOINHERIT NOREPLICATION NOBYPASSRLS;
-ALTER ROLE haunted_halls_preview_provisioner LOGIN NOSUPERUSER NOCREATEROLE CREATEDB NOINHERIT NOREPLICATION NOBYPASSRLS;
+ALTER ROLE haunted_halls_preview_app
+  LOGIN NOCREATEROLE NOCREATEDB NOINHERIT;
+ALTER ROLE haunted_halls_preview_provisioner
+  LOGIN NOCREATEROLE CREATEDB NOINHERIT;
 ALTER ROLE haunted_halls_preview_provisioner SET search_path = pg_catalog;
 GRANT haunted_halls_preview_app TO haunted_halls_preview_provisioner
   WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
@@ -1254,15 +1277,37 @@ WHERE member_role.rolname IN (
   'haunted_halls_preview_app',
   'haunted_halls_preview_provisioner'
 );
-SELECT rolname, rolsuper, rolcreaterole, rolcreatedb, rolinherit,
-       rolreplication, rolbypassrls
+SELECT rolname, rolcanlogin, rolsuper, rolcreaterole, rolcreatedb, rolinherit,
+       rolreplication, rolbypassrls, rolconfig
 FROM pg_roles
 WHERE rolname IN ('haunted_halls_preview_app', 'haunted_halls_preview_provisioner');
-SELECT datname, has_database_privilege('haunted_halls_preview_app', datname, 'CONNECT') AS app_connect,
+SELECT datname,
+       has_database_privilege('haunted_halls_app', datname, 'CONNECT') AS production_connect,
+       has_database_privilege('haunted_halls_staging_app', datname, 'CONNECT') AS staging_connect,
+       has_database_privilege('haunted_halls_preview_app', datname, 'CONNECT') AS app_connect,
        has_database_privilege('haunted_halls_preview_provisioner', datname, 'CONNECT') AS provisioner_connect
 FROM pg_database
 WHERE datname IN ('haunted_halls', 'haunted_halls_staging');
 ```
+
+Required results:
+
+- Both `cloudsqlsuperuser` membership checks are false.
+- Preview app has zero direct memberships. Preview provisioner has exactly one,
+  to `haunted_halls_preview_app`, with `admin_option = false`,
+  `inherit_option = false`, and `set_option = true`.
+- Both roles have `rolcanlogin = true`; `rolsuper`, `rolcreaterole`,
+  `rolinherit`, `rolreplication`, and `rolbypassrls` are false.
+  `rolsuper`, `rolreplication`, and `rolbypassrls` are verification-only;
+  `rolcreaterole` and `rolinherit` are set by the ALTER ROLE statements.
+- `rolcreatedb` is false for preview app and true for preview provisioner.
+  Provisioner's `rolconfig` contains `search_path=pg_catalog`.
+- The CONNECT matrix must match:
+
+| Database | Production app | Staging app | Preview app | Preview provisioner |
+|---|---|---|---|---|
+| `haunted_halls` | true | false | false | false |
+| `haunted_halls_staging` | false | true | false | false |
 
 The trusted fixed control-plane service derives names itself from only `web` or
 `engine` and a positive numeric PR number. It accepts only `create`/`drop`,
@@ -1281,6 +1326,23 @@ and fails closed until the operator has completed the hardening steps above.
 The app role must have zero direct memberships. The provisioner must have
 exactly one direct membership row for the app role, with `admin_option = false`,
 `inherit_option = false`, and `set_option = true`.
+
+#### Post-create provisioner verification (disposable preview database)
+
+This check is separate from the pre-preview protected-database hardening matrix
+above, which runs before any preview database exists and must not gain dynamic
+preview database rows. After the provisioner creates a disposable allowed
+preview database (for example, the sentinel `web` / PR `999999999` pattern used
+during acceptance), verify it with read-only queries before dropping it:
+
+- The database owner is `haunted_halls_preview_app`.
+- `haunted_halls_preview_app` and `haunted_halls_preview_provisioner` both have
+  `CONNECT = true`.
+- `haunted_halls_app` and `haunted_halls_staging_app` both have
+  `CONNECT = false`, and `PUBLIC` `CONNECT` is revoked.
+- `haunted_halls_preview_app` has both `USAGE` and `CREATE` on schema `public`
+  in that database.
+- The protected production/staging `CONNECT` matrix above is unchanged.
 
 ### Validation and lifecycle boundary
 
