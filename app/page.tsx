@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition, type CSSProperties } from "react";
-import { signIn, signOut, useSession } from "next-auth/react";
+import { getProviders, signIn, signOut, useSession } from "next-auth/react";
 import ChatInput from "@/components/ChatInput";
 import CampaignSidebar from "@/components/CampaignSidebar";
 import CampaignToolbar from "@/components/CampaignToolbar";
@@ -1042,7 +1042,15 @@ export default function Home() {
 
     try {
       const callbackUrl = getSafeCallbackPath(window.location.href);
-      await signIn("google", { callbackUrl });
+      const providers = await getProviders();
+      const advertised = Object.values(providers ?? {});
+      if (advertised.length !== 1) {
+        throw new Error("No unambiguous sign-in provider");
+      }
+      const result = await signIn(advertised[0].id, { callbackUrl });
+      if (result?.error) {
+        throw new Error("Sign-in rejected");
+      }
     } catch {
       setAuthError(GENERIC_SIGN_IN_ERROR);
     }
@@ -1169,10 +1177,10 @@ export default function Home() {
                         type="button"
                         onClick={handleSignIn}
                         className="inline-flex h-7 shrink-0 items-center justify-center rounded-lg bg-sky-500 px-2.5 text-xs font-semibold text-white transition hover:bg-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70 md:h-8 md:px-3"
-                        aria-label="Sign in with Google"
+                        aria-label="Sign in"
                       >
                         <span className="md:hidden">Sign in</span>
-                        <span className="hidden md:inline">Sign in with Google</span>
+                        <span className="hidden md:inline">Sign in</span>
                       </button>
                     </div>
                   )}

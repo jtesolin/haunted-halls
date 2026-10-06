@@ -58,6 +58,38 @@ If you run the app on a different port, update `NEXTAUTH_URL` and register the m
 
 ## Auth Notes
 
+- Server-only `AUTH_MODE=google` preserves production/staging Google OAuth.
+  Missing `AUTH_MODE` defaults to Google, except legacy E2E stacks with
+  `E2E_AUTH_ENABLED=true` select the guarded E2E mode. Invalid explicit values
+  (including empty values) fail closed.
+- `AUTH_MODE=iap` is preview-only: it registers only the dedicated `iap` provider,
+  requires no Google OAuth client credentials, and never exposes E2E auth.
+  Sign-in verifies only `X-Goog-IAP-JWT-Assertion` using Google's IAP public keys,
+  issuer exactly `https://cloud.google.com/iap`, JWT time validity, and the exact
+  server-only `IAP_EXPECTED_AUDIENCE`. Direct Cloud Run IAP audiences have the form
+  `/projects/PROJECT_NUMBER/locations/REGION/services/SERVICE_NAME`.
+  Unsigned identity headers and browser-supplied identity fields are never trusted.
+  The frontend must be behind IAP with no public fallback; no per-PR Google OAuth
+  callback registration is required.
+- After verification, a **preview compatibility adapter** maps the IAP identity
+  into the current engine resolver's Google-only shape: `identity_provider=google`,
+  canonical Google resolver issuer `https://accounts.google.com`,
+  `provider_subject=iap:<verified-IAP-sub>`, verified email, and
+  `email_verified=true`. This does **not** claim the IAP JWT has a Google OAuth
+  issuer. The engine is unchanged. NextAuth session -> `internalUserId` -> BFF
+  trusted-user context -> engine authorization remains the same.
+- The sign-in action discovers the sole server-advertised NextAuth provider,
+  without a public auth-mode variable. Preview users already passed IAP and use
+  this action to bootstrap their internal session.
+- `AUTH_MODE=e2e` selects only the existing loopback-only seam and still requires
+  `E2E_AUTH_ENABLED=true` plus loopback `NEXTAUTH_URL`.
+- IAP preview `.run.app` page, NextAuth, and BFF routes stay on the protected
+  preview origin. Google mode retains the legacy `.run.app` redirect to the
+  canonical custom domain.
+- Persisted NextAuth JWTs are bound to the issuing auth mode; cross-mode reuse
+  is denied. Legacy sessions without a mode marker are accepted and stamped
+  only in Google mode. E2E sessions also retain the loopback safety guard.
+
 - Authentication uses Auth.js/NextAuth with Google OpenID Connect scopes: `openid email profile`.
 - Session strategy is stateless JWT managed by NextAuth cookies.
 - No Google tokens are stored in browser storage.
@@ -959,8 +991,8 @@ repository's existing `noEmit` typecheck.
 
 ### The test-only auth seam ("e2e" provider)
 
-`lib/auth.ts` registers an additional NextAuth `CredentialsProvider` (id `e2e`) alongside
-the normal Google provider, but **only** when both of the following are true at process
+`lib/auth.ts` registers only the NextAuth `CredentialsProvider` (id `e2e`) in
+`AUTH_MODE=e2e`, but **only** when both of the following are true at process
 startup:
 
 - the server-side-only environment variable `E2E_AUTH_ENABLED=true` is set (this is never
@@ -972,7 +1004,7 @@ If `E2E_AUTH_ENABLED=true` is set with a missing/invalid/non-loopback `NEXTAUTH_
 process throws a configuration error at startup instead of silently exposing or silently
 disabling the provider — it fails closed. **This means the provider can never be enabled
 on the production canonical origin (`https://haunted-halls.tesolin.us`).** The normal
-Google sign-in flow is unaffected either way.
+Google sign-in flow in `AUTH_MODE=google` is unaffected.
 
 The `e2e` provider does not accept any browser-supplied identity fields. Every sign-in
 resolves the same fixed synthetic identity (`provider_subject: playwright-e2e`,

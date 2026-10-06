@@ -114,6 +114,7 @@ describe("internal user resolution", () => {
     });
 
     expect(first.internalUserId).toBe("user_once");
+    expect(first.authMode).toBe("google");
     expect(fetchEngineAsService).toHaveBeenCalledTimes(1);
 
     const second = await jwt({
@@ -158,7 +159,7 @@ describe("internal user resolution", () => {
         session: undefined,
       });
 
-      expect(issued).toMatchObject({ internalUserId: "e2e_user", e2eAuth: true });
+      expect(issued).toMatchObject({ internalUserId: "e2e_user", e2eAuth: true, authMode: "e2e" });
 
       delete process.env.E2E_AUTH_ENABLED;
       await expect(
