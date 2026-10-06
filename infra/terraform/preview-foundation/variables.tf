@@ -42,20 +42,6 @@ variable "budget_amount" {
   }
 }
 
-variable "iap_tester_principals" {
-  description = "Explicit principals allowed through IAP to preview frontends. An empty list grants no tester access."
-  type        = set(string)
-  default     = []
-
-  validation {
-    condition = alltrue([
-      for principal in var.iap_tester_principals :
-      can(regex("^(user|group):[^[:space:]]+$", principal))
-    ])
-    error_message = "IAP tester principals must be explicit user:email or group:email principals."
-  }
-}
-
 variable "provisioner_image" {
   description = "Optional immutable SHA-256 image digest for phase two, after the preview Artifact Registry repository is ready."
   type        = string
