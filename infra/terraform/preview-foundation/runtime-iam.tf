@@ -60,11 +60,3 @@ resource "google_secret_manager_secret_iam_member" "db_provisioner_password" {
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.db_provisioner.email}"
 }
-
-resource "google_project_iam_member" "iap_tester" {
-  for_each = var.iap_tester_principals
-
-  project = var.preview_project_id
-  role    = "roles/iap.httpsResourceAccessor"
-  member  = each.value
-}

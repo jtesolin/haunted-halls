@@ -1173,15 +1173,10 @@ requires the Console, stop and complete that interactive flow rather than
 working around it.
 
 Grant the IAP service agent `roles/run.invoker` only on each IAP-enabled
-frontend service. Grant explicit testers `roles/iap.httpsResourceAccessor`
-only on that service's IAP resource, not at project scope. Keep the foundation
-`iap_tester_principals` input at `[]` and do not use it to authorize testers:
-its current Terraform implementation is project-scoped and is intentionally
-unused (it is slated for removal in a separate issue #40 cleanup). The
-#41/#85 per-PR Terraform stack grants the resource-scoped binding on each
-preview frontend. The disposable live bootstrap used the correct
-resource-scoped grant, which does not justify a project-level grant. There is
-no public fallback. Verify signed-in browser
+frontend service. Tester access is owned only by the #41/#85 per-PR Terraform
+stack, which grants `roles/iap.httpsResourceAccessor` directly on each preview
+frontend's IAP resource; never grant tester access project-wide. There is no
+public fallback. Verify signed-in browser
 access and signed-out interception by IAP without making Cloud Run public.
 After testing with a disposable bootstrap service, remove only that service;
 retain the consent/brand and custom OAuth configuration for future frontends.
