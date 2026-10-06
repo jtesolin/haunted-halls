@@ -19,5 +19,6 @@ declare module "next-auth/jwt" {
   interface JWT {
     internalUserId?: string;
     e2eAuth?: true;
+    authMode?: "google" | "iap" | "e2e";
   }
 }

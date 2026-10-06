@@ -109,23 +109,36 @@ export const authOptions: NextAuthOptions = {
   },
   callbacks: {
     async jwt({ token, account, profile, user }) {
-      if (token.e2eAuth) {
-        if (!isE2ESessionAllowed()) {
+      const currentMode = getAuthMode();
+      if (token.authMode !== undefined && token.authMode !== currentMode) {
+        throw new Error("AccessDenied");
+      }
+      if (token.e2eAuth || token.authMode === "e2e") {
+        if (!token.e2eAuth || token.authMode !== "e2e" || !isE2ESessionAllowed()) {
           throw new Error("AccessDenied");
         }
-
-        return token;
       }
 
       if (token.internalUserId) {
+        if (token.authMode === undefined) {
+          if (currentMode !== "google") {
+            throw new Error("AccessDenied");
+          }
+          token.authMode = "google";
+        }
         return token;
       }
 
+      if (account && account.provider !== currentMode) {
+        throw new Error("AccessDenied");
+      }
+
       if (account?.provider === IAP_PROVIDER_ID) {
-        if (mode !== "iap" || !user?.internalUserId) {
+        if (!user?.internalUserId) {
           throw new Error("AccessDenied");
         }
         token.internalUserId = user.internalUserId;
+        token.authMode = "iap";
         return token;
       }
 
@@ -139,6 +152,7 @@ export const authOptions: NextAuthOptions = {
         try {
           token.internalUserId = await resolveInternalUserId(E2E_FIXED_IDENTITY);
           token.e2eAuth = true;
+          token.authMode = "e2e";
         } catch (error) {
           if (error instanceof InternalUserResolutionError) {
             console.error("e2e auth sign-in failed during internal user resolution");
@@ -161,6 +175,7 @@ export const authOptions: NextAuthOptions = {
           profile: profile as Record<string, unknown>,
         });
         token.internalUserId = await resolveInternalUserId(identity);
+        token.authMode = "google";
       } catch (error) {
         if (error instanceof InternalUserResolutionError) {
           console.error("auth sign-in failed during internal user resolution", {

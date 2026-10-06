@@ -143,6 +143,7 @@ describe("IAP signed-header authentication", () => {
       isNewUser: false, trigger: "signIn",
     });
     expect(token.internalUserId).toBe("internal-iap-user");
+    expect(token.authMode).toBe("iap");
     const session = await authOptions.callbacks.session({
       session: { expires: "2099-01-01", user: { name: null, email: user.email ?? null, image: null } },
       token, user: { ...user, email: user.email ?? "", emailVerified: null },

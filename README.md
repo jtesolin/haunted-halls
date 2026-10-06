@@ -83,6 +83,12 @@ If you run the app on a different port, update `NEXTAUTH_URL` and register the m
   this action to bootstrap their internal session.
 - `AUTH_MODE=e2e` selects only the existing loopback-only seam and still requires
   `E2E_AUTH_ENABLED=true` plus loopback `NEXTAUTH_URL`.
+- IAP preview `.run.app` page, NextAuth, and BFF routes stay on the protected
+  preview origin. Google mode retains the legacy `.run.app` redirect to the
+  canonical custom domain.
+- Persisted NextAuth JWTs are bound to the issuing auth mode; cross-mode reuse
+  is denied. Legacy sessions without a mode marker are accepted and stamped
+  only in Google mode. E2E sessions also retain the loopback safety guard.
 
 - Authentication uses Auth.js/NextAuth with Google OpenID Connect scopes: `openid email profile`.
 - Session strategy is stateless JWT managed by NextAuth cookies.

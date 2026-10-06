@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { getAuthMode } from "@/lib/auth-mode";
 
 // The legacy Cloud Run frontend hostname (e.g.
 // haunted-halls-frontend-<project-number>.<region>.run.app) is no longer a
 // valid entry point now that NEXTAUTH_URL and Google OAuth are configured for
 // the custom domain. Redirect it to the canonical host instead of leaving it
-// reachable with a broken sign-in flow.
+// reachable with a broken sign-in flow. IAP previews intentionally serve their
+// own protected run.app origin instead.
 const LEGACY_HOST_SUFFIX = ".run.app";
 const DEFAULT_CANONICAL_HOST = "haunted-halls.tesolin.us";
 
@@ -51,9 +53,10 @@ function resolveRequestHostname(request: NextRequest): string {
 }
 
 export function proxy(request: NextRequest) {
+  const mode = getAuthMode();
   const requestHostname = resolveRequestHostname(request);
 
-  if (!requestHostname.endsWith(LEGACY_HOST_SUFFIX)) {
+  if (mode === "iap" || !requestHostname.endsWith(LEGACY_HOST_SUFFIX)) {
     return NextResponse.next();
   }
 

@@ -5,17 +5,52 @@
 // @ts-expect-error -- no bundled types for next/dist/compiled/path-to-regexp
 import { pathToRegexp } from "next/dist/compiled/path-to-regexp";
 import { NextRequest } from "next/server";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { config, proxy } from "@/proxy";
 
 const ORIGINAL_NEXTAUTH_URL = process.env.NEXTAUTH_URL;
 
+beforeEach(() => {
+  vi.stubEnv("AUTH_MODE", "google");
+});
+
 afterEach(() => {
+  vi.unstubAllEnvs();
   if (ORIGINAL_NEXTAUTH_URL === undefined) {
     delete process.env.NEXTAUTH_URL;
   } else {
     process.env.NEXTAUTH_URL = ORIGINAL_NEXTAUTH_URL;
   }
+});
+
+describe("proxy auth-mode routing", () => {
+  it.each(["/", "/campaign", "/api/auth/signin/iap", "/api/auth/callback/iap", "/api/chat"])(
+    "serves the IAP preview origin directly for %s",
+    (path) => {
+      vi.stubEnv("AUTH_MODE", "iap");
+      const response = proxy(makeRequest(`https://frontend.internal${path}`, "preview-47.us-east1.run.app"));
+      expect(response.headers.get("location")).toBeNull();
+      expect(response.headers.get("x-middleware-next")).toBe("1");
+    }
+  );
+
+  it.each(["google", "iap", "e2e"])("preserves custom-domain and local routing in %s", (mode) => {
+    vi.stubEnv("AUTH_MODE", mode);
+    for (const host of ["haunted-halls.tesolin.us", "localhost:3000", "127.0.0.1:3000"]) {
+      expect(proxy(makeRequest("http://frontend.internal/", host)).headers.get("location")).toBeNull();
+    }
+  });
+
+  it("does not exempt run.app in E2E mode", () => {
+    vi.stubEnv("AUTH_MODE", "e2e");
+    expect(proxy(makeRequest("https://frontend.internal/", "preview.run.app")).status).toBe(308);
+  });
+
+  it.each(["", "invalid"])("fails closed with invalid explicit mode %j", (mode) => {
+    vi.stubEnv("AUTH_MODE", mode);
+    expect(() => proxy(makeRequest("https://frontend.internal/", "preview.run.app"))).toThrow("AUTH_MODE");
+    expect(() => proxy(makeRequest("http://localhost:3000/", "localhost:3000"))).toThrow("AUTH_MODE");
+  });
 });
 
 // Cloud Run (via the Google Front End) forwards the original public hostname
