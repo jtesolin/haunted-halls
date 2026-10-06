@@ -23,7 +23,9 @@ test.describe("persistence across reload", () => {
     });
 
     await expect(conversation.getByText("look around", { exact: true })).toBeVisible();
-    await expect(conversation.getByText("AI narrator replies (stub): look around")).toBeVisible();
+    await expect(conversation.getByText(
+      "The lantern casts a steady light across the Entry Hall. What will you examine next?",
+    )).toBeVisible();
 
     await page.reload();
 
@@ -34,7 +36,9 @@ test.describe("persistence across reload", () => {
       timeout: 20_000,
     });
     await expect(
-      page.locator("main").getByText("AI narrator replies (stub): look around"),
+      page.locator("main").getByText(
+        "The lantern casts a steady light across the Entry Hall. What will you examine next?",
+      ),
     ).toBeVisible({ timeout: 20_000 });
   });
 });
