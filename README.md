@@ -1147,7 +1147,7 @@ The intended grants are:
 | Preview engine runtime | Preview DB password and OpenAI secrets | `roles/secretmanager.secretAccessor` on those secrets |
 | Existing project Cloud Run service agent | Preview Artifact Registry repository | `roles/artifactregistry.reader` on the provisioner image repository only |
 | IAP service agent | Each IAP-enabled preview frontend Cloud Run service | `roles/run.invoker`, granted directly on that service by the #41/#85 per-PR Terraform stack; no project-level binding |
-| Configured tester principals only | Preview project | `roles/iap.httpsResourceAccessor`; empty by default |
+| Authorized preview testers | Each IAP-enabled preview frontend's IAP resource | `roles/iap.httpsResourceAccessor`, granted directly on that resource by the #41/#85 per-PR Terraform stack; no project-level binding |
 
 The `hh-preview-deployer` is a trusted preview control-plane identity and must
 be treated as **preview-secret-equivalent**: project-level Cloud Run deployment
@@ -1174,9 +1174,14 @@ working around it.
 
 Grant the IAP service agent `roles/run.invoker` only on each IAP-enabled
 frontend service. Grant explicit testers `roles/iap.httpsResourceAccessor`
-only on that service's IAP resource, not at project scope. The
-`iap_tester_principals` input defaults empty; configuring a tester list does
-not replace the required resource-scoped policy. Verify signed-in browser
+only on that service's IAP resource, not at project scope. Keep the foundation
+`iap_tester_principals` input at `[]` and do not use it to authorize testers:
+its current Terraform implementation is project-scoped and is intentionally
+unused (it is slated for removal in a separate issue #40 cleanup). The
+#41/#85 per-PR Terraform stack grants the resource-scoped binding on each
+preview frontend. The disposable live bootstrap used the correct
+resource-scoped grant, which does not justify a project-level grant. There is
+no public fallback. Verify signed-in browser
 access and signed-out interception by IAP without making Cloud Run public.
 After testing with a disposable bootstrap service, remove only that service;
 retain the consent/brand and custom OAuth configuration for future frontends.
@@ -1227,8 +1232,8 @@ proceeding. As a privileged database administrator, apply only the permitted
 role settings and PostgreSQL grants below, preferably in one transaction with
 `ON_ERROR_STOP`. Cloud SQL restricts some role-attribute changes even for its
 built-in administrators. The live-tested flow does not ALTER `SUPERUSER`,
-`CREATEROLE`, `INHERIT`, `REPLICATION`, or `BYPASSRLS`; verify their safe values
-with read-only queries instead. If a prerequisite or verification differs,
+`REPLICATION`, or `BYPASSRLS`; verify their safe values with read-only queries
+instead. `NOCREATEROLE` and `NOINHERIT` remain explicit hardening steps below. If a prerequisite or verification differs,
 stop rather than adding unreviewed grants or revokes.
 
 Revoking `PUBLIC` CONNECT is necessary to ensure the preview logins cannot
@@ -1236,8 +1241,10 @@ connect through inherited public privileges; explicitly retain access for the
 existing production/staging application logins:
 
 ```sql
-ALTER ROLE haunted_halls_preview_app LOGIN NOCREATEDB;
-ALTER ROLE haunted_halls_preview_provisioner LOGIN CREATEDB;
+ALTER ROLE haunted_halls_preview_app
+  LOGIN NOCREATEROLE NOCREATEDB NOINHERIT;
+ALTER ROLE haunted_halls_preview_provisioner
+  LOGIN NOCREATEROLE CREATEDB NOINHERIT;
 ALTER ROLE haunted_halls_preview_provisioner SET search_path = pg_catalog;
 GRANT haunted_halls_preview_app TO haunted_halls_preview_provisioner
   WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
@@ -1290,8 +1297,9 @@ Required results:
   to `haunted_halls_preview_app`, with `admin_option = false`,
   `inherit_option = false`, and `set_option = true`.
 - Both roles have `rolcanlogin = true`; `rolsuper`, `rolcreaterole`,
-  `rolinherit`, `rolreplication`, and `rolbypassrls` are false. In particular,
-  `NOINHERIT` means `rolinherit = false`, not an ALTER step in this flow.
+  `rolinherit`, `rolreplication`, and `rolbypassrls` are false.
+  `rolsuper`, `rolreplication`, and `rolbypassrls` are verification-only;
+  `rolcreaterole` and `rolinherit` are set by the ALTER ROLE statements.
 - `rolcreatedb` is false for preview app and true for preview provisioner.
   Provisioner's `rolconfig` contains `search_path=pg_catalog`.
 - The CONNECT matrix must match:
