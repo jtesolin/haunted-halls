@@ -2,13 +2,14 @@
 	docker-build docker-up docker-down docker-logs docker-ps docker-config docker-migrate \
 	debug-build debug-up debug-down debug-logs debug-config \
 	docker-reset-db tf-fmt tf-validate tf-init tf-plan tf-apply tf-output \
-	tf-bootstrap-init tf-bootstrap-apply tf-bootstrap-output tf-preview-db-test
+	tf-bootstrap-init tf-bootstrap-apply tf-bootstrap-output tf-preview-db-test tf-preview-pr-test
 
 PORT ?= 3000
 TERRAFORM_DIR := infra/terraform
 TERRAFORM_BOOTSTRAP_DIR := infra/terraform/bootstrap
 TERRAFORM_PREVIEW_DIR := infra/terraform/preview-foundation
 TERRAFORM_PREVIEW_BOOTSTRAP_DIR := infra/terraform/preview-foundation/backend-bootstrap
+TERRAFORM_PREVIEW_PR_DIR := infra/terraform/preview-pr
 
 COMPOSE = docker compose
 DEBUG_COMPOSE = docker compose -f docker-compose.yml -f docker-compose.debug.yml
@@ -37,6 +38,7 @@ help:
 	@echo "  tf-apply            terraform apply"
 	@echo "  tf-output           terraform output"
 	@echo "  tf-preview-db-test  Run preview DB provisioner input validation tests"
+	@echo "  tf-preview-pr-test  Run offline per-PR Terraform and backend identity tests"
 	@echo ""
 	@echo "Docker Compose Stack (includes PostgreSQL, engine, frontend):"
 	@echo "  docker-build      Build Compose application images"
@@ -90,17 +92,24 @@ tf-fmt:
 	terraform -chdir=$(TERRAFORM_BOOTSTRAP_DIR) fmt -check -recursive && \
 	terraform -chdir=$(TERRAFORM_DIR) fmt -check -recursive && \
 	terraform -chdir=$(TERRAFORM_PREVIEW_BOOTSTRAP_DIR) fmt -check -recursive && \
-	terraform -chdir=$(TERRAFORM_PREVIEW_DIR) fmt -check -recursive
+	terraform -chdir=$(TERRAFORM_PREVIEW_DIR) fmt -check -recursive && \
+	terraform -chdir=$(TERRAFORM_PREVIEW_PR_DIR) fmt -check -recursive
 
 # Static validation is credential-free: no GCP auth or apply is required.
 tf-validate:
 	terraform -chdir=$(TERRAFORM_BOOTSTRAP_DIR) init -backend=false && terraform -chdir=$(TERRAFORM_BOOTSTRAP_DIR) validate && \
 	terraform -chdir=$(TERRAFORM_DIR) init -backend=false && terraform -chdir=$(TERRAFORM_DIR) validate && \
 	terraform -chdir=$(TERRAFORM_PREVIEW_BOOTSTRAP_DIR) init -backend=false && terraform -chdir=$(TERRAFORM_PREVIEW_BOOTSTRAP_DIR) validate && \
-	terraform -chdir=$(TERRAFORM_PREVIEW_DIR) init -backend=false && terraform -chdir=$(TERRAFORM_PREVIEW_DIR) validate
+	terraform -chdir=$(TERRAFORM_PREVIEW_DIR) init -backend=false && terraform -chdir=$(TERRAFORM_PREVIEW_DIR) validate && \
+	terraform -chdir=$(TERRAFORM_PREVIEW_PR_DIR) init -backend=false && terraform -chdir=$(TERRAFORM_PREVIEW_PR_DIR) validate
 
 tf-preview-db-test:
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $(TERRAFORM_PREVIEW_DIR)/db-provisioner -p 'test_*.py'
+
+tf-preview-pr-test:
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $(TERRAFORM_PREVIEW_PR_DIR) -p 'test_*.py'
+	terraform -chdir=$(TERRAFORM_PREVIEW_PR_DIR) init -backend=false
+	terraform -chdir=$(TERRAFORM_PREVIEW_PR_DIR) test
 
 # Bootstrap flow: create the remote state bucket before configuring the main backend.
 tf-bootstrap-init:

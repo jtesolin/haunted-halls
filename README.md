@@ -1018,6 +1018,26 @@ bypass or special unauthenticated path.
 > `E2E_AUTH_ENABLED=true` outside a disposable, loopback-only E2E stack, and never point
 > it at a non-loopback `NEXTAUTH_URL`.
 
+## Isolated per-PR Terraform resources (issue #41, slice 41B)
+
+The dedicated [`infra/terraform/preview-pr`](infra/terraform/preview-pr/README.md)
+root owns only one repository/PR's disposable IAP frontend, private engine,
+explicit Alembic job, three write-only preview secrets, and resource-scoped IAM.
+It reuses the accepted foundation without importing foundation resources or
+changing production/staging permissions. Names and backend prefixes share a
+validated `web|engine` namespace and canonical positive PR number.
+
+Read the root guide for the exact immutable image/secret/runtime contracts,
+offline backend identity guard, concrete missing permissions/input prerequisites,
+and the required migration-before-rollout lifecycle ordering for 41C.
+`make tf-preview-pr-test` runs focused offline ownership/backend tests and
+provider-mocked Terraform plans; the existing Terraform CI job validates this
+root without cloud credentials.
+
+**41B does not deploy, run migrations, initialize a live backend, or implement
+the trusted lifecycle.** Issue #41 remains open pending slice 41C and live
+end-to-end acceptance. The merged 41A app auth configuration remains unchanged.
+
 ## PR preview foundation (issue #40)
 
 The shared preview foundation is isolated from the production/staging Terraform
