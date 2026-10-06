@@ -1,0 +1,11 @@
+repository_key         = "web"
+pull_request_number    = "123"
+backend_state_prefix   = "previews/web-pr-123"
+preview_project_number = "REPLACE_WITH_ACTUAL_PREVIEW_PROJECT_NUMBER"
+frontend_image         = "us-east1-docker.pkg.dev/hh-preview-458395246135/haunted-halls-preview/frontend@sha256:REPLACE_WITH_ACCEPTED_PR_DIGEST"
+engine_image           = "us-east1-docker.pkg.dev/haunted-halls-development/haunted-halls/engine@sha256:REPLACE_WITH_FROZEN_STAGING_DIGEST"
+iap_testers            = ["user:REPLACE_WITH_AUTHORIZED_TESTER@example.com"]
+preview_openai_version = "1"
+secret_revision        = 1
+# Supply the three sensitive ephemeral variables through TF_VAR_* in a trusted
+# process, never via this file, command-line arguments, artifacts, or logs.

@@ -119,7 +119,7 @@ jobs:
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.11.0
+          terraform_version: 1.11.4
 
       - name: Terraform format check
         run: |
@@ -128,7 +128,8 @@ jobs:
             infra/terraform/bootstrap \
             infra/terraform \
             infra/terraform/preview-foundation/backend-bootstrap \
-            infra/terraform/preview-foundation
+            infra/terraform/preview-foundation \
+            infra/terraform/preview-pr
           do
             terraform -chdir="$root" fmt -check -recursive
           done
@@ -140,7 +141,8 @@ jobs:
             infra/terraform/bootstrap \
             infra/terraform \
             infra/terraform/preview-foundation/backend-bootstrap \
-            infra/terraform/preview-foundation
+            infra/terraform/preview-foundation \
+            infra/terraform/preview-pr
           do
             terraform -chdir="$root" init -backend=false
             terraform -chdir="$root" validate
@@ -155,6 +157,14 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: python -m unittest discover -s infra/terraform/preview-foundation/db-provisioner -p 'test_*.py'
+
+      - name: Run offline per-PR ownership and backend identity tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -m unittest discover -s infra/terraform/preview-pr -p 'test_*.py'
+
+      - name: Run mocked per-PR Terraform plans
+        run: terraform -chdir=infra/terraform/preview-pr test
 
   docker-build:
     name: Frontend / Docker Build
