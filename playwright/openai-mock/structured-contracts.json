@@ -1,0 +1,434 @@
+{
+  "StarterAbilityProviderGeneration": {
+    "$defs": {
+      "AbilitySenseFilter": {
+        "enum": [
+          "presence",
+          "supernatural_presence"
+        ],
+        "title": "AbilitySenseFilter",
+        "type": "string"
+      },
+      "ProgressionTrackId": {
+        "description": "Stable identifiers for the supported progression tracks.\n\nDeliberately small and exploration/narrative oriented rather than a\ncombat-oriented attribute set.",
+        "enum": [
+          "investigation",
+          "resolve",
+          "rapport",
+          "occult"
+        ],
+        "title": "ProgressionTrackId",
+        "type": "string"
+      },
+      "StarterAbilitySensoryProviderOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "ability_id": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "title": "Ability Id",
+            "type": "string"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "track": {
+            "$ref": "#/$defs/ProgressionTrackId"
+          },
+          "sense_filter": {
+            "$ref": "#/$defs/AbilitySenseFilter"
+          },
+          "range": {
+            "enum": [
+              0,
+              1
+            ],
+            "title": "Range",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ability_id",
+          "display_name",
+          "description",
+          "track",
+          "sense_filter",
+          "range"
+        ],
+        "title": "StarterAbilitySensoryProviderOutput",
+        "type": "object"
+      },
+      "StarterAbilityUtilityProviderOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "ability_id": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "title": "Ability Id",
+            "type": "string"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "track": {
+            "$ref": "#/$defs/ProgressionTrackId"
+          },
+          "operation": {
+            "$ref": "#/$defs/StarterUtilityOperation"
+          }
+        },
+        "required": [
+          "ability_id",
+          "display_name",
+          "description",
+          "track",
+          "operation"
+        ],
+        "title": "StarterAbilityUtilityProviderOutput",
+        "type": "object"
+      },
+      "StarterUtilityOperation": {
+        "enum": [
+          "retrieve",
+          "toggle_open",
+          "toggle_lit"
+        ],
+        "title": "StarterUtilityOperation",
+        "type": "string"
+      }
+    },
+    "additionalProperties": false,
+    "description": "The model's bounded choices, without engine-owned mechanics.",
+    "properties": {
+      "sensory_ability": {
+        "$ref": "#/$defs/StarterAbilitySensoryProviderOutput"
+      },
+      "utility_ability": {
+        "$ref": "#/$defs/StarterAbilityUtilityProviderOutput"
+      }
+    },
+    "required": [
+      "sensory_ability",
+      "utility_ability"
+    ],
+    "title": "StarterAbilityProviderGeneration",
+    "type": "object"
+  },
+  "ActionParserOutput": {
+    "$defs": {
+      "ActionParserParameters": {
+        "additionalProperties": false,
+        "properties": {
+          "item": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item"
+          },
+          "amount": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount"
+          },
+          "duration": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration"
+          },
+          "with_item": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "With Item"
+          },
+          "interaction_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interaction Mode"
+          },
+          "ability_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ability Id"
+          }
+        },
+        "title": "ActionParserParameters",
+        "type": "object",
+        "required": [
+          "item",
+          "amount",
+          "duration",
+          "with_item",
+          "interaction_mode",
+          "ability_id"
+        ]
+      },
+      "ActionType": {
+        "enum": [
+          "observe",
+          "move",
+          "climb",
+          "take",
+          "drop",
+          "use",
+          "talk",
+          "attack",
+          "wait",
+          "interact",
+          "ability_check",
+          "unknown"
+        ],
+        "title": "ActionType",
+        "type": "string"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "action": {
+        "$ref": "#/$defs/ActionType"
+      },
+      "target": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Target"
+      },
+      "parameters": {
+        "$ref": "#/$defs/ActionParserParameters"
+      },
+      "stealth": {
+        "default": false,
+        "title": "Stealth",
+        "type": "boolean"
+      },
+      "confidence": {
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "title": "Confidence",
+        "type": "number"
+      },
+      "parse_status": {
+        "enum": [
+          "ok",
+          "ambiguous",
+          "invalid"
+        ],
+        "title": "Parse Status",
+        "type": "string"
+      },
+      "parser_notes": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Parser Notes"
+      }
+    },
+    "required": [
+      "action",
+      "target",
+      "parameters",
+      "stealth",
+      "confidence",
+      "parse_status",
+      "parser_notes"
+    ],
+    "title": "ActionParserOutput",
+    "type": "object"
+  },
+  "DirectorProposalResponse": {
+    "$defs": {
+      "DirectorProviderProposal": {
+        "additionalProperties": false,
+        "description": "Provider-facing proposal DTO adapted into the authoritative domain union.",
+        "properties": {
+          "decision": {
+            "enum": [
+              "none",
+              "act"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "world_action": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DirectorProviderWorldAction"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "decision",
+          "world_action"
+        ],
+        "title": "DirectorProviderProposal",
+        "type": "object"
+      },
+      "DirectorProviderWorldAction": {
+        "additionalProperties": false,
+        "description": "Provider-facing flattened action DTO for Structured Outputs compatibility.",
+        "properties": {
+          "action": {
+            "enum": [
+              "move_npc",
+              "set_npc_status",
+              "advance_clock",
+              "record_fact",
+              "reveal_clue"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "npc_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Npc Id"
+          },
+          "destination_room_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Destination Room Id"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "active",
+                  "absent"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "ticks": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticks"
+          },
+          "fact": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fact"
+          },
+          "clue_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clue Id"
+          }
+        },
+        "required": [
+          "action",
+          "npc_id",
+          "destination_room_id",
+          "status",
+          "ticks",
+          "fact",
+          "clue_id"
+        ],
+        "title": "DirectorProviderWorldAction",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "description": "Strict provider wrapper that avoids schema composition unsupported upstream.",
+    "properties": {
+      "proposal": {
+        "$ref": "#/$defs/DirectorProviderProposal"
+      }
+    },
+    "required": [
+      "proposal"
+    ],
+    "title": "DirectorProposalResponse",
+    "type": "object"
+  }
+}
