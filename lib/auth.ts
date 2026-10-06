@@ -7,6 +7,8 @@ import {
   resolveInternalUserId,
 } from "@/lib/internal-user-resolution";
 import { E2E_FIXED_IDENTITY, E2E_PROVIDER_ID, isE2EAuthEnabled } from "@/lib/e2e-auth";
+import { getAuthMode } from "@/lib/auth-mode";
+import { getIapExpectedAudience, IAP_PROVIDER_ID, verifyIapIdentity } from "@/lib/iap-auth";
 
 function getRequiredEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -20,29 +22,65 @@ function getRequiredEnv(name: string): string {
 
 function isE2ESessionAllowed(): boolean {
   try {
-    return isE2EAuthEnabled();
+    return getAuthMode() === "e2e" && isE2EAuthEnabled();
   } catch {
     return false;
   }
 }
 
-const providers: NextAuthOptions["providers"] = [
-  GoogleProvider({
-    clientId: getRequiredEnv("GOOGLE_CLIENT_ID"),
-    clientSecret: getRequiredEnv("GOOGLE_CLIENT_SECRET"),
-    authorization: {
-      params: {
-        scope: "openid email profile",
+const mode = getAuthMode();
+const providers: NextAuthOptions["providers"] = [];
+
+if (mode === "google") {
+  providers.push(
+    GoogleProvider({
+      clientId: getRequiredEnv("GOOGLE_CLIENT_ID"),
+      clientSecret: getRequiredEnv("GOOGLE_CLIENT_SECRET"),
+      authorization: {
+        params: {
+          scope: "openid email profile",
+        },
       },
-    },
-  }),
-];
+    })
+  );
+}
+
+if (mode === "iap") {
+  const audience = getIapExpectedAudience();
+  providers.push(
+    CredentialsProvider({
+      id: IAP_PROVIDER_ID,
+      name: "IAP",
+      credentials: {},
+      async authorize(_credentials, request) {
+        try {
+          const identity = await verifyIapIdentity(
+            request.headers?.["x-goog-iap-jwt-assertion"],
+            audience
+          );
+          const internalUserId = await resolveInternalUserId(identity);
+          return {
+            id: identity.providerSubject,
+            email: identity.email,
+            internalUserId,
+          };
+        } catch {
+          console.error("iap auth sign-in failed during verification or internal user resolution");
+          throw new Error("AccessDenied");
+        }
+      },
+    })
+  );
+}
 
 // Guarded, loopback-only, test-only authentication seam. See lib/e2e-auth.ts for the
 // safety boundary. This never accepts browser-supplied identity fields; it always
 // resolves the same fixed synthetic identity through the real engine user-resolution
 // path used by the Google provider.
-if (isE2EAuthEnabled()) {
+if (mode === "e2e") {
+  if (!isE2EAuthEnabled()) {
+    throw new Error("AUTH_MODE=e2e requires the guarded E2E_AUTH_ENABLED seam");
+  }
   providers.push(
     CredentialsProvider({
       id: E2E_PROVIDER_ID,
@@ -70,7 +108,7 @@ export const authOptions: NextAuthOptions = {
     error: "/",
   },
   callbacks: {
-    async jwt({ token, account, profile }) {
+    async jwt({ token, account, profile, user }) {
       if (token.e2eAuth) {
         if (!isE2ESessionAllowed()) {
           throw new Error("AccessDenied");
@@ -80,6 +118,14 @@ export const authOptions: NextAuthOptions = {
       }
 
       if (token.internalUserId) {
+        return token;
+      }
+
+      if (account?.provider === IAP_PROVIDER_ID) {
+        if (mode !== "iap" || !user?.internalUserId) {
+          throw new Error("AccessDenied");
+        }
+        token.internalUserId = user.internalUserId;
         return token;
       }
 

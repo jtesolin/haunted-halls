@@ -23,6 +23,7 @@ services:
 
   frontend:
     environment:
+      AUTH_MODE: e2e
       E2E_AUTH_ENABLED: "true"
       NEXTAUTH_URL: http://localhost:3000
       NEXTAUTH_SECRET: e2e-test-only-nextauth-secret-change-me-00000000000000

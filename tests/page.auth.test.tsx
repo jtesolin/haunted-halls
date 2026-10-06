@@ -3,11 +3,16 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Home from "@/app/page";
 import ChatInput from "@/components/ChatInput";
-import { signIn, signOut, useSession } from "next-auth/react";
+import { signIn, signOut, useSession, type ClientSafeProvider } from "next-auth/react";
+
+const getProvidersMock = vi.hoisted(() =>
+  vi.fn<() => Promise<Record<string, ClientSafeProvider> | null>>()
+);
 
 vi.mock("next-auth/react", () => ({
   useSession: vi.fn(),
   signIn: vi.fn(),
+  getProviders: getProvidersMock,
   signOut: vi.fn(),
   SessionProvider: ({ children }: { children: ReactNode }) => children,
 }));
@@ -18,6 +23,9 @@ const REQUEST_ID_ERROR_MESSAGE = "Unable to securely prepare this message. Pleas
 
 describe("home auth gating", () => {
   beforeEach(() => {
+    getProvidersMock.mockResolvedValue({
+      google: { id: "google", name: "Google", type: "oauth", signinUrl: "/api/auth/signin/google", callbackUrl: "/api/auth/callback/google" },
+    });
     global.fetch = vi.fn() as unknown as typeof fetch;
     vi.mocked(global.fetch).mockReset();
     vi.mocked(global.fetch).mockResolvedValue(
@@ -39,7 +47,7 @@ describe("home auth gating", () => {
     render(<Home />);
 
     expect(screen.getByText("Sign in to play")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Sign in with Google" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Player ID")).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Enter your command" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
@@ -56,7 +64,7 @@ describe("home auth gating", () => {
     render(<Home />);
 
     expect(screen.getAllByText("Checking sign-in...").length).toBeGreaterThan(0);
-    expect(screen.queryByRole("button", { name: "Sign in with Google" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign in" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Sign out" })).not.toBeInTheDocument();
   });
 
@@ -359,7 +367,7 @@ describe("home auth gating", () => {
     render(<Home />);
 
     expect(screen.getByText("Sign-in failed. Please try again.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Sign in with Google" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
   });
 
   it("calls nextauth signout action", () => {
@@ -378,7 +386,10 @@ describe("home auth gating", () => {
     expect(signOut).toHaveBeenCalledWith({ callbackUrl: "/" });
   });
 
-  it("starts google sign-in flow", () => {
+  it.each(["google", "iap", "e2e"])("starts the server-advertised %s sign-in flow", async (id) => {
+    getProvidersMock.mockResolvedValue({
+      [id]: { id, name: id, type: id === "google" ? "oauth" : "credentials", signinUrl: `/api/auth/signin/${id}`, callbackUrl: `/api/auth/callback/${id}` },
+    });
     vi.mocked(useSession).mockReturnValue({
       data: null,
       status: "unauthenticated",
@@ -387,8 +398,19 @@ describe("home auth gating", () => {
 
     render(<Home />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Sign in with Google" }));
-    expect(signIn).toHaveBeenCalledWith("google", expect.objectContaining({ callbackUrl: "/" }));
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    await waitFor(() => expect(signIn).toHaveBeenCalledWith(id, expect.objectContaining({ callbackUrl: "/" })));
+  });
+
+  it("shows a safe error when no provider is advertised", async () => {
+    getProvidersMock.mockResolvedValue(null);
+    vi.mocked(useSession).mockReturnValue({
+      data: null, status: "unauthenticated", update: vi.fn(),
+    });
+    render(<Home />);
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(await screen.findByText("Sign-in failed. Please try again.")).toBeInTheDocument();
+    expect(signIn).not.toHaveBeenCalled();
   });
 
   it("keeps the composer enabled and focused while a narration request is in flight", async () => {
