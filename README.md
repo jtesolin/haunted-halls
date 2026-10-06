@@ -939,6 +939,13 @@ names (`StarterAbilityProviderGeneration`, `ActionParserOutput`,
 prompt matching, never by a global call sequence. Unsupported endpoints,
 formats, commands, or prompts fail explicitly. It accepts only the exact fake
 E2E key and has no upstream forwarding code.
+Before fixture dispatch, structured requests must exactly match the checked-in
+`playwright/openai-mock/structured-contracts.json` contracts (object-key order
+is ignored; nested changes are rejected). These were generated with OpenAI SDK
+2.44.0's `type_to_text_format_param` from engine main
+`7293fce02538ee93b064f94562fff5793cb9d174`, not raw Pydantic schemas.
+Regenerate and review these test assets when the engine's SDK contracts change;
+the mock intentionally does not implement a general JSON Schema validator.
 
 The E2E engine, mock, migration job, and PostgreSQL share an **internal-only**
 Compose network without external egress. Only the frontend also joins the

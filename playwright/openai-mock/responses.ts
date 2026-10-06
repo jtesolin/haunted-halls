@@ -1,3 +1,6 @@
+import { isDeepStrictEqual } from "node:util";
+import structuredContracts from "./structured-contracts.json" with { type: "json" };
+
 export const E2E_OPENAI_KEY = "e2e-only-fake-openai-key-not-a-secret";
 export const OPENING_TEXT =
   "You stand in the Entry Hall. A lantern casts long shadows across the dusty floor. What do you do next?";
@@ -117,8 +120,12 @@ export function createMockResponse(value: unknown) {
   const format = text?.format === undefined ? undefined : record(text.format);
   let outputText: string;
   if (format?.type === "json_schema") {
-    if (format.strict !== true || !format.schema) {
-      throw new UnsupportedRequestError("Expected strict Structured Outputs schema");
+    if (typeof format.name !== "string" || !Object.hasOwn(structuredContracts, format.name)) {
+      throw new UnsupportedRequestError("Unsupported Structured Outputs format name");
+    }
+    const contract = structuredContracts[format.name as keyof typeof structuredContracts];
+    if (format.strict !== true || !isDeepStrictEqual(format.schema, contract)) {
+      throw new UnsupportedRequestError("Unsupported Structured Outputs schema contract");
     }
     outputText = JSON.stringify(structuredOutput(format.name, input));
   } else if (!format || format.type === "text") {

@@ -4,6 +4,7 @@ import type { Server } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMockResponse, E2E_OPENAI_KEY, LOOK_AROUND_TEXT, OPENING_TEXT } from "@/playwright/openai-mock/responses";
 import { createMockServer } from "@/playwright/openai-mock/server";
+import structuredContracts from "@/playwright/openai-mock/structured-contracts.json";
 
 const narrator = "You are the AI narrator for a haunted halls adventure.";
 const message = (role: string, text: string) => ({
@@ -15,11 +16,50 @@ const textRequest = (text: string) => ({
 });
 const structuredRequest = (name: string, text = "Player text:\nlook around") => ({
   model: "e2e-test-model", input: [message("user", text)],
-  text: { format: { type: "json_schema", name, strict: true, schema: { type: "object" } } },
+  text: { format: { type: "json_schema", name, strict: true,
+    schema: Object.hasOwn(structuredContracts, name)
+      ? structuredClone(structuredContracts[name as keyof typeof structuredContracts])
+      : undefined } },
 });
+const invalidSchemas: unknown[] = [undefined, null, "not-an-object", 1, true, [], {}, { type: "object" },
+  structuredContracts.DirectorProposalResponse];
+
+function reordered(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(reordered);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).reverse().map(([key, entry]) => [key, reordered(entry)]));
+  }
+  return value;
+}
+
+function nestedMutation() {
+  const schema = structuredClone(structuredContracts.ActionParserOutput);
+  schema.$defs.ActionParserParameters.properties.amount.anyOf[0].type = "string";
+  return schema;
+}
 const output = (request: unknown) => createMockResponse(request).output[0].content[0].text;
 
 describe("local OpenAI Responses fixtures", () => {
+  it.each(Object.keys(structuredContracts))("accepts the real %s contract with reordered object keys", (name) => {
+    const request = structuredRequest(name);
+    expect(() => createMockResponse({
+      ...request, text: { format: { ...request.text.format, schema: reordered(request.text.format.schema) } },
+    })).not.toThrow();
+  });
+
+  it.each(invalidSchemas)("rejects malformed/unrelated recognized schemas %#", (schema) => {
+    const request = structuredRequest("ActionParserOutput");
+    expect(() => createMockResponse({
+      ...request, text: { format: { ...request.text.format, schema } },
+    })).toThrow("Unsupported Structured Outputs schema contract");
+  });
+
+  it("rejects a meaningful nested schema mutation before fixture dispatch", () => {
+    const request = structuredRequest("ActionParserOutput");
+    request.text.format.schema = nestedMutation();
+    expect(() => createMockResponse(request)).toThrow("Unsupported Structured Outputs schema contract");
+  });
+
   it("routes all three structured formats and includes strict nullable fields", () => {
     expect(JSON.parse(output(structuredRequest("StarterAbilityProviderGeneration")))).toEqual({
       sensory_ability: {
@@ -126,5 +166,19 @@ describe("local OpenAI HTTP boundary", () => {
       })).status).toBe(400);
     }
     expect(log).toHaveBeenCalled();
+  });
+
+  it("returns HTTP 400 for malformed and nested-mutated structured contracts", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const base = await start();
+    const request = structuredRequest("ActionParserOutput");
+    for (const schema of [...invalidSchemas, nestedMutation()]) {
+      const response = await fetch(`${base}/v1/responses`, {
+        method: "POST", headers: { authorization: `Bearer ${E2E_OPENAI_KEY}` },
+        body: JSON.stringify({ ...request, text: { format: { ...request.text.format, schema } } }),
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toHaveProperty("error.code", "unsupported_e2e_request");
+    }
   });
 });
