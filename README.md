@@ -1327,6 +1327,23 @@ The app role must have zero direct memberships. The provisioner must have
 exactly one direct membership row for the app role, with `admin_option = false`,
 `inherit_option = false`, and `set_option = true`.
 
+#### Post-create provisioner verification (disposable preview database)
+
+This check is separate from the pre-preview protected-database hardening matrix
+above, which runs before any preview database exists and must not gain dynamic
+preview database rows. After the provisioner creates a disposable allowed
+preview database (for example, the sentinel `web` / PR `999999999` pattern used
+during acceptance), verify it with read-only queries before dropping it:
+
+- The database owner is `haunted_halls_preview_app`.
+- `haunted_halls_preview_app` and `haunted_halls_preview_provisioner` both have
+  `CONNECT = true`.
+- `haunted_halls_app` and `haunted_halls_staging_app` both have
+  `CONNECT = false`, and `PUBLIC` `CONNECT` is revoked.
+- `haunted_halls_preview_app` has both `USAGE` and `CREATE` on schema `public`
+  in that database.
+- The protected production/staging `CONNECT` matrix above is unchanged.
+
 ### Validation and lifecycle boundary
 
 Run `make tf-fmt`, `make tf-validate`, and `make tf-preview-db-test`, along with
