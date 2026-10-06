@@ -6,8 +6,8 @@
 #   docker compose -p haunted-halls-e2e -f docker-compose.yml -f docker-compose.e2e.yml down -v
 #
 # This override forces deterministic, isolated behavior on top of the base stack:
-#   - the engine runs with AI disabled (no OpenAI calls, deterministic stub narration)
-#     regardless of any OpenAI key present in the developer's engine .env;
+#   - the real model-backed engine calls only the local OpenAI HTTP mock, using
+#     a fake test key regardless of any provider key in the developer's engine .env;
 #   - the frontend runs with the guarded, loopback-only, test-only E2E auth provider
 #     enabled, using a loopback NEXTAUTH_URL and test-only local secrets;
 #   - use an isolated Compose project name (e.g. -p haunted-halls-e2e) and always
@@ -16,12 +16,42 @@
 # Do not use this file for production or normal local development.
 
 services:
-  engine:
+  openai-mock:
+    build:
+      context: ./playwright/openai-mock
+    networks:
+      - e2e-provider
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  postgres:
+    networks:
+      - e2e-provider
+
+  migrate:
+    networks:
+      - e2e-provider
     environment:
-      AI_ENABLED: "false"
-      OPENAI_API_KEY: ""
+      OPENAI_API_KEY: e2e-only-fake-openai-key-not-a-secret
+      OPENAI_BASE_URL: http://openai-mock:8080/v1
+
+  engine:
+    networks:
+      - e2e-provider
+    depends_on:
+      openai-mock:
+        condition: service_healthy
+    environment:
+      OPENAI_API_KEY: e2e-only-fake-openai-key-not-a-secret
+      OPENAI_BASE_URL: http://openai-mock:8080/v1
 
   frontend:
+    networks:
+      - default
+      - e2e-provider
     environment:
       E2E_AUTH_ENABLED: "true"
       NEXTAUTH_URL: http://localhost:3000
@@ -29,3 +59,7 @@ services:
       INTERNAL_ENGINE_SERVICE_TOKEN: ${INTERNAL_ENGINE_SERVICE_TOKEN:-local-compose-token-change-me-00000000000000000000000000000000000000}
       GOOGLE_CLIENT_ID: e2e-test-only-google-client-id
       GOOGLE_CLIENT_SECRET: e2e-test-only-google-client-secret
+
+networks:
+  e2e-provider:
+    internal: true

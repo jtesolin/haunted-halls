@@ -833,9 +833,9 @@ Compose connects the BFF to FastAPI at `http://engine:8000` and injects the same
 The images are environment-agnostic; local configuration is injected at container runtime from two host files that are never copied into the images:
 
 - `haunted-halls/.env` — frontend and Compose-level configuration (`INTERNAL_ENGINE_SERVICE_TOKEN`, NextAuth, Google OAuth, ports).
-- `haunted-halls-engine/.env` — engine-local runtime configuration such as `OPENAI_API_KEY`, `AI_ENABLED`, and `DEFAULT_MODEL_NAME`, loaded through Compose `env_file` (optional; the stack still starts without it).
+- `haunted-halls-engine/.env` — engine-local runtime configuration such as `OPENAI_API_KEY` and `DEFAULT_MODEL_NAME`, loaded through Compose `env_file`. The file is optional, but the normal model-backed runtime requires a non-whitespace provider key.
 
-Compose values declared under `environment:` take precedence over `env_file:`, so `DATABASE_URL` is pinned to the PostgreSQL service connection string and `INTERNAL_ENGINE_SERVICE_TOKEN` always comes from the frontend `.env`, keeping both services in agreement. PostgreSQL credentials default to development-only values; see the `postgres` service in [docker-compose.yml](docker-compose.yml) for configuration options. Without a valid `OPENAI_API_KEY` or `AI_ENABLED=true` in the engine `.env`, the engine responds with stub narration.
+Compose values declared under `environment:` take precedence over `env_file:`, so `DATABASE_URL` is pinned to the PostgreSQL service connection string and `INTERNAL_ENGINE_SERVICE_TOKEN` always comes from the frontend `.env`, keeping both services in agreement. PostgreSQL credentials default to development-only values; see the `postgres` service in [docker-compose.yml](docker-compose.yml) for configuration options. The engine no longer has a no-provider application fallback. Use the isolated E2E override below for local deterministic provider responses without a real OpenAI key.
 
 ### Make Targets
 
@@ -922,12 +922,40 @@ External nondeterministic providers are controlled rather than automated:
 - **Google OAuth** is never automated in this suite. Sign-in is established through a
   guarded, loopback-only, test-only NextAuth provider (below), not by driving Google's
   UI.
-- **OpenAI** is disabled for E2E runs (`AI_ENABLED=false`, empty `OPENAI_API_KEY` on the
-  engine), so the engine returns deterministic stub narration.
+- **OpenAI HTTP** is replaced by the E2E-only local `openai-mock` service. The
+  current engine runs its real model-backed `AsyncOpenAI` / Responses API path,
+  with an obviously fake test-only key and `OPENAI_BASE_URL=http://openai-mock:8080/v1`.
+  `AI_ENABLED` is not an application runtime selector. No real OpenAI credential
+  is needed or used; the override replaces any engine environment-file key.
 
 Everything else — the Next.js BFF, session/auth plumbing, the FastAPI engine, and
 PostgreSQL — is real. The suite does not mock `/api/chat`, `/api/campaign`,
 `/api/campaigns`, or campaign-detail/delete routes.
+
+The provider double in `playwright/openai-mock` supports only `POST /v1/responses`
+and a local health check. It dispatches structured output by the current schema
+names (`StarterAbilityProviderGeneration`, `ActionParserOutput`,
+`DirectorProposalResponse`) and text output by bounded narrator/title/memory
+prompt matching, never by a global call sequence. Unsupported endpoints,
+formats, commands, or prompts fail explicitly. It accepts only the exact fake
+E2E key and has no upstream forwarding code.
+Before fixture dispatch, structured requests must exactly match the checked-in
+`playwright/openai-mock/structured-contracts.json` contracts (object-key order
+is ignored; nested changes are rejected). These were generated with OpenAI SDK
+2.44.0's `type_to_text_format_param` from engine main
+`7293fce02538ee93b064f94562fff5793cb9d174`, not raw Pydantic schemas.
+Regenerate and review these test assets when the engine's SDK contracts change;
+the mock intentionally does not implement a general JSON Schema validator.
+
+The E2E engine, mock, migration job, and PostgreSQL share an **internal-only**
+Compose network without external egress. Only the frontend also joins the
+normal network for the browser connection. Engine startup waits for the mock's
+health check. This override does not change normal Compose or deployed runtime
+configuration. When engine provider contracts change, update these narrowly
+scoped fixtures rather than restoring a no-provider engine fallback.
+The mock uses Node 24's native TypeScript support without extra dependencies;
+`allowImportingTsExtensions` supports its explicit runtime imports under the
+repository's existing `noEmit` typecheck.
 
 ### The test-only auth seam ("e2e" provider)
 
@@ -1362,7 +1390,7 @@ merged and stable. Do not edit the engine repository from this frontend PR.
 
 2. Start the isolated E2E Compose stack. This reuses the existing Compose architecture
    with a focused override ([docker-compose.e2e.yml](docker-compose.e2e.yml)) that forces
-   the engine's OpenAI access off and enables the guarded frontend auth seam, using an
+   the engine's OpenAI HTTP calls to the local mock and enables the guarded frontend auth seam, using an
    isolated project name so E2E data never touches your normal dev database:
 
    ```bash

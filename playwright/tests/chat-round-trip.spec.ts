@@ -6,7 +6,7 @@ test.describe("full chat round trip", () => {
     await resetE2ECampaigns(request, baseURL ?? "http://localhost:3000");
   });
 
-  test("submits a deterministic command and renders the engine stub reply", async ({ page }) => {
+  test("submits a deterministic command through the model-backed engine and local provider", async ({ page }) => {
     await page.goto("/");
 
     const commandInput = page.getByLabel("Enter your command");
@@ -25,12 +25,14 @@ test.describe("full chat round trip", () => {
     // Loading feedback is visible while the narrator reply is in flight.
     await expect(conversation.getByText("The narrator is responding...")).toBeVisible();
 
-    // The engine stub reply returns through the BFF and is rendered; loading
+    // The local provider's reply returns through the real engine/BFF; loading
     // feedback disappears once the turn completes.
     await expect(conversation.getByText("The narrator is responding...")).toHaveCount(0, {
       timeout: 20_000,
     });
-    await expect(conversation.getByText("AI narrator replies (stub): look around")).toBeVisible();
+    await expect(conversation.getByText(
+      "The lantern casts a steady light across the Entry Hall. What will you examine next?",
+    )).toBeVisible();
 
     // The command input becomes enabled again and regains focus so the next
     // command can be typed without an extra click.
