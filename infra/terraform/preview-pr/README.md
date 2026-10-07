@@ -190,16 +190,22 @@ plans are not executed or automated in 41B.
 The reviewed foundation does not yet demonstrate all permissions/inputs needed
 by the future deployer. Static validation is not live authorization evidence:
 
-- It grants `roles/run.admin`, but no direct Cloud Run IAP policy permission.
-  Managing tester bindings needs `iap.webServices.getIamPolicy` and
-  `iap.webServices.setIamPolicy` on the intended preview IAP service resources.
-  Stop for an approved, preview-scoped prerequisite; do not add project-wide
-  tester access or IAP administration here.
+- `roles/run.admin` alone does not grant direct Cloud Run IAP policy permissions.
+  The follow-up foundation prerequisite now declares a separate custom
+  `iap.webServices.getIamPolicy` / `iap.webServices.setIamPolicy` role with a
+  service-type/tester-role condition. Its operator apply and positive/negative
+  live checks remain pending; configuration is not authorization evidence.
+  Do not add project-wide tester access or repair foundation IAM here.
 - The preview Cloud Run service agent needs Artifact Registry reader access to
   the accepted **existing engine repository** for the frozen staging image.
   The foundation's preview-repository grants do not supply that cross-project
   read. Staging Ready/serving-revision metadata capture also needs an explicitly
-  approved narrow read path. No existing-project IAM is changed here.
+  approved narrow read path. The existing application root now declares named
+  staging-engine metadata reads and source-repository reader access for the
+  deployer only. The recommended future copy into the preview registry still
+  needs separate implementation and image-input validation changes; this root's
+  accepted source-only image input is unchanged. No existing-project IAM is
+  owned here.
 - The deployer has no `secretmanager.versions.access`, including on the durable
   preview DB app password. It cannot independently assemble `DATABASE_URL`.
   41C needs an approved trusted secret-assembly/input path; no SQL admin,
@@ -219,6 +225,11 @@ mutation, live plan/backend initialization, or canonical engine-doc edit is
 performed in this slice. The canonical cross-repo status follow-up should record
 41B's merge while keeping #41 open pending 41C; it is deferred under the explicit
 frontend-only scope, without changing planning-sync metadata.
+
+See [the prerequisite scope/acceptance guide](../preview-foundation/prerequisites.md)
+for operator ordering, backend/provider credential routing (no deployer self Token
+Creator), IAM limitations, and the pending metadata-only secret/interface design.
+Neither secret ownership nor lifecycle configuration changes in this prerequisite.
 
 ## Offline validation
 

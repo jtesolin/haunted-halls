@@ -1217,8 +1217,12 @@ The intended grants are:
 | `hh-preview-deployer` | Preview Artifact Registry repository | `roles/artifactregistry.writer` |
 | `hh-preview-deployer` | `hh-preview-458395246135-per-pr-tf-state` only | `roles/storage.objectAdmin`; no access to `hh-preview-458395246135-foundation-tf-state` |
 | `hh-preview-deployer` | Three preview runtime service accounts | `roles/iam.serviceAccountUser`; no ability to act as the DB provisioner |
-| `hh-preview-deployer` | Preview project | `secretmanager.secrets.create` only, conditionally limited to `hh-web-pr-*` / `hh-engine-pr-*` Secret resources |
+| `hh-preview-deployer` | Preview project | `secretmanager.secrets.create` only; parent-project authorization permits arbitrary new names, while trusted configuration restricts intended names |
 | `hh-preview-deployer` | `hh-web-pr-*` / `hh-engine-pr-*` Secret and SecretVersion resources | Custom conditional metadata, version, and IAM-policy mutations; excludes durable foundation secrets and `secretmanager.versions.access` |
+| `hh-preview-deployer` | Preview project IAP WebService resources | Custom service-policy read/write role; condition permits only tester-role changes, not PR-prefix or email filtering |
+| `hh-preview-deployer` | Preview quota project | Custom `serviceusage.services.use` only; no API/quota administration |
+| `hh-preview-deployer` | Existing staging engine service | Custom `run.services.get` / `run.revisions.get` only, owned by the existing application root |
+| `hh-preview-deployer` | Existing source Artifact Registry repository | `roles/artifactregistry.reader` for all packages in that repository, owned by the existing application root |
 | `hh-preview-deployer` | Fixed DB control-plane service | `roles/run.invoker` on this service only; no command/entrypoint overrides or Cloud SQL access |
 | Preview engine and migration runtime | Existing Cloud SQL project | Conditional `roles/cloudsql.client` on the existing instance only |
 | Preview frontend runtime | Existing Cloud SQL project | No Cloud SQL role |
@@ -1240,6 +1244,26 @@ deployer cannot act as the DB-provisioner runtime identity and has no
 production/staging secret access. Preview DB logins cannot CONNECT to
 production/staging databases, and the preview OpenAI key is separate from the
 production key. No production/staging deployment identity is changed.
+
+### Reviewed preview IAM/API prerequisites (#41)
+
+After accepted foundation #40 and merged 41A/41B, the first prerequisite change
+adds preview IAP policy administration, corrects creation-only secret
+authorization, enables preview quota consumption, declares the preview SQL Admin
+API, and adds read-only staging-engine/source-repository grants. It does not
+deploy resources or enable lifecycle automation. Tester access remains on each
+frontend; no source writes or source-registry grants to preview runtimes are
+added. Existing version-management permissions are retained.
+
+See [prerequisite scopes, operator ordering, live acceptance, and next secret
+preparation design](infra/terraform/preview-foundation/prerequisites.md).
+The documented limitations are intentional: IAP administration is not restricted
+by PR-name prefixes or tester membership, secret creation permits arbitrary names
+in the dedicated preview project, and source repository reads cover all packages.
+Offline contracts/provider validation are not proof of live authorization.
+Secret preparation and the per-PR interface update remain pending together;
+image copying and the 41C lifecycle remain pending. Keep #41 open. Canonical
+engine status updates are deferred under the explicit no-engine-edits boundary.
 
 ### IAP and preview OpenAI setup
 
