@@ -43,12 +43,12 @@ function structuredOutput(name: unknown, input: ReturnType<typeof messages>) {
   switch (name) {
     case "StarterAbilityProviderGeneration":
       return {
-        sensory_ability: {
+        first_ability: {
           ability_id: "echo_sense", display_name: "Echo Sense",
           description: "Sense nearby active presence.", track: "investigation",
           sense_filter: "presence", range: 0,
         },
-        utility_ability: {
+        second_ability: {
           ability_id: "gentle_pull", display_name: "Gentle Pull",
           description: "Draw a small nearby portable object toward your hand.",
           track: "resolve", operation: "retrieve",

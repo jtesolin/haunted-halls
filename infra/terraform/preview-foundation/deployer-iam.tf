@@ -4,10 +4,51 @@ resource "google_project_iam_member" "deployer_cloud_run_admin" {
   member  = "serviceAccount:${google_service_account.deployer.email}"
 }
 
+resource "google_project_iam_custom_role" "preview_iap_tester_policy" {
+  role_id     = "previewIapTesterPolicy"
+  title       = "Manage preview IAP tester policies"
+  description = "Read and change IAP service policies; the grant restricts changes to the tester role."
+  permissions = [
+    "iap.webServices.getIamPolicy",
+    "iap.webServices.setIamPolicy",
+  ]
+
+  depends_on = [google_project_service.apis["iam.googleapis.com"]]
+}
+
+resource "google_project_iam_member" "deployer_iap_tester_policy" {
+  project = var.preview_project_id
+  role    = google_project_iam_custom_role.preview_iap_tester_policy.name
+  member  = "serviceAccount:${google_service_account.deployer.email}"
+
+  condition {
+    title       = "Manage only IAP service tester roles"
+    description = "Service policies only; PR naming and tester membership are enforced by trusted configuration, not this condition."
+    expression  = "resource.type == \"iap.googleapis.com/WebService\" && api.getAttribute(\"iam.googleapis.com/modifiedGrantsByRole\", []).hasOnly([\"roles/iap.httpsResourceAccessor\"])"
+  }
+}
+
+resource "google_project_iam_custom_role" "preview_quota_consumer" {
+  role_id     = "previewQuotaConsumer"
+  title       = "Consume preview project API quota"
+  description = "Use the preview quota project without API enablement or quota administration."
+  permissions = [
+    "serviceusage.services.use",
+  ]
+
+  depends_on = [google_project_service.apis["iam.googleapis.com"]]
+}
+
+resource "google_project_iam_member" "deployer_quota_consumer" {
+  project = var.preview_project_id
+  role    = google_project_iam_custom_role.preview_quota_consumer.name
+  member  = "serviceAccount:${google_service_account.deployer.email}"
+}
+
 resource "google_project_iam_custom_role" "preview_per_pr_secret_creator" {
   role_id     = "previewPerPrSecretCreator"
-  title       = "Create per-PR preview secrets"
-  description = "Create disposable per-PR preview secret objects."
+  title       = "Create preview project secret containers"
+  description = "Creation only, authorized on the parent project; trusted configuration restricts requested names."
   permissions = [
     "secretmanager.secrets.create",
   ]
@@ -40,12 +81,6 @@ resource "google_project_iam_member" "deployer_per_pr_secret_creator" {
   project = var.preview_project_id
   role    = google_project_iam_custom_role.preview_per_pr_secret_creator.name
   member  = "serviceAccount:${google_service_account.deployer.email}"
-
-  condition {
-    title       = "Create per-PR preview secrets only"
-    description = "The deployer can create only disposable per-PR secret objects."
-    expression  = "resource.type == \"secretmanager.googleapis.com/Secret\" && (resource.name.startsWith(\"projects/${data.google_project.preview.number}/secrets/hh-web-pr-\") || resource.name.startsWith(\"projects/${data.google_project.preview.number}/secrets/hh-engine-pr-\"))"
-  }
 }
 
 resource "google_project_iam_member" "deployer_per_pr_secret_manager" {

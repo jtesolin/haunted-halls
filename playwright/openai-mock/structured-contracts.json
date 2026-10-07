@@ -62,6 +62,39 @@
         "title": "StarterAbilitySensoryProviderOutput",
         "type": "object"
       },
+      "StarterAbilityTraversalProviderOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "ability_id": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "title": "Ability Id",
+            "type": "string"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "track": {
+            "$ref": "#/$defs/ProgressionTrackId"
+          },
+          "traversal_method": {
+            "$ref": "#/$defs/TraversalMethod"
+          }
+        },
+        "required": [
+          "ability_id",
+          "display_name",
+          "description",
+          "track",
+          "traversal_method"
+        ],
+        "title": "StarterAbilityTraversalProviderOutput",
+        "type": "object"
+      },
       "StarterAbilityUtilityProviderOutput": {
         "additionalProperties": false,
         "properties": {
@@ -103,21 +136,53 @@
         ],
         "title": "StarterUtilityOperation",
         "type": "string"
+      },
+      "TraversalMethod": {
+        "enum": [
+          "levitation",
+          "spider_climb",
+          "supernatural_jump",
+          "water_walking"
+        ],
+        "title": "TraversalMethod",
+        "type": "string"
       }
     },
     "additionalProperties": false,
     "description": "The model's bounded choices, without engine-owned mechanics.",
     "properties": {
-      "sensory_ability": {
-        "$ref": "#/$defs/StarterAbilitySensoryProviderOutput"
+      "first_ability": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/StarterAbilitySensoryProviderOutput"
+          },
+          {
+            "$ref": "#/$defs/StarterAbilityUtilityProviderOutput"
+          },
+          {
+            "$ref": "#/$defs/StarterAbilityTraversalProviderOutput"
+          }
+        ],
+        "title": "First Ability"
       },
-      "utility_ability": {
-        "$ref": "#/$defs/StarterAbilityUtilityProviderOutput"
+      "second_ability": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/StarterAbilitySensoryProviderOutput"
+          },
+          {
+            "$ref": "#/$defs/StarterAbilityUtilityProviderOutput"
+          },
+          {
+            "$ref": "#/$defs/StarterAbilityTraversalProviderOutput"
+          }
+        ],
+        "title": "Second Ability"
       }
     },
     "required": [
-      "sensory_ability",
-      "utility_ability"
+      "first_ability",
+      "second_ability"
     ],
     "title": "StarterAbilityProviderGeneration",
     "type": "object"

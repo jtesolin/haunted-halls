@@ -62,11 +62,11 @@ describe("local OpenAI Responses fixtures", () => {
 
   it("routes all three structured formats and includes strict nullable fields", () => {
     expect(JSON.parse(output(structuredRequest("StarterAbilityProviderGeneration")))).toEqual({
-      sensory_ability: {
+      first_ability: {
         ability_id: "echo_sense", display_name: "Echo Sense",
         description: "Sense nearby active presence.", track: "investigation", sense_filter: "presence", range: 0,
       },
-      utility_ability: {
+      second_ability: {
         ability_id: "gentle_pull", display_name: "Gentle Pull",
         description: "Draw a small nearby portable object toward your hand.", track: "resolve", operation: "retrieve",
       },
@@ -78,6 +78,40 @@ describe("local OpenAI Responses fixtures", () => {
     expect(JSON.parse(output(structuredRequest("DirectorProposalResponse")))).toEqual({
       proposal: { decision: "none", world_action: null },
     });
+  });
+
+  it("requires distinct sensory and utility choices in the current starter slots", () => {
+    const contract = structuredContracts.StarterAbilityProviderGeneration;
+    expect(contract.required).toEqual(["first_ability", "second_ability"]);
+    expect(contract.properties.first_ability.anyOf).toEqual(contract.properties.second_ability.anyOf);
+    expect(contract.$defs.StarterAbilitySensoryProviderOutput.required).toContain("sense_filter");
+    expect(contract.$defs.StarterAbilityUtilityProviderOutput.required).toContain("operation");
+    expect(contract.$defs.StarterAbilityTraversalProviderOutput.required).toContain("traversal_method");
+    const abilities = JSON.parse(output(structuredRequest("StarterAbilityProviderGeneration")));
+    expect(abilities.first_ability).toMatchObject({ sense_filter: "presence", range: 0 });
+    expect(abilities.second_ability).toMatchObject({ operation: "retrieve" });
+    expect(abilities.first_ability.ability_id).not.toBe(abilities.second_ability.ability_id);
+    expect(abilities.first_ability).not.toHaveProperty("operation");
+    expect(abilities.second_ability).not.toHaveProperty("sense_filter");
+  });
+
+  it("rejects the obsolete named starter slots and a missing union discriminator", () => {
+    const request = structuredRequest("StarterAbilityProviderGeneration");
+    const obsolete = structuredClone(structuredContracts.StarterAbilityProviderGeneration);
+    const { first_ability, second_ability } = obsolete.properties;
+    const schema = {
+      ...obsolete,
+      properties: { sensory_ability: first_ability, utility_ability: second_ability },
+      required: ["sensory_ability", "utility_ability"],
+    };
+    expect(() => createMockResponse({
+      ...request, text: { format: { ...request.text.format, schema } },
+    })).toThrow("Unsupported Structured Outputs schema contract");
+    obsolete.$defs.StarterAbilityUtilityProviderOutput.required =
+      obsolete.$defs.StarterAbilityUtilityProviderOutput.required.filter((field) => field !== "operation");
+    expect(() => createMockResponse({
+      ...request, text: { format: { ...request.text.format, schema: obsolete } },
+    })).toThrow("Unsupported Structured Outputs schema contract");
   });
 
   it("routes narration and titles independently of request order and old history", () => {
