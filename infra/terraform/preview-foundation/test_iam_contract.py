@@ -1,7 +1,9 @@
-"""Offline source contracts, not an IAM evaluator or live authorization test."""
+"""Offline source/variable contracts, not an IAM evaluator or live authorization test."""
 
 import json
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -38,6 +40,68 @@ def permissions(block: str) -> set[str]:
 
 
 class PreviewIamContracts(unittest.TestCase):
+    def test_foundation_project_validation_accepts_only_the_fixed_project(self):
+        source = (FOUNDATION / "variables.tf").read_text()
+        blocks = re.findall(r'^variable "preview_project_id" \{\n(.*?)^\}',
+                            source, re.MULTILINE | re.DOTALL)
+        self.assertEqual(len(blocks), 1)
+        with tempfile.TemporaryDirectory(prefix="preview-project-contract-") as directory:
+            root = Path(directory)
+            (root / "variables.tf").write_text(
+                'variable "preview_project_id" {\n' + blocks[0] + '\n}\n')
+            (root / "project.tftest.hcl").write_text('''
+run "accepted_project" {
+  command = plan
+  variables {
+    preview_project_id = "hh-preview-458395246135"
+  }
+  assert {
+    condition = var.preview_project_id == "hh-preview-458395246135"
+    error_message = "The accepted preview project must pass validation."
+  }
+}
+run "otherwise_valid_alternate_project" {
+  command = plan
+  variables {
+    preview_project_id = "hh-preview-alternate"
+  }
+  expect_failures = [var.preview_project_id]
+}
+''')
+            for command in (
+                ["init", "-backend=false", "-input=false", "-no-color"],
+                ["test", "-no-color"],
+            ):
+                result = subprocess.run(
+                    ["terraform", f"-chdir={root}", *command],
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_fixed_project_matches_source_per_pr_and_backend_identities(self):
+        project = "hh-preview-458395246135"
+        variables = (FOUNDATION / "variables.tf").read_text()
+        block = re.search(r'^variable "preview_project_id" \{\n(.*?)^\}',
+                          variables, re.MULTILINE | re.DOTALL).group(1)
+        self.assertEqual(attribute(block, "default"), json.dumps(project))
+        self.assertEqual(attribute(block, "condition"),
+                         f'var.preview_project_id == "{project}"')
+        deployer = f"hh-preview-deployer@{project}.iam.gserviceaccount.com"
+        identity = resource(FOUNDATION / "identities.tf", "google_service_account", "deployer")
+        self.assertEqual(attribute(identity, "account_id"), '"hh-preview-deployer"')
+        self.assertNotRegex(identity, re.compile(r"^\s*(provider|project)\s*=", re.MULTILINE))
+        providers = (FOUNDATION / "providers.tf").read_text()
+        default = re.search(r'^provider "google" \{\n(.*?)^\}',
+                            providers, re.MULTILINE | re.DOTALL).group(1)
+        self.assertEqual(attribute(default, "project"), "var.preview_project_id")
+        source = (APPLICATION / "preview-access-iam.tf").read_text()
+        self.assertEqual(attribute(source, "preview_deployer_email"), json.dumps(deployer))
+        self.assertEqual(attribute((PR_ROOT / "locals.tf").read_text(), "project_id"),
+                         json.dumps(project))
+        backend = (PR_ROOT / "versions.tf").read_text()
+        self.assertEqual(attribute(backend, "impersonate_service_account"), json.dumps(deployer))
+        self.assertEqual(attribute(backend, "bucket"), json.dumps(f"{project}-per-pr-tf-state"))
+
     def foundation_resource(self, kind: str, name: str) -> str:
         return resource(FOUNDATION / "deployer-iam.tf", kind, name)
 

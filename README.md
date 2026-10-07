@@ -1074,8 +1074,12 @@ authentication; #41 owns frontend lifecycle/auth integration.
 
 Create the dedicated preview project in the Google Cloud console and attach
 the operator-selected billing account before running Terraform. The project
-ID above is fixed by the operator; do not substitute the production/staging
-project. The Terraform roots are:
+ID is fixed to `hh-preview-458395246135`: foundation `preview_project_id`
+validation rejects even syntactically valid alternate project IDs. This is
+not a multi-project setting; the source-grant deployer principal, per-PR
+project/state bucket, and backend impersonation identity are intentionally
+pinned to the same accepted project. Do not substitute the production/staging
+project or another preview project. The Terraform roots are:
 
 - `infra/terraform/preview-foundation/backend-bootstrap`: creates a
   pair of non-public, versioned GCS state buckets in the preview project,

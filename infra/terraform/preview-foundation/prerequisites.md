@@ -18,6 +18,22 @@ The principal in every new grant is
 All grants use additive `*_iam_member` resources, not authoritative policies
 or bindings that replace other members.
 
+The foundation's `preview_project_id` is a fixed-project contract, not a
+multi-project configuration option: validation accepts only
+`hh-preview-458395246135`, including when explicitly supplied by an operator.
+This keeps the foundation-created deployer aligned with the application root's
+pinned source-grant principal, the per-PR root's project and state bucket, and
+its backend impersonation identity. An otherwise-valid alternate project ID is
+rejected before provisioning. Supporting another project would require a
+separately reviewed cross-root design; this change preserves all IAM scopes
+and pinned identities.
+
+Offline IAM tests evaluate the actual foundation variable validation in a
+temporary provider-free Terraform module: the accepted project passes and
+`hh-preview-alternate` fails. Source contracts also check alignment with the
+source principal, per-PR project, state bucket, and backend impersonation
+identity. These checks do not prove live authorization.
+
 | Permission/role | Resource and restriction | Owning Terraform root | Reason |
 | --- | --- | --- | --- |
 | Custom `previewIapTesterPolicy`: only `iap.webServices.getIamPolicy`, `iap.webServices.setIamPolicy` | Project `hh-preview-458395246135`, with the condition below | `preview-foundation` | Manage tester policies on dynamically created IAP service resources |

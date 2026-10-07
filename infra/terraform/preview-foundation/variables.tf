@@ -1,11 +1,11 @@
 variable "preview_project_id" {
-  description = "Dedicated, operator-created Google Cloud project for preview runtime and control-plane resources."
+  description = "Fixed, accepted preview project shared with source grants, per-PR resources, and the backend deployer identity; not a multi-project setting."
   type        = string
   default     = "hh-preview-458395246135"
 
   validation {
-    condition     = can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.preview_project_id))
-    error_message = "preview_project_id must be a valid Google Cloud project ID."
+    condition     = var.preview_project_id == "hh-preview-458395246135"
+    error_message = "preview_project_id must be hh-preview-458395246135 to match the pinned source grants, per-PR resources, and backend deployer identity; alternate projects are not supported."
   }
 }
 
