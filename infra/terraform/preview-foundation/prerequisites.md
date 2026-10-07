@@ -5,11 +5,12 @@ This is the first prerequisite change after accepted foundation #40 and merged
 Secret preparation, the per-PR interface update, image copying, and the trusted
 41C lifecycle remain **pending**. Keep #41 open.
 
-This change adds only IAM/API configuration. No apply, cloud-backed plan,
+The original prerequisite PR added only IAM/API configuration. No apply, cloud-backed plan,
 secret access, migration, or live permission test was performed. Existing
 deployer version-management permissions remain until a replacement path exists.
 No provisioner permissions, ledger, runtime, WIF, or per-PR resource ownership
-change is included. The engine repository is unchanged.
+change was included. Subsequent operator applies and the new manual acceptance
+harness are recorded below. The engine repository is unchanged.
 
 ## Principal, scope, and ownership
 
@@ -133,7 +134,7 @@ its fixed `impersonate_service_account` performs one impersonation to the previe
 deployer. Supply service-account-impersonated ADC to the Google provider.
 Do not feed already-impersonated deployer credentials through a second backend
 impersonation and repair the failure with deployer self Token Creator.
-No such grant or workflow is added. Keep exact-ref WIF, a fresh trusted runner,
+No such grant is added. Keep exact-ref WIF, a fresh trusted runner,
 PR-specific `TF_DATA_DIR`, the default workspace, and the existing backend guard.
 Never execute PR-controlled Terraform/scripts after authentication.
 
@@ -159,6 +160,142 @@ IAP service agent and project-level no-org/external-user OAuth bootstrap, tester
 allowlist, OpenAI version, effective runtime/SQL grants and cross-project socket
 connection. Do not add per-PR OAuth callbacks, OAuth admin roles, or public access.
 The SQL API declaration is not evidence of working connectivity.
+
+## Manual WIF acceptance harness
+
+The exact reviewed prerequisite plans at frontend source
+`b4b4e1c090916977ea3c591d5d39c6fc07565dfd` were subsequently applied successfully:
+foundation 6 add / 1 change / 1 destroy (serial 6 -> 8), application 3 add /
+0 change / 0 destroy (serial 27 -> 28). Authoritative inspection found no
+unreviewed mutations. **Do not reapply those consumed plans.** Effective
+deployer acceptance remains pending; the local operator has no impersonation
+grant by design.
+
+The manual-only [workflow](../../../.github/workflows/preview-deploy.yml) and
+[standard-library harness](../../../tools/preview-acceptance/acceptance.py)
+are a bounded acceptance precursor, not the automatic 41C lifecycle. They
+must be reviewed/merged before a maintainer dispatches from `main`. There are
+no privileged dispatch inputs. Job/context gates reject non-main, other
+repositories, other workflow refs and invalid run identities before mutation.
+Checkout is the dispatch main SHA, verified before authentication; credentials
+are not persisted by checkout. Workflow permissions are only `contents: read`
+and `id-token: write`, with the repository's existing action-version convention.
+
+Read-only operator inspection on October 7, 2026 confirmed the accepted state
+output and ACTIVE live provider are exactly
+`projects/1001419903197/locations/global/workloadIdentityPools/hh-preview-github/providers/github-preview`.
+The live condition/mapping and deployer service-account policy still accept
+only the two documented main workflow refs. No operator impersonation or
+deployer self Token Creator is introduced.
+
+### Supported checks and canary boundary
+
+- Verify the access token's exact preview-deployer email and actual project
+  number `1001419903197`; fail before canary creation on mismatch.
+- Verify existing Run create/delete/service-IAM permissions and frontend runtime
+  `actAs`. Live operator inspection confirmed preview `roles/run.admin` and
+  that runtime-only grant; no extra permissions are needed for a safe canary.
+- Create `hh-web-iam-accept-<run-id>-<attempt>`, not a real PR name, in
+  `hh-preview-458395246135/us-east1`. Use only reviewed fixed
+  `gcr.io/cloudrun/hello@sha256:ea86b59c787261f424f9de114900e598f19e036c73aa95ff12b6ad5f022122fd`
+  (public sample digest resolved read-only during implementation).
+  IAP stays enabled with no `allUsers` binding, no env/secrets/SQL mounts,
+  no application/provisioner image, min 0 / max 1 and 1 CPU / 256 MiB.
+  Only the per-service IAP agent receives invocation.
+- Read version-3 service IAP policy; add/remove tester-role membership for the
+  deployer service account **on the canary only**, not a human tester grant or
+  browser acceptance. Preserve every unrelated binding/condition and fresh etag.
+  Seed one expired conditional tester binding as a live preservation control,
+  then remove it after restoring the original policy; it grants no current access.
+  Attempt admin and mixed-role writes only against this disposable service;
+  require HTTP 403 `PERMISSION_DENIED` and verify no policy change.
+- Inspect parent IAP policy permissions for the non-WebService denial.
+- Create `hh-web-pr-acceptance-<run-id>-<attempt>` and
+  `iam-web-acceptance-<run-id>-<attempt>` secret containers. The alphabetic acceptance
+  namespace cannot collide with numeric PR names. Append one explicitly
+  non-sensitive canary version only to the prefixed container, and require its
+  direct access to fail with HTTP 403 `PERMISSION_DENIED`. Do not touch durable
+  credentials. Inspect management permissions on the newly existing non-prefixed
+  canary and creation permissions on the existing source project.
+- Make a quota-billed preview API read. Inspect quota-use with a positive control
+  and require enable/disable/quota-update permissions to be absent.
+- Read exactly the staging engine service and its sole 100% latest Ready revision.
+  Require production named read and source service/revision lists to fail with
+  permission denial. Inspect staging update/delete/invoke/IAM permissions with a
+  positive named-read control; never issue source mutation/invocation calls.
+- Read only the serving engine's existing immutable source manifest, without
+  capture/copy or resolving tags. Inspect registry upload/delete/tag permissions
+  with a positive download permission control.
+
+The harness retains access tokens only in process memory. It emits no raw HTTP
+errors/bodies, credential files, JWTs, payloads, headers or state. Its private
+runner-local journal contains allowlisted check results, canary ownership metadata,
+and the minimum complete original version-3 IAP policy and attempted policy
+candidates needed for rollback. That policy stays only in the private `0600`
+runner state, never the Actions summary. Journal updates use atomic replacement
+and file/directory synchronization; no cloud results are downloaded as artifacts.
+
+### Fail-closed gaps; do not broaden IAM to pass
+
+1. **Source policy membership audit:** `roles/artifactregistry.reader` does not
+   include `artifactregistry.repositories.getIamPolicy`. The deployer cannot
+   independently verify other runtimes' grants. The harness attempts the
+   read-only audit and reports `FAIL / BLOCKED` on permission denial, not PASS.
+   The request explicitly asks for policy version 3 so conditional grants are
+   audited with the same membership restrictions as unconditional grants.
+   Read-only operator inspection during implementation found no direct repository
+   grants to the preview frontend/engine/migration or preview service agents;
+   this is separate evidence, not an effective-access test by the deployer.
+2. **Outside-project IAP WebService denial:** there is no approved disposable
+   source-project IAP WebService. A denial on the parent `iap_web` resource would
+   not prove the conditional WebService boundary. The harness reports this
+   required check as `FAIL / BLOCKED`; it neither creates a canary outside the
+   preview project nor writes production/staging IAP policies.
+
+Under current permissions/evidence these required gaps make the overall workflow
+fail, even if supported tests pass. They require a separately reviewed acceptance
+disposition/operator authorization-tooling procedure, not automatic role changes.
+The broader prerequisite checks for IAP OAuth/browser bootstrap, tester allowlist,
+OpenAI version metadata, effective SQL grants and cross-project `SELECT 1` are
+still operator/runtime acceptance and are **not** claimed by this workflow.
+
+### Cleanup and evidence
+
+`always()` invokes cleanup with freshly verified deployer credentials. Only
+canaries created/attempted by this run and matching exact ownership labels may
+be deleted. Cloud Run long-running creation/deletion is polled before declaring
+absence; a lost creation response or ambiguous in-flight result requires operator
+reconciliation. Non-prefixed secrets intentionally cannot be deleted by the
+deployer, so their exact numeric-project resource names are prominently reported
+for later operator cleanup. Even a successful run would leave that known canary
+for the operator; a lost runner or hard cancellation may leave other reported
+canaries as well. Cleanup never overwrites the original check result.
+
+Before the first IAP write, the harness journals the original bindings,
+conditions, version and etag with the exact canary resource identity. Every
+submitted policy write is recorded as ambiguous **before** the request, then
+as succeeded after its response; restored is recorded only after a confirming
+version-3 read. This also covers unexpectedly successful negative-test writes.
+Cleanup first verifies service ownership, reads the current IAP policy with
+version 3 and a fresh etag, restores the original, and verifies canonical
+bindings/conditions before service deletion. A definitively rejected stale-etag
+write permits one fresh read and retry; ambiguous writes are not blindly retried.
+Unexpected unrelated policy changes are never overwritten. If restoration or
+ownership cannot be proven, retain the service for explicit operator
+reconciliation and continue safe cleanup of other owned canaries. Deletion
+failure after a proven rollback does not erase that proof or the original
+acceptance failure. The summary reports only sanitized reconciliation status.
+
+Review the Actions summary for every PASS/FAIL/NOT RUN, expected denial versus
+unexpected error, exact canary name and cleanup status. As operator, inspect
+reported resources and their `hh-purpose=iam-acceptance`, run and attempt labels
+before deleting only those canaries. Verify absence afterward. Never delete by
+prefix/wildcard or change runtime/IAM to make a negative test pass.
+
+Offline validation: `make preview-acceptance-test` (workflow trust contracts and
+mocked identity, strict denial, policy preservation, source-boundary and cleanup
+tests). CI runs the same checks without credentials. No cloud acceptance or
+workflow dispatch occurs in this PR.
 
 ## Offline validation
 

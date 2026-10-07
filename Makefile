@@ -2,7 +2,7 @@
 	docker-build docker-up docker-down docker-logs docker-ps docker-config docker-migrate \
 	debug-build debug-up debug-down debug-logs debug-config \
 	docker-reset-db tf-fmt tf-validate tf-init tf-plan tf-apply tf-output \
-	tf-bootstrap-init tf-bootstrap-apply tf-bootstrap-output tf-preview-db-test tf-preview-pr-test tf-preview-iam-test
+	tf-bootstrap-init tf-bootstrap-apply tf-bootstrap-output tf-preview-db-test tf-preview-pr-test tf-preview-iam-test preview-acceptance-test
 
 PORT ?= 3000
 TERRAFORM_DIR := infra/terraform
@@ -40,6 +40,7 @@ help:
 	@echo "  tf-preview-db-test  Run preview DB provisioner input validation tests"
 	@echo "  tf-preview-pr-test  Run offline per-PR Terraform and backend identity tests"
 	@echo "  tf-preview-iam-test Run offline preview prerequisite IAM contract tests"
+	@echo "  preview-acceptance-test Run offline manual acceptance harness contracts"
 	@echo ""
 	@echo "Docker Compose Stack (includes PostgreSQL, engine, frontend):"
 	@echo "  docker-build      Build Compose application images"
@@ -109,6 +110,9 @@ tf-preview-db-test:
 
 tf-preview-iam-test:
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $(TERRAFORM_PREVIEW_DIR) -p 'test_iam_*.py'
+
+preview-acceptance-test:
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools/preview-acceptance -p 'test_*.py'
 
 tf-preview-pr-test:
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $(TERRAFORM_PREVIEW_PR_DIR) -p 'test_*.py'

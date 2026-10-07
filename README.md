@@ -1280,6 +1280,52 @@ Secret preparation and the per-PR interface update remain pending together;
 image copying and the 41C lifecycle remain pending. Keep #41 open. Canonical
 engine status updates are deferred under the explicit no-engine-edits boundary.
 
+### Manual trusted prerequisite acceptance (#41)
+
+The reviewed prerequisite plans were applied from
+`b4b4e1c090916977ea3c591d5d39c6fc07565dfd`; this harness never reapplies them.
+The manual-only [preview acceptance workflow](.github/workflows/preview-deploy.yml)
+occupies the exact path already trusted by preview WIF. It is **not 41C**:
+no automatic PR triggers, artifact build/copy, Terraform, real preview DB,
+migration, application rollout, or PR teardown is implemented.
+
+Only dispatches from this repository's reviewed `main` can authenticate.
+The fresh GitHub-hosted runner checks out the dispatch's exact main SHA, verifies
+the workflow ref, and uses the existing provider
+`projects/1001419903197/locations/global/workloadIdentityPools/hh-preview-github/providers/github-preview`
+to impersonate only `hh-preview-deployer`. No dispatch inputs or
+production/staging credentials are accepted. The local operator is intentionally
+not an impersonator; do not add human or deployer self Token Creator grants.
+
+The [checked-in harness](tools/preview-acceptance/acceptance.py) proves the token
+principal, then exercises bounded canaries and read-only source/permission checks.
+Its `always()` cleanup verifies ownership labels before deleting the hello
+service and prefixed secret. A created non-prefixed secret intentionally requires
+operator cleanup; its exact name appears in the sanitized Actions summary.
+Ambiguous creation/deletion is reported for reconciliation, not retried blindly.
+Original acceptance failures are preserved even if cleanup succeeds or fails.
+IAP writes journal the original version-3 policy and each write intent privately
+before submission. Cleanup uses a fresh etag to restore and verify the original
+bindings/conditions before deleting the owned service. Unproven rollback or
+unrelated policy changes retain the canary for operator reconciliation; raw
+policies never appear in the Actions summary. Source IAM audit requests version
+3 and rejects conditional as well as unconditional preview-runtime grants.
+
+**Known required-check gaps remain fail-closed:** source Artifact Registry
+reader credentials cannot read repository IAM policy, and there is no approved
+outside-preview disposable IAP WebService for a reliable outside-project check.
+The harness reports these as `FAIL / BLOCKED`; it does not substitute source
+contracts or a parent-policy denial for live proof. Consequently a run under
+the current permissions is expected to fail overall even when supported
+checks pass. A separate operator audit is not silently counted as deployer proof.
+See the [acceptance procedure and limitations](infra/terraform/preview-foundation/prerequisites.md#manual-wif-acceptance-harness)
+before dispatching **after review and merge**. This PR does not dispatch it.
+
+`make preview-acceptance-test` runs offline workflow contracts and mocked
+transport/policy/cleanup regressions, also included in Frontend CI. These are
+not evidence that live authorization, direct IAP bootstrap, or SQL connectivity
+works. Keep #41 open; secret preparation/interface changes and 41C remain pending.
+
 ### IAP and preview OpenAI setup
 
 Preview frontends use direct Cloud Run IAP, not a public-access fallback. For
