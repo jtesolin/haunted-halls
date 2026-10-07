@@ -975,7 +975,18 @@ Before fixture dispatch, structured requests must exactly match the checked-in
 `playwright/openai-mock/structured-contracts.json` contracts (object-key order
 is ignored; nested changes are rejected). These were generated with OpenAI SDK
 2.44.0's `type_to_text_format_param` from engine main
-`7293fce02538ee93b064f94562fff5793cb9d174`, not raw Pydantic schemas.
+`96360c38431fc1c515d1a94349a79f28efff8665`, not raw Pydantic schemas.
+The starter response uses `first_ability`/`second_ability` with mechanically
+distinct sensory (`sense_filter`) and utility (`operation`) choices; the strict
+contract also supports traversal (`traversal_method`) choices.
+To regenerate all fixtures using the engine's installed SDK and source:
+
+```bash
+PYTHONPATH="$(realpath ../haunted-halls-engine)" \
+  ../haunted-halls-engine/.venv/bin/python \
+  playwright/openai-mock/generate-contracts.py
+```
+
 Regenerate and review these test assets when the engine's SDK contracts change;
 the mock intentionally does not implement a general JSON Schema validator.
 
