@@ -71,6 +71,8 @@ def request(url, token=None, method="GET", body=None, headers=None):
             code = json.loads(error.read()).get("error", {}).get("status", "UNKNOWN")
         except (ValueError, AttributeError):
             code = "UNKNOWN"
+        finally:
+            error.close()
         if code not in {"PERMISSION_DENIED", "NOT_FOUND", "ALREADY_EXISTS", "INVALID_ARGUMENT", "UNAUTHENTICATED"}:
             code = "UNKNOWN"
         raise ApiError(error.code, code) from None

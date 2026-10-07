@@ -101,14 +101,16 @@ class HarnessTests(unittest.TestCase):
                 acceptance.verified_token()
 
     def test_http_errors_expose_only_status_not_credentials_or_response_bodies(self):
+        body = io.BytesIO(b'{"error":{"status":"PERMISSION_DENIED","message":"payload fake-token"}}')
         error = acceptance.urllib.error.HTTPError(
             "https://oauth2.googleapis.com/tokeninfo?access_token=fake-token", 403, "secret response",
-            {}, io.BytesIO(b'{"error":{"status":"PERMISSION_DENIED","message":"payload fake-token"}}'))
+            {}, body)
         with patch.object(acceptance.urllib.request, "urlopen", side_effect=error):
             with self.assertRaises(acceptance.ApiError) as raised:
                 acceptance.request("https://oauth2.googleapis.com/tokeninfo?access_token=fake-token")
         self.assertEqual(str(raised.exception), "HTTP 403, PERMISSION_DENIED")
         self.assertNotIn("fake-token", str(raised.exception))
+        self.assertTrue(body.closed)
 
     def test_malformed_api_response_fails_without_echoing_content(self):
         with patch.object(acceptance.urllib.request, "urlopen") as response:
