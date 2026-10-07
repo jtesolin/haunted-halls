@@ -1,0 +1,71 @@
+name: Preview Prerequisite Acceptance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: preview-prerequisite-acceptance
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT: hh-preview-458395246135
+  WIF_PROVIDER: projects/1001419903197/locations/global/workloadIdentityPools/hh-preview-github/providers/github-preview
+  DEPLOY_SERVICE_ACCOUNT: hh-preview-deployer@hh-preview-458395246135.iam.gserviceaccount.com
+
+jobs:
+  acceptance:
+    name: Manual trusted prerequisite checks
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      github.repository == 'jtesolin/haunted-halls'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Require exact trusted workflow identity
+        run: |
+          set -euo pipefail
+          test "$GITHUB_WORKFLOW_REF" = "jtesolin/haunted-halls/.github/workflows/preview-deploy.yml@refs/heads/main"
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_EVENT_NAME" = "workflow_dispatch"
+
+      - name: Check out trusted main revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify checked-out source
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Authenticate only as preview deployer
+        id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT }}
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Run bounded acceptance harness
+        run: python3 tools/preview-acceptance/acceptance.py run
+
+      - name: Clean up owned canaries and summarize
+        if: ${{ always() && steps.auth.outcome == 'success' }}
+        run: python3 tools/preview-acceptance/acceptance.py cleanup
+
+      - name: Report authentication failure
+        if: ${{ always() && steps.auth.outcome != 'success' }}
+        run: |
+          echo "## Preview prerequisite acceptance" >> "$GITHUB_STEP_SUMMARY"
+          echo "Principal: UNVERIFIED. Preview project: hh-preview-458395246135 / 1001419903197." >> "$GITHUB_STEP_SUMMARY"
+          echo "FAIL: trusted preview authentication was not established; acceptance did not run." >> "$GITHUB_STEP_SUMMARY"
+          echo "IAP, Secret Manager, quota, staging metadata, and source registry checks: NOT RUN. No canaries created." >> "$GITHUB_STEP_SUMMARY"
