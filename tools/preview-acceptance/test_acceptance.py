@@ -224,6 +224,25 @@ class HarnessTests(unittest.TestCase):
         with patch.object(self.h, "api", return_value=policy), self.assertRaises(acceptance.CheckError):
             self.h.source_audit()
 
+    def test_source_audit_version_three_and_conditional_membership(self):
+        unrelated = {"role": "roles/artifactregistry.reader", "members": ["user:reviewer@example.com"],
+                     "condition": {"title": "unrelated", "expression": "true"}}
+        for member in (f"serviceAccount:{acceptance.RUNTIME}",
+                       f"serviceAccount:service-{acceptance.NUMBER}@gcp-sa-iap.iam.gserviceaccount.com"):
+            for conditional in (False, True):
+                binding = {"role": "roles/artifactregistry.reader", "members": [member]}
+                if conditional:
+                    binding["condition"] = {"title": "conditional", "expression": "true"}
+                with patch.object(self.h, "api", return_value={"version": 3, "bindings": [unrelated, binding]}) as api:
+                    with self.assertRaises(acceptance.CheckError):
+                        self.h.source_audit()
+                self.assertTrue(api.call_args.args[0].endswith(":getIamPolicy?options.requestedPolicyVersion=3"))
+        policy = {"version": 3, "bindings": [unrelated]}
+        frozen = copy.deepcopy(policy)
+        with patch.object(self.h, "api", return_value=policy):
+            self.h.source_audit()
+        self.assertEqual(policy, frozen)
+
     def test_canary_spec_has_no_secret_db_public_grant_or_app_image(self):
         self.h.absent = lambda url: None
         self.h.poll = lambda operation: None
@@ -295,6 +314,202 @@ class HarnessTests(unittest.TestCase):
         text = summary.read_text()
         for forbidden in ("fake-token", "Bearer", "aWFtLWFjY2VwdGFuY2UtY2FuYXJ5", "credential.json"):
             self.assertNotIn(forbidden, text)
+
+
+class IapReconciliationTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.path = Path(self.directory.name) / "report.json"
+        self.h = acceptance.Harness("37656163801-1", "fake-token", self.path)
+        self.h.iap_url = f"https://iap.googleapis.com/v1/projects/{acceptance.NUMBER}/iap_web/cloud_run-us-east1/services/{self.h.service_name}"
+        self.original = {"version": 3, "etag": "0", "bindings": [
+            {"role": acceptance.TESTER_ROLE, "members": ["user:original@example.com"],
+             "condition": {"title": "private-original-marker", "description": "keep-condition",
+                           "expression": 'request.time < timestamp("2000-01-01T00:00:00Z")'}}]}
+        self.current = copy.deepcopy(self.original)
+        self.h.report["canaries"]["service"] = {
+            "name": self.h.service, "attempted": True, "creation_complete": True}
+        self.writes = 0
+        self.calls = []
+        self.deleted = False
+        self.get_fail_after = None
+        self.write_fail_at = None
+        self.conflict_once = False
+        self.delete_fail = False
+
+    def api(self, url, method="GET", body=None, headers=None):
+        self.calls.append((url, method, copy.deepcopy(body)))
+        if "iap.googleapis.com" in url:
+            if method == "GET":
+                self.assertIn("options.requestedPolicyVersion=3", url)
+                if self.get_fail_after == self.writes:
+                    self.get_fail_after = None
+                    raise acceptance.CheckError("Injected post-write read failure")
+                return copy.deepcopy(self.current)
+            journal = json.loads(self.path.read_text())["iap_reconciliation"]
+            self.assertEqual(journal["state"], "ambiguous")
+            self.assertEqual(journal["original"]["bindings"], self.original["bindings"])
+            if self.conflict_once:
+                self.conflict_once = False
+                self.current["etag"] = "fresh-conflict-etag"
+                raise acceptance.ApiError(409, "UNKNOWN")
+            self.assertEqual(body["policy"]["etag"], self.current["etag"])
+            self.writes += 1
+            if self.write_fail_at == self.writes:
+                raise acceptance.CheckError("Injected lost final-write response")
+            self.current = copy.deepcopy(body["policy"])
+            self.current["etag"] = str(self.writes)
+            return copy.deepcopy(self.current)
+        self.assertEqual(url, "https://run.googleapis.com/v2/" + self.h.service)
+        if method == "DELETE":
+            self.assertEqual(acceptance.canonical_policy(self.current), acceptance.canonical_policy(self.original))
+            self.assertEqual(json.loads(self.path.read_text())["iap_reconciliation"]["state"], "restored")
+            if self.delete_fail:
+                raise acceptance.ApiError(403, "PERMISSION_DENIED")
+            self.deleted = True
+            return {"done": True}
+        if self.deleted:
+            raise acceptance.ApiError(404, "NOT_FOUND")
+        return {"labels": self.h.labels}
+
+    def restart(self):
+        h = acceptance.Harness(self.h.identity, "fresh-fake-token", self.path)
+        h.report = json.loads(self.path.read_text())
+        self.h = h
+
+    def cleanup(self):
+        with patch.object(self.h, "api", side_effect=self.api), patch.object(self.h, "poll"):
+            self.h.cleanup()
+
+    def failed_positive(self, reads=None, write=None):
+        self.get_fail_after = reads
+        self.write_fail_at = write
+        with patch.object(self.h, "api", side_effect=self.api):
+            self.h.check("IAP tester add/remove", self.h.iap_positive)
+        self.assertEqual(self.h.report["checks"]["IAP tester add/remove"]["result"], "FAIL")
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+        self.restart()
+
+    def test_failure_after_each_successful_write_reconciles_from_disk_before_delete(self):
+        for writes in (1, 2, 3):
+            with self.subTest(writes=writes):
+                self.current = copy.deepcopy(self.original)
+                self.writes = 0
+                self.deleted = False
+                self.h.report.pop("iap_reconciliation", None)
+                self.failed_positive(reads=writes)
+                self.assertEqual(self.h.report["iap_reconciliation"]["state"], "succeeded")
+                self.cleanup()
+                self.assertTrue(self.deleted)
+                self.assertEqual(self.h.report["iap_reconciliation"]["state"], "restored")
+                self.assertEqual(self.h.report["checks"]["IAP tester add/remove"]["result"], "FAIL")
+
+    def test_final_restore_failure_remains_ambiguous_until_cleanup_proves_restore(self):
+        self.failed_positive(write=4)
+        self.assertEqual(self.h.report["iap_reconciliation"]["state"], "ambiguous")
+        self.cleanup()
+        self.assertTrue(self.deleted)
+        self.assertEqual(self.h.report["cleanup"]["iap"], "PASS: original IAP policy restored")
+
+    def test_successful_final_restore_without_verification_remains_unproven(self):
+        self.failed_positive(reads=4)
+        self.assertEqual(self.h.report["iap_reconciliation"]["state"], "succeeded")
+        self.cleanup()
+        self.assertTrue(self.deleted)
+        self.assertEqual(self.h.report["iap_reconciliation"]["state"], "restored")
+
+    def test_lost_success_response_and_crash_keep_write_intent_durable(self):
+        self.h.capture_iap(self.original)
+        proposed = acceptance.changed_policy(self.original, acceptance.TESTER_ROLE, acceptance.TESTER)
+        def crash(url, method, body):
+            self.current = copy.deepcopy(body["policy"])
+            self.current["etag"] = "crash-etag"
+            raise SystemExit("Simulated runner process crash")
+        with patch.object(self.h, "api", side_effect=crash), self.assertRaises(SystemExit):
+            self.h.write_iap(proposed, "tester_add")
+        self.restart()
+        self.assertEqual(self.h.report["iap_reconciliation"]["state"], "ambiguous")
+        self.cleanup()
+        self.assertTrue(self.deleted)
+
+    def test_stale_etag_is_rejected_then_restore_reads_fresh_policy(self):
+        self.failed_positive(reads=2)
+        self.conflict_once = True
+        self.calls = []
+        self.cleanup()
+        self.assertTrue(self.deleted)
+        iap_calls = [call for call in self.calls if "iap.googleapis.com" in call[0]]
+        self.assertEqual([call[1] for call in iap_calls], ["GET", "POST", "GET", "POST", "GET"])
+        self.assertEqual(iap_calls[3][2]["policy"]["etag"], "fresh-conflict-etag")
+
+    def test_cleanup_cannot_prove_restore_retains_service_and_original_failure(self):
+        self.failed_positive(reads=2)
+        self.get_fail_after = 3
+        self.cleanup()
+        self.assertFalse(self.deleted)
+        self.assertIn("reconciliation required", self.h.report["cleanup"]["iap"])
+        self.assertIn("retained", self.h.report["cleanup"]["service"])
+        self.assertEqual(self.h.report["checks"]["IAP tester add/remove"]["result"], "FAIL")
+        self.assertEqual(self.h.report["iap_reconciliation"]["state"], "succeeded")
+
+    def test_cleanup_does_not_overwrite_unrelated_conditional_change(self):
+        self.failed_positive(reads=1)
+        self.current["bindings"].append({"role": acceptance.TESTER_ROLE, "members": ["user:other@example.com"],
+                                        "condition": {"title": "external", "expression": "true"}})
+        writes = self.writes
+        self.cleanup()
+        self.assertEqual(self.writes, writes)
+        self.assertFalse(self.deleted)
+        self.assertIn("reconciliation required", self.h.report["cleanup"]["iap"])
+
+    def test_ownership_failure_prevents_iap_write_and_service_deletion(self):
+        self.failed_positive(reads=1)
+        writes = self.writes
+        with patch.object(self.h, "api", return_value={"labels": {}}) as api:
+            self.h.cleanup()
+        self.assertEqual(api.call_count, 1)
+        self.assertEqual(self.writes, writes)
+        self.assertFalse(self.deleted)
+        self.assertIn("reconciliation required", self.h.report["cleanup"]["iap"])
+
+    def test_rejected_restore_requires_operator_reconciliation(self):
+        self.failed_positive(reads=1)
+        with patch.object(self.h, "iap_policy", return_value=self.current), patch.object(
+                self.h, "api", side_effect=[{"labels": self.h.labels},
+                                          acceptance.ApiError(403, "PERMISSION_DENIED")]):
+            self.h.cleanup()
+        self.assertFalse(self.deleted)
+        self.assertIn("reconciliation required", self.h.report["cleanup"]["iap"])
+        self.assertEqual(self.h.report["iap_reconciliation"]["state"], "ambiguous")
+
+    def test_rollback_success_and_service_deletion_failure_preserve_original_failure(self):
+        self.failed_positive(reads=1)
+        self.delete_fail = True
+        self.cleanup()
+        self.assertEqual(self.h.report["iap_reconciliation"]["state"], "restored")
+        self.assertTrue(self.h.report["cleanup"]["service"].startswith("FAIL"))
+        self.assertEqual(self.h.report["checks"]["IAP tester add/remove"]["result"], "FAIL")
+
+    def test_raw_original_policy_never_in_summary(self):
+        self.failed_positive(reads=1)
+        self.cleanup()
+        summary = Path(self.directory.name) / "summary"
+        with patch.dict(acceptance.os.environ, {"GITHUB_STEP_SUMMARY": str(summary)}):
+            self.h.summary()
+        text = summary.read_text()
+        for private in ("original@example.com", "private-original-marker", "keep-condition", "bindings", "etag"):
+            self.assertNotIn(private, text)
+        self.assertIn("original IAP policy restored", text)
+
+    def test_no_mutation_snapshot_needs_no_iap_write(self):
+        self.h.capture_iap(self.original)
+        # No submitted write: deletion is safe without policy restoration.
+        with patch.object(self.h, "api", side_effect=[
+                {"labels": self.h.labels}, {"done": True}, acceptance.ApiError(404, "NOT_FOUND")]) as api, patch.object(self.h, "poll"):
+            self.h.cleanup()
+        self.assertEqual(api.call_count, 3)
+        self.assertEqual(self.h.report["cleanup"]["iap"], "PASS: no IAP mutation occurred")
 
 
 if __name__ == "__main__":

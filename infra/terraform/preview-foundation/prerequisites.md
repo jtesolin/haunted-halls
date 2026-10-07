@@ -229,8 +229,11 @@ deployer self Token Creator is introduced.
 
 The harness retains access tokens only in process memory. It emits no raw HTTP
 errors/bodies, credential files, JWTs, payloads, headers or state. Its private
-runner-local journal contains only allowlisted check results and canary ownership
-metadata. No cloud results are downloaded as workflow artifacts.
+runner-local journal contains allowlisted check results, canary ownership metadata,
+and the minimum complete original version-3 IAP policy and attempted policy
+candidates needed for rollback. That policy stays only in the private `0600`
+runner state, never the Actions summary. Journal updates use atomic replacement
+and file/directory synchronization; no cloud results are downloaded as artifacts.
 
 ### Fail-closed gaps; do not broaden IAM to pass
 
@@ -238,6 +241,8 @@ metadata. No cloud results are downloaded as workflow artifacts.
    include `artifactregistry.repositories.getIamPolicy`. The deployer cannot
    independently verify other runtimes' grants. The harness attempts the
    read-only audit and reports `FAIL / BLOCKED` on permission denial, not PASS.
+   The request explicitly asks for policy version 3 so conditional grants are
+   audited with the same membership restrictions as unconditional grants.
    Read-only operator inspection during implementation found no direct repository
    grants to the preview frontend/engine/migration or preview service agents;
    this is separate evidence, not an effective-access test by the deployer.
@@ -265,6 +270,21 @@ deployer, so their exact numeric-project resource names are prominently reported
 for later operator cleanup. Even a successful run would leave that known canary
 for the operator; a lost runner or hard cancellation may leave other reported
 canaries as well. Cleanup never overwrites the original check result.
+
+Before the first IAP write, the harness journals the original bindings,
+conditions, version and etag with the exact canary resource identity. Every
+submitted policy write is recorded as ambiguous **before** the request, then
+as succeeded after its response; restored is recorded only after a confirming
+version-3 read. This also covers unexpectedly successful negative-test writes.
+Cleanup first verifies service ownership, reads the current IAP policy with
+version 3 and a fresh etag, restores the original, and verifies canonical
+bindings/conditions before service deletion. A definitively rejected stale-etag
+write permits one fresh read and retry; ambiguous writes are not blindly retried.
+Unexpected unrelated policy changes are never overwritten. If restoration or
+ownership cannot be proven, retain the service for explicit operator
+reconciliation and continue safe cleanup of other owned canaries. Deletion
+failure after a proven rollback does not erase that proof or the original
+acceptance failure. The summary reports only sanitized reconciliation status.
 
 Review the Actions summary for every PASS/FAIL/NOT RUN, expected denial versus
 unexpected error, exact canary name and cleanup status. As operator, inspect

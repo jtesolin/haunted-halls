@@ -1304,6 +1304,12 @@ service and prefixed secret. A created non-prefixed secret intentionally require
 operator cleanup; its exact name appears in the sanitized Actions summary.
 Ambiguous creation/deletion is reported for reconciliation, not retried blindly.
 Original acceptance failures are preserved even if cleanup succeeds or fails.
+IAP writes journal the original version-3 policy and each write intent privately
+before submission. Cleanup uses a fresh etag to restore and verify the original
+bindings/conditions before deleting the owned service. Unproven rollback or
+unrelated policy changes retain the canary for operator reconciliation; raw
+policies never appear in the Actions summary. Source IAM audit requests version
+3 and rejects conditional as well as unconditional preview-runtime grants.
 
 **Known required-check gaps remain fail-closed:** source Artifact Registry
 reader credentials cannot read repository IAM policy, and there is no approved

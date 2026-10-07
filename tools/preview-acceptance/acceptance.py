@@ -148,8 +148,19 @@ class Harness:
                        "canaries": {}, "cleanup": {}}
 
     def save(self):
-        self.path.write_text(json.dumps(self.report, indent=2) + "\n")
-        self.path.chmod(0o600)
+        temporary = self.path.with_suffix(".tmp")
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as output:
+            os.fchmod(output.fileno(), 0o600)
+            output.write(json.dumps(self.report, indent=2) + "\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, self.path)
+        directory = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
 
     def api(self, url, method="GET", body=None, headers=None):
         return request(url, self.token, method, body, headers)
@@ -230,11 +241,65 @@ class Harness:
     def iap_policy(self):
         return self.api(self.iap_url + ":getIamPolicy?options.requestedPolicyVersion=3")
 
+    def capture_iap(self, original):
+        if "iap_reconciliation" not in self.report:
+            self.report["iap_reconciliation"] = {
+                "service": self.service, "original": {**copy.deepcopy(original), "version": 3},
+                "state": "no_mutation", "candidates": [],
+            }
+            self.save()
+
+    def write_iap(self, policy, stage):
+        journal = self.report["iap_reconciliation"]
+        # Persist intent before submitting: a crash or lost response must remain ambiguous.
+        journal["state"] = "ambiguous"
+        journal["stage"] = stage
+        journal["candidates"].append(copy.deepcopy(policy))
+        self.save()
+        response = self.api(self.iap_url + ":setIamPolicy", "POST", {"policy": policy})
+        journal["state"] = "succeeded"
+        self.save()
+        return response
+
+    def mark_iap_restored(self):
+        self.report["iap_reconciliation"]["state"] = "restored"
+        self.save()
+
+    def reconcile_iap(self):
+        journal = self.report.get("iap_reconciliation")
+        if not journal or journal["state"] == "no_mutation":
+            self.report["cleanup"]["iap"] = "PASS: no IAP mutation occurred"
+            self.save()
+            return
+        self.require(journal["service"] == self.service, "IAP journal resource mismatch")
+        original = journal["original"]
+        for attempt in range(2):
+            current = self.iap_policy()
+            known = [original, *journal["candidates"]]
+            self.require(any(canonical_policy(current) == canonical_policy(p) for p in known),
+                         "Unrelated IAP policy changes; refusing overwrite")
+            self.require(bool(current.get("etag")), "Fresh IAP etag missing")
+            try:
+                self.write_iap({**original, "etag": current["etag"], "version": 3}, "cleanup_restore")
+            except ApiError as error:
+                if error.status in (409, 412) and attempt == 0:
+                    continue
+                raise
+            verified = self.iap_policy()
+            self.require(canonical_policy(verified) == canonical_policy(original),
+                         "Original IAP restoration not proven")
+            self.mark_iap_restored()
+            self.report["cleanup"]["iap"] = "PASS: original IAP policy restored"
+            self.save()
+            return
+        raise CheckError("IAP restore conflict; operator reconciliation required")
+
     def iap_positive(self):
         original = self.iap_policy()
         self.require(not any(TESTER in b.get("members", []) for b in original.get("bindings", [])
                              if b["role"] == TESTER_ROLE and not b.get("condition")),
                      "Tester already present on fresh canary")
+        self.capture_iap(original)
         # An expired tester binding is an unrelated live preservation control,
         # without granting anyone access or requiring broader policy permissions.
         seeded = copy.deepcopy(original)
@@ -243,30 +308,31 @@ class Harness:
             "title": "acceptance-preservation-control",
             "expression": 'request.time < timestamp("2000-01-01T00:00:00Z")'}}
         seeded.setdefault("bindings", []).append(control)
-        self.api(self.iap_url + ":setIamPolicy", "POST", {"policy": seeded})
+        self.write_iap(seeded, "expired_control")
         before = self.iap_policy()
         self.require(canonical_policy(before) == canonical_policy(seeded), "IAP control creation mismatch")
-        self.api(self.iap_url + ":setIamPolicy", "POST",
-                 {"policy": changed_policy(before, TESTER_ROLE, TESTER)})
+        self.write_iap(changed_policy(before, TESTER_ROLE, TESTER), "tester_add")
         after = self.iap_policy()
         self.require(canonical_policy(after) == canonical_policy(changed_policy(before, TESTER_ROLE, TESTER)),
                      "IAP changed unrelated entries")
         restore = {**before, "etag": after["etag"], "version": 3}
-        self.api(self.iap_url + ":setIamPolicy", "POST", {"policy": restore})
+        self.write_iap(restore, "control_restore")
         restored = self.iap_policy()
         self.require(canonical_policy(restored) == canonical_policy(before), "IAP unrelated control changed")
-        self.api(self.iap_url + ":setIamPolicy", "POST",
-                 {"policy": {**original, "etag": restored["etag"], "version": 3}})
+        self.write_iap({**original, "etag": restored["etag"], "version": 3}, "original_restore")
         self.require(canonical_policy(self.iap_policy()) == canonical_policy(original), "IAP restore mismatch")
+        self.mark_iap_restored()
         return "Tester added/removed; unrelated expired conditional binding preserved and removed"
 
     def iap_negative(self, mixed=False):
         before = self.iap_policy()
+        self.capture_iap(before)
         proposed = changed_policy(before, "roles/iap.admin", TESTER)
         if mixed:
             proposed = changed_policy(proposed, TESTER_ROLE, TESTER)
-        evidence = self.denied(lambda: self.api(self.iap_url + ":setIamPolicy", "POST", {"policy": proposed}))
+        evidence = self.denied(lambda: self.write_iap(proposed, "mixed_denial" if mixed else "admin_denial"))
         self.require(canonical_policy(self.iap_policy()) == canonical_policy(before), "Denied policy changed")
+        self.mark_iap_restored()
         return evidence
 
     def create_secret(self, prefixed):
@@ -325,7 +391,8 @@ class Harness:
 
     def source_audit(self):
         try:
-            policy = self.api("https://artifactregistry.googleapis.com/v1/" + SOURCE_REPOSITORY + ":getIamPolicy")
+            policy = self.api("https://artifactregistry.googleapis.com/v1/" + SOURCE_REPOSITORY +
+                              ":getIamPolicy?options.requestedPolicyVersion=3")
         except ApiError as error:
             if error.status == 403 and error.code == "PERMISSION_DENIED":
                 raise CheckError("BLOCKED: source reader has no getIamPolicy; separate operator audit required") from None
@@ -447,6 +514,14 @@ class Harness:
                 current = self.api(url)
                 self.require(all(current.get("labels", {}).get(k) == v for k, v in self.labels.items()),
                              "Ownership labels mismatch; refusing cleanup")
+                if key == "service":
+                    self.iap_url = f"https://iap.googleapis.com/v1/projects/{NUMBER}/iap_web/cloud_run-{REGION}/services/{self.service_name}"
+                    try:
+                        self.reconcile_iap()
+                    except CheckError:
+                        self.report["cleanup"]["iap"] = "FAIL: IAP reconciliation required; operator reconciliation required"
+                        self.save()
+                        raise CheckError("IAP restoration unproven; owned service retained for operator reconciliation") from None
                 response = self.api(url, "DELETE")
                 if key == "service":
                     self.poll(response)
@@ -454,9 +529,15 @@ class Harness:
                 self.report["cleanup"][key] = "PASS: deletion verified"
             except ApiError as error:
                 confirmed = canary.get("created") if key == "prefixed" else canary.get("creation_complete")
+                journal = self.report.get("iap_reconciliation")
+                if key == "service" and journal and journal["state"] not in ("no_mutation", "restored"):
+                    confirmed = False
+                    self.report["cleanup"]["iap"] = "FAIL: IAP reconciliation required; service unavailable"
                 self.report["cleanup"][key] = ("PASS: already absent" if confirmed and error.status == 404 and error.code == "NOT_FOUND"
                                                else f"FAIL: {error}; operator reconciliation required")
             except CheckError as error:
+                if key == "service" and self.report.get("iap_reconciliation", {}).get("state") not in (None, "no_mutation", "restored"):
+                    self.report["cleanup"]["iap"] = "FAIL: IAP reconciliation required; operator reconciliation required"
                 self.report["cleanup"][key] = f"FAIL: {error}; operator reconciliation required"
             self.save()
         canary = self.report["canaries"].get("nonprefixed")
@@ -474,6 +555,7 @@ class Harness:
         for name, check in self.report["checks"].items():
             lines.append(f"| {name} | {check['result']} | {check.get('evidence', '').replace('|', '/')} |")
         lines += ["", "### Canaries and cleanup"]
+        lines.append("- IAP: " + self.report["cleanup"].get("iap", "NOT VERIFIED"))
         for key, canary in self.report["canaries"].items():
             cleanup = ("NOT OWNED: creation definitively rejected; no cleanup attempted"
                        if not canary.get("attempted") else
