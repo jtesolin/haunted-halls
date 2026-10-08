@@ -8,9 +8,11 @@ identity/IAM, durable ledger and per-PR numeric-version interface, but does not
 apply those new permissions, copy images, or implement full 41C lifecycle
 automation. The engine repository is unchanged.
 
-The existing accepted deployer role remains creation-only for Secret Manager
-containers. Its earlier per-PR version-management grant is removed from the
-proposed foundation configuration. A fixed WIF workflow and separate identity
+The existing parent-project creation grant remains separate. The proposed
+prefix-scoped deployer container-lifecycle role adds metadata/IAM reconciliation
+and teardown without any version permissions. Its earlier per-PR
+version-management grant is removed from the proposed configuration.
+A fixed WIF workflow and separate identity
 prepare frontend PR versions; that identity can access payloads only on the
 existing preview app-password secret. No payload is returned to Terraform or
 GitHub. No Terraform apply, live secret-version write, preview deployment,
@@ -45,10 +47,11 @@ identity. These checks do not prove live authorization.
 | --- | --- | --- | --- |
 | Custom `previewIapTesterPolicy`: only `iap.webServices.getIamPolicy`, `iap.webServices.setIamPolicy` | Project `hh-preview-458395246135`, with the condition below | `preview-foundation` | Manage tester policies on dynamically created IAP service resources |
 | Existing custom `previewPerPrSecretCreator`: only `secretmanager.secrets.create` | Preview project; deployer only | `preview-foundation` | CreateSecret authorizes its parent project, not a nonexistent Secret; trusted Terraform derives names |
+| Custom `previewPerPrSecretLifecycle`: `secretmanager.secrets.get/update/delete/getIamPolicy/setIamPolicy` | Secret parent resources under the numeric preview project's `hh-web-pr-*` and `hh-engine-pr-*` prefixes; deployer only | `preview-foundation` | Terraform parent metadata/IAM reconciliation and teardown; no version permissions |
 | Custom `previewPerPrSecretPreparer`: `secretmanager.secrets.get`, `secretmanager.versions.add/get/list` | Secret and SecretVersion resources under `projects/1001419903197/secrets/hh-web-pr-*`; exact default-branch workflow identity only | `preview-foundation` | Validate container ownership, create each version once, and inspect version metadata; no payload access or mutation beyond add |
 | `roles/secretmanager.secretAccessor` | Only `hh-preview-db-app-password` in the preview project | `preview-foundation` | Read the durable preview app password to assemble the PR-specific DB URL |
 | Custom `previewSecretPreparerProjectReader`: only `resourcemanager.projects.get` | Preview project; preparer only | `preview-foundation` | Verify the actual fixed project number before any preparation |
-| Custom `previewSecretLedgerWriter`: only `storage.objects.get/create` | Fixed private, versioned `hh-preview-458395246135-pr-secret-ledger` bucket | `preview-foundation` | Generation-match ledger read/update; no object delete or Terraform-state access |
+| Custom `previewSecretLedgerWriter`: only `storage.objects.get/create` | Fixed private, versioned `hh-preview-458395246135-pr-secret-ledger` bucket | `preview-foundation` | Immutable create-only markers and exact GET; no overwrite, delete, list or Terraform-state access |
 | Custom `previewQuotaConsumer`: only `serviceusage.services.use` | Preview project, unconditional; deployer and preparer | `preview-foundation` | Trusted Google API requests use this quota project; no API enablement or quota administration |
 | Custom `previewStagingEngineMetadataReader`: only `run.services.get`, `run.revisions.get` | Individual `haunted-halls-engine-staging` service, `haunted-halls-development/us-east1`; binding created only when staging services are enabled | Existing application root `infra/terraform` | Named reads of the actual serving revision; no listing, invocation, IAM writes, or runtime mutation |
 | `roles/artifactregistry.reader` | Existing `haunted-halls` repository, `haunted-halls-development/us-east1` | Existing application root `infra/terraform` | Read the frozen source artifact; no source push, tagging, or delete |
@@ -298,10 +301,12 @@ evaluates the proposed live preparer IAM conditions or authorizes applying them.
 
 This slice introduces a dedicated, manual-only
 [default-branch workflow](../../../.github/workflows/preview-secret-prepare.yml)
-and a fixed preparer identity. The workflow accepts only an open frontend PR
+and a fixed preparer identity. The workflow accepts only an open, non-draft frontend PR
 number, a 32-character lowercase-hex incarnation, a positive sequential
 secret-generation number and `operation=prepare|reconcile`. It checks the
 workflow ref, repository, branch and checked-out main SHA before authentication.
+Both `prepare` and `reconcile` reject drafts, closed PRs, missing metadata and
+repository/number mismatches before WIF authentication. Draft PRs stay CI-only.
 It never checks out or executes PR code. Its WIF binding targets only
 `hh-preview-secret-preparer@hh-preview-458395246135.iam.gserviceaccount.com`.
 The preparer independently validates project ID/number, credential identity,
@@ -314,9 +319,14 @@ project ID, Secret Manager path, SQL host/user/database, command or payload.
   PR ownership labels, runtime Secret Accessor grants and Cloud Run/job
   references to explicit numeric versions. It no longer declares payload
   variables or `google_secret_manager_secret_version` resources.
-- The deployer keeps only `secretmanager.secrets.create` for parent containers;
-  its previous `previewPerPrSecretManager` version-management role/grant is
-  removed. It does not receive access to `hh-preview-db-app-password`.
+- The deployer keeps separate project-parent `secretmanager.secrets.create`
+  authority and a prefix-scoped `previewPerPrSecretLifecycle` role containing
+  only `secretmanager.secrets.get/update/delete/getIamPolicy/setIamPolicy`.
+  The condition permits only Secret parents in the numeric preview project's
+  `hh-web-pr-*` and `hh-engine-pr-*` namespaces. `update` reconciles
+  Terraform-owned labels; IAM permissions support runtime grants; `delete`
+  supports teardown. There are no version permissions or shared-secret grants.
+  The old `previewPerPrSecretManager` role/grant is removed.
 - `previewPerPrSecretPreparer` grants only
   `secretmanager.secrets.get`, `secretmanager.versions.add/get/list` under the
   numeric preview project `hh-web-pr-*` resource-name prefix. It does not grant
@@ -324,7 +334,9 @@ project ID, Secret Manager path, SQL host/user/database, command or payload.
   version enable/disable/destroy, or project-wide Secret Manager Admin.
 - `roles/secretmanager.secretAccessor` is granted to the preparer only on the
   preview foundation's existing `hh-preview-db-app-password` secret. This is
-  the sole source of the shared app password. The preparer has no production or
+  the sole source of the shared app password. The former engine/migration
+  direct password grants are removed; they consume only their PR DB URL secret.
+  The preparer has no production or
   staging project/secret grant and no `actAs` on the SQL provisioner.
 - `previewSecretLedgerWriter` grants only `storage.objects.get/create` on the
   fixed `hh-preview-458395246135-pr-secret-ledger` bucket. It has no object
@@ -382,18 +394,32 @@ only identity and numeric Secret Manager version metadata.
 
 ### Durable ledger, retry ambiguity and reconciliation
 
-The ledger key is fixed by repository/PR/incarnation. Each JSON record contains
-only schema version, identity, expected container names, current generation,
-state, the role of any in-flight append, and numeric version IDs. Allowed
-states are `reserved`, `writing`, `complete` and `reconciliation-required`.
-Before each individual Secret Manager append, the role-specific intent is
-persisted; a returned numeric version is persisted before the next role begins.
-GCS generation-match writes provide optimistic concurrency; bucket object
-versioning preserves every prior record generation.
-The one record per incarnation is non-expiring, and a new generation is
-accepted only after the prior generation is complete and only at the next
-number. There is no timeout-based lease takeover or automatic reservation
-stealing. An unresolved/crashed writer blocks the incarnation.
+The ledger is immutable and append-only. Deterministic paths are rooted at
+`secret-preparation/v1/web-pr-<N>/<incarnation>/generations/<G>/`:
+
+- `reservation.json`: identity, expected names and a non-secret random
+  reservation ID that distinguishes this invocation's uncertain create from
+  another writer's reservation.
+- `<role>.intent.json`: durable intent before the external append, for
+  `nextauth`, `internal-token` and `database-url`.
+- `<role>.result.json`: exact identity/names and only the numeric version
+  returned for that role, persisted before the next append.
+- `reconciliation-required.json`: non-secret ambiguity marker, when writable.
+- `complete.json`: created only after all three results are durable.
+
+Every write creates a new object with `if_generation_match=0` and SDK retries
+disabled. Existing objects are never overwritten or deleted. Deterministic
+GETs reconstruct state without object listing. Bucket versioning is defense
+in depth, not a coordination requirement. If a create has an ambiguous
+transport outcome, GET of that exact path must match the expected payload-free
+content; otherwise the operation fails closed. A definite create conflict is
+never adopted as a fresh reservation or replay.
+
+Generation 1 reserves its marker once. Generation N requires a valid immutable
+complete marker plus all results for N-1 before reserving; skips fail closed.
+Reservations do not expire. Intent without a result blocks replay even when
+the reconciliation marker cannot be written. There is no timeout-based
+takeover, automatic reservation stealing or automatic resume.
 
 Secret Manager `addVersion` has no caller-supplied idempotency key. The SDK
 retry parameter is disabled, each role is submitted at most once per generation,
@@ -401,8 +427,9 @@ and the numeric version is durably recorded immediately after a successful
 response. A lost/ambiguous response is marked `reconciliation-required` and
 stops the operation; no second `addVersion` is issued. If a successful version
 write cannot be durably recorded, the generation remains non-terminal and is
-also blocked. GCS compare-and-swap does **not** fence an external Secret
-Manager write.
+also blocked and raises a reconciliation-required failure, not a retryable
+reservation conflict. GCS create-only coordination does **not** make Secret
+Manager `addVersion` idempotent or fence an external append.
 
 The workflow's read-only `reconcile` mode reads the ledger, container labels,
 and Secret Manager version number/state/create-time metadata only; it never

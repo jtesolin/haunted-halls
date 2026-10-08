@@ -9,7 +9,7 @@ import os
 import re
 import secrets
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
@@ -171,110 +171,165 @@ def _validate_record(record: dict[str, Any], identity: Identity, names: dict[str
 
 
 class GcsLedger:
-    """CAS-updated single-object ledger; bucket object versioning retains history."""
+    """Deterministic immutable markers, requiring only object GET and CREATE."""
 
     def __init__(self, bucket: Any):
         self.bucket = bucket
 
     @staticmethod
-    def object_name(identity: Identity) -> str:
+    def object_name(identity: Identity, marker: str = "reservation") -> str:
         return (
             f"secret-preparation/v1/web-pr-{identity.pull_request_number}/"
-            f"{identity.pr_incarnation}.json"
+            f"{identity.pr_incarnation}/generations/{identity.generation}/{marker}.json"
         )
 
-    def _read(self, identity: Identity) -> tuple[dict[str, Any] | None, int | None]:
-        from google.api_core.exceptions import NotFound
+    @staticmethod
+    def content(identity: Identity, names: dict[str, str], marker: str,
+                version: str | None = None, reservation_id: str | None = None) -> dict[str, Any]:
+        record = {
+            "schema_version": 1,
+            "repository_key": identity.repository_key,
+            "pull_request_number": identity.pull_request_number,
+            "pr_incarnation": identity.pr_incarnation,
+            "generation": identity.generation,
+            "secret_names": names,
+            "marker": marker,
+        }
+        if version is not None:
+            record["version"] = version
+        if reservation_id is not None:
+            record["reservation_id"] = reservation_id
+        return record
 
-        blob = self.bucket.blob(self.object_name(identity))
+    def _get(self, identity: Identity, marker: str) -> dict[str, Any] | None:
+        from google.api_core.exceptions import GoogleAPICallError, NotFound
         try:
-            blob.reload()
+            data = self.bucket.blob(self.object_name(identity, marker)).download_as_bytes(
+                retry=None, timeout=30
+            )
         except NotFound:
-            return None, None
+            return None
+        except (GoogleAPICallError, TimeoutError, ConnectionError, OSError):
+            raise LedgerError("Could not authoritatively read the immutable ledger marker.") from None
         try:
-            record = json.loads(blob.download_as_bytes())
+            record = json.loads(data)
         except (UnicodeDecodeError, json.JSONDecodeError):
-            raise LedgerError("The durable ledger record is unreadable.") from None
+            raise LedgerError("The durable ledger marker is unreadable.") from None
         if not isinstance(record, dict):
-            raise LedgerError("The durable ledger record is malformed.")
-        return record, int(blob.generation)
+            raise LedgerError("The durable ledger marker is malformed.")
+        return record
 
-    def _write(
-        self, identity: Identity, record: dict[str, Any], expected_generation: int
-    ) -> int:
-        from google.api_core.exceptions import PreconditionFailed
-
-        blob = self.bucket.blob(self.object_name(identity))
+    def _create(self, identity: Identity, names: dict[str, str], marker: str,
+                version: str | None = None) -> None:
+        from google.api_core.exceptions import GoogleAPICallError, PreconditionFailed
+        expected = self.content(
+            identity, names, marker, version,
+            secrets.token_hex(16) if marker == "reservation" else None,
+        )
         try:
-            blob.upload_from_string(
-                json.dumps(record, sort_keys=True, separators=(",", ":")),
+            self.bucket.blob(self.object_name(identity, marker)).upload_from_string(
+                json.dumps(expected, sort_keys=True, separators=(",", ":")),
                 content_type="application/json",
-                if_generation_match=expected_generation,
+                if_generation_match=0,
+                retry=None,
+                timeout=30,
             )
         except PreconditionFailed:
-            raise ReservationConflict("The preview secret ledger changed concurrently.") from None
-        return int(blob.generation)
+            raise ReservationConflict("The immutable ledger marker already exists; do not replay.") from None
+        except (GoogleAPICallError, TimeoutError, ConnectionError, OSError):
+            # Only this invocation's uncertain create may be adopted, never a replay.
+            if self._get(identity, marker) == expected:
+                return
+            raise LedgerError("Immutable marker creation was not established; do not retry.") from None
 
-    def reserve(self, identity: Identity, names: dict[str, str]) -> tuple[dict[str, Any], int]:
-        previous, generation = self._read(identity)
-        if previous is None:
-            record = {
-                "schema_version": 1,
-                "repository_key": identity.repository_key,
-                "pull_request_number": identity.pull_request_number,
-                "pr_incarnation": identity.pr_incarnation,
-                "generation": identity.generation,
-                "secret_names": names,
-                "state": "reserved",
-                "current_role": None,
-                "secret_versions": {},
-            }
-            try:
-                return record, self._write(identity, record, 0)
-            except ReservationConflict:
-                raise ReservationConflict("This preview generation was reserved concurrently.") from None
-
-        _validate_record(previous, identity, names)
-        current_generation = int(previous["generation"])
-        if identity.generation <= current_generation:
-            raise ReservationConflict("This generation was already reserved and cannot be replayed.")
-        if previous["state"] != "complete":
-            raise ReservationConflict("An unresolved generation holds the non-expiring reservation.")
-        if identity.generation != current_generation + 1:
-            raise ReservationConflict("Secret generations must advance by exactly one.")
-        record = {
-            **previous,
-            "generation": identity.generation,
-            "state": "reserved",
-            "current_role": None,
-            "secret_versions": {},
-        }
-        return record, self._write(identity, record, int(generation))
-
-    def update(
-        self,
-        identity: Identity,
-        names: dict[str, str],
-        record: dict[str, Any],
-        expected_generation: int,
-    ) -> int:
-        _validate_record(record, identity, names)
-        current, current_generation = self._read(identity)
-        if current is None or current_generation != expected_generation:
-            raise ReservationConflict("The preview secret ledger changed concurrently.")
-        if (
-            int(record["generation"]) != identity.generation
-            or
-            current["generation"] != record["generation"]
-            or current["state"] in {"complete", "reconciliation-required"}
+    def _marker(self, identity: Identity, names: dict[str, str], marker: str,
+                result: bool = False) -> dict[str, Any] | None:
+        record = self._get(identity, marker)
+        if record is None:
+            return None
+        version = record.get("version") if result else None
+        reservation_id = record.get("reservation_id") if marker == "reservation" else None
+        if marker == "reservation" and (
+            not isinstance(reservation_id, str) or not INCARNATION_RE.fullmatch(reservation_id)
         ):
-            raise ReservationConflict("The preview generation is no longer writable.")
-        return self._write(identity, record, expected_generation)
+            raise LedgerError("The immutable reservation identifier is malformed.")
+        if result and (not isinstance(version, str) or not VERSION_RE.fullmatch(version)):
+            raise LedgerError("The immutable result contains a non-numeric version.")
+        if (type(record.get("generation")) is not int
+                or type(record.get("schema_version")) is not int
+                or record != self.content(identity, names, marker, version, reservation_id)):
+            raise LedgerError("The immutable ledger marker has mismatched or unsafe content.")
+        return record
+
+    def reserve(self, identity: Identity, names: dict[str, str]) -> None:
+        if identity.generation > 1:
+            previous = self.read(replace(identity, generation=identity.generation - 1), names)
+            if previous is None or previous["state"] != "complete":
+                raise ReservationConflict("The preceding generation is not complete; no takeover allowed.")
+        self._create(identity, names, "reservation")
+
+    def intent(self, identity: Identity, names: dict[str, str], role: str) -> None:
+        self._create(identity, names, f"{role.replace('_', '-')}.intent")
+
+    def result(self, identity: Identity, names: dict[str, str], role: str, version: str) -> None:
+        if not VERSION_RE.fullmatch(version):
+            raise LedgerError("The append returned a non-numeric version.")
+        self._create(identity, names, f"{role.replace('_', '-')}.result", version)
+
+    def require_reconciliation(self, identity: Identity, names: dict[str, str]) -> None:
+        self._create(identity, names, "reconciliation-required")
+
+    def complete(self, identity: Identity, names: dict[str, str]) -> None:
+        record = self.read(identity, names)
+        if (record is None or set(record["secret_versions"]) != set(ROLES)
+                or record["state"] == "reconciliation-required"):
+            raise LedgerError("Completion requires all three durable results without ambiguity.")
+        self._create(identity, names, "complete")
 
     def read(self, identity: Identity, names: dict[str, str]) -> dict[str, Any] | None:
-        record, _ = self._read(identity)
-        if record is not None:
-            _validate_record(record, identity, names)
+        reservation = self._marker(identity, names, "reservation")
+        versions = {}
+        current_role = None
+        started = False
+        for role in ROLES:
+            marker = role.replace("_", "-")
+            intent = self._marker(identity, names, f"{marker}.intent")
+            result = self._marker(identity, names, f"{marker}.result", result=True)
+            if result is not None and intent is None:
+                raise LedgerError("A result exists without its durable intent.")
+            if intent is not None:
+                if len(versions) != ROLES.index(role):
+                    raise LedgerError("An append intent exists before preceding durable results.")
+                started = True
+                if result is None:
+                    current_role = role
+                else:
+                    versions[role] = result["version"]
+        ambiguous = self._marker(identity, names, "reconciliation-required")
+        complete = self._marker(identity, names, "complete")
+        if reservation is None:
+            if started or ambiguous is not None or complete is not None:
+                raise LedgerError("Generation markers exist without a reservation.")
+            return None
+        if complete is not None and (
+            set(versions) != set(ROLES) or ambiguous is not None or current_role is not None
+        ):
+            raise LedgerError("The complete marker conflicts with generation state.")
+        state = "reserved"
+        if started:
+            state = "writing"
+        if ambiguous is not None or current_role is not None:
+            state = "reconciliation-required"
+        if complete is not None:
+            state = "complete"
+        record = {
+            **{key: value for key, value in reservation.items()
+               if key not in {"marker", "reservation_id"}},
+            "state": state,
+            "current_role": current_role,
+            "secret_versions": versions,
+        }
+        _validate_record(record, identity, names)
         return record
 
 
@@ -374,7 +429,8 @@ class SecretPreparer:
     def prepare(self, identity: Identity) -> dict[str, Any]:
         names = secret_names(identity)
         self._preflight(identity, names)
-        record, ledger_generation = self.ledger.reserve(identity, names)
+        self.ledger.reserve(identity, names)
+        versions = {}
 
         nextauth = bytearray(secrets.token_hex(32).encode("ascii"))
         internal_token = bytearray(secrets.token_hex(32).encode("ascii"))
@@ -391,44 +447,20 @@ class SecretPreparer:
                 "database_url": db_url,
             }
             for role in ROLES:
-                record["state"] = "writing"
-                record["current_role"] = role
-                ledger_generation = self.ledger.update(
-                    identity, names, record, ledger_generation
-                )
+                self.ledger.intent(identity, names, role)
                 try:
                     version = self.secrets.add_version(names[role], payloads[role])
                 except SecretManagerWriteOutcomeUnknown:
-                    record["state"] = "reconciliation-required"
-                    try:
-                        self.ledger.update(
-                            identity, names, record, ledger_generation
-                        )
-                    except LedgerError:
-                        raise ReconciliationRequired(
-                            "The write outcome is unknown and the ledger update failed; do not retry."
-                        ) from None
-                    raise ReconciliationRequired(
-                        "The write outcome is unknown; inspect the generation before any continuation."
-                    ) from None
-                record["secret_versions"][role] = version
-                record["current_role"] = None
+                    self._stop(identity, names, "The Secret Manager write outcome is unknown.")
                 try:
-                    ledger_generation = self.ledger.update(
-                        identity, names, record, ledger_generation
-                    )
-                except LedgerError:
-                    raise ReconciliationRequired(
-                        "A version was created but its metadata was not durably recorded; do not retry."
-                    ) from None
-            record["state"] = "complete"
-            record["current_role"] = None
+                    self.ledger.result(identity, names, role, version)
+                except (LedgerError, ReservationConflict):
+                    self._stop(identity, names, "A version result was not durably established.")
+                versions[role] = version
             try:
-                self.ledger.update(identity, names, record, ledger_generation)
-            except LedgerError:
-                raise ReconciliationRequired(
-                    "All writes returned versions but completion was not durably recorded; do not retry."
-                ) from None
+                self.ledger.complete(identity, names)
+            except (LedgerError, ReservationConflict):
+                self._stop(identity, names, "Generation completion was not durably established.")
         finally:
             _wipe(nextauth)
             _wipe(internal_token)
@@ -442,8 +474,17 @@ class SecretPreparer:
             "generation": identity.generation,
             "state": "complete",
             "secret_names": names,
-            "secret_versions": dict(record["secret_versions"]),
+            "secret_versions": versions,
         }
+
+    def _stop(self, identity: Identity, names: dict[str, str], reason: str) -> None:
+        try:
+            self.ledger.require_reconciliation(identity, names)
+        except (LedgerError, ReservationConflict):
+            raise ReconciliationRequired(
+                f"{reason} Reconciliation marker unavailable; intent still blocks replay. Do not retry."
+            ) from None
+        raise ReconciliationRequired(f"{reason} Reconcile; do not retry.") from None
 
     def reconcile(self, identity: Identity) -> dict[str, Any]:
         names = secret_names(identity)

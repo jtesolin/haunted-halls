@@ -62,6 +62,33 @@ resource "google_project_iam_member" "deployer_per_pr_secret_creator" {
   member  = "serviceAccount:${google_service_account.deployer.email}"
 }
 
+resource "google_project_iam_custom_role" "preview_per_pr_secret_lifecycle" {
+  role_id     = "previewPerPrSecretLifecycle"
+  title       = "Manage disposable PR secret containers"
+  description = "Reconcile Terraform-owned parent metadata and IAM, and delete parents at teardown; no version authority."
+  permissions = [
+    "secretmanager.secrets.get",
+    "secretmanager.secrets.update",
+    "secretmanager.secrets.delete",
+    "secretmanager.secrets.getIamPolicy",
+    "secretmanager.secrets.setIamPolicy",
+  ]
+
+  depends_on = [google_project_service.apis["iam.googleapis.com"]]
+}
+
+resource "google_project_iam_member" "deployer_per_pr_secret_lifecycle" {
+  project = var.preview_project_id
+  role    = google_project_iam_custom_role.preview_per_pr_secret_lifecycle.name
+  member  = "serviceAccount:${google_service_account.deployer.email}"
+
+  condition {
+    title       = "Disposable PR parent secrets only"
+    description = "Parent-container metadata, IAM and teardown within the web/engine PR namespaces only."
+    expression  = "resource.type == \"secretmanager.googleapis.com/Secret\" && (resource.name.startsWith(\"projects/${data.google_project.preview.number}/secrets/hh-web-pr-\") || resource.name.startsWith(\"projects/${data.google_project.preview.number}/secrets/hh-engine-pr-\"))"
+  }
+}
+
 data "google_storage_bucket" "preview_per_pr_state" {
   name = local.preview_per_pr_state_bucket_name
 }

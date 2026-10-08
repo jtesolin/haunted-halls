@@ -37,18 +37,6 @@ resource "google_project_iam_member" "migration_cloud_sql_client" {
   }
 }
 
-resource "google_secret_manager_secret_iam_member" "engine_app_db_password" {
-  secret_id = google_secret_manager_secret.preview_app_password.id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.engine_runtime.email}"
-}
-
-resource "google_secret_manager_secret_iam_member" "migration_app_db_password" {
-  secret_id = google_secret_manager_secret.preview_app_password.id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.migration_runtime.email}"
-}
-
 resource "google_secret_manager_secret_iam_member" "engine_openai" {
   secret_id = google_secret_manager_secret.preview_openai_api_key.id
   role      = "roles/secretmanager.secretAccessor"

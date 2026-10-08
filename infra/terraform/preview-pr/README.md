@@ -95,8 +95,10 @@ verify the frontend digest against the exact PR head before providing inputs.
 
 The fixed workflow
 [`preview-secret-prepare.yml`](../../../.github/workflows/preview-secret-prepare.yml)
-can run only as a manual dispatch on the reviewed default branch. It checks
-that the PR is open, checks out the dispatch's `main` SHA, and authenticates
+can run only as a manual dispatch on the reviewed default branch. Before WIF
+authentication it requires exact PR number/repository metadata, state `open`
+and `draft=false` for both modes; missing metadata fails closed. Draft PRs
+remain CI-only. It checks out the dispatch's `main` SHA and authenticates
 through exact-workflow-ref WIF as
 `hh-preview-secret-preparer@hh-preview-458395246135.iam.gserviceaccount.com`.
 It accepts only the frontend repository key, canonical PR number, a
@@ -139,18 +141,39 @@ workflow does not automatically take over an older incarnation.
 The preview foundation owns the separate
 `hh-preview-458395246135-pr-secret-ledger` bucket. It is private, versioned,
 protected from normal Terraform destruction, and separate from both Terraform
-state buckets. Each object is keyed by repository, PR and incarnation and stores
-only identity, expected container names, current state/generation, any
-in-flight role, and numeric version IDs. Before each individual Secret Manager
-append, the matching role intent is persisted; its returned version is recorded
-before the next role begins. GCS generation-match writes provide optimistic
-concurrency; bucket object versioning preserves prior state transitions. The
-preparer can read and create/update ledger objects but cannot delete them.
-Per-PR Terraform destroy does not delete ledger history.
+state buckets. Immutable objects are keyed by repository, PR, incarnation,
+generation and marker:
+
+```text
+secret-preparation/v1/web-pr-<N>/<incarnation>/generations/<G>/
+  reservation.json
+  nextauth.intent.json
+  nextauth.result.json
+  internal-token.intent.json
+  internal-token.result.json
+  database-url.intent.json
+  database-url.result.json
+  reconciliation-required.json  (only on ambiguity, when writable)
+  complete.json
+```
+
+Markers contain only identity, expected container names and marker kind;
+reservation additionally has a non-secret unique reservation ID and results
+add only a numeric version. Every create uses `if_generation_match=0` with
+retries disabled. No object is replaced or deleted, and exact deterministic
+GETs reconstruct state without listing. An ambiguous create is established
+only if GET returns exactly the expected content. A definite existing-object
+conflict is never adopted as a fresh attempt. Versioning is defense in depth;
+correctness does not depend on replacing versioned objects. The preparer has
+only `storage.objects.get/create`, never delete/list. PR teardown cannot erase
+ledger history.
 
 The reservation is non-expiring and exclusive for the incarnation. A generation
-can be reserved only once; a later generation is allowed only after the prior
-one is complete and only in sequence. States are `reserved`, `writing`,
+can be reserved only once; generation N requires the immutable complete marker
+and results of N-1. Skips fail closed. Before each external append, its intent
+is durable; a numeric result must be durable before the next append.
+Only after all results may `complete.json` be created.
+Reconstructed states are `reserved`, `writing`,
 `complete`, and `reconciliation-required`. A crash or unresolved state blocks
 new writes; no lease timeout or automatic lock takeover exists.
 
@@ -161,10 +184,20 @@ and stops. The read-only `reconcile` mode lists ledger state, container labels
 and version numbers/states/create times; it never accesses payloads. Because
 shared per-incarnation containers cannot unambiguously correlate an
 unrecorded append to one generation, reconciliation reports an operator
-disposition requirement instead of guessing. GCS compare-and-swap protects
-ledger transitions only; it does **not** fence an external Secret Manager
-write. Reconciliation never resumes or retries an append. Correctness takes
-priority over recovery availability.
+disposition requirement instead of guessing. A successful append whose result
+cannot be established also raises reconciliation-required, even if the
+ambiguity marker cannot be written: the existing intent blocks replay.
+GCS create-only coordination does **not** make `addVersion` idempotent or
+fence an external append. Reconciliation never resumes or retries an append.
+Correctness takes priority over recovery availability.
+
+The deployer separately retains parent-project `secretmanager.secrets.create`
+and the Secret-only prefix-conditioned `previewPerPrSecretLifecycle` role
+(`secrets.get/update/delete/getIamPolicy/setIamPolicy`) for Terraform metadata,
+runtime IAM and teardown. It has no version permissions or shared password
+access. The dedicated preparer alone reads the fixed DB app-password secret;
+former engine/migration direct grants are removed. Runtime identities instead
+read their exact PR secrets (and the engine's existing preview OpenAI secret).
 
 ### Numeric Terraform interface
 

@@ -56,7 +56,7 @@ resource "google_secret_manager_secret_iam_member" "secret_preparer_db_app_passw
 resource "google_project_iam_custom_role" "preview_secret_ledger_writer" {
   role_id     = "previewSecretLedgerWriter"
   title       = "Read and append preview secret-preparation ledger objects"
-  description = "Read and generation-match update ledger objects without deletion authority."
+  description = "Read and create immutable ledger markers without overwrite or deletion authority."
   permissions = [
     "storage.objects.create",
     "storage.objects.get",
@@ -72,7 +72,7 @@ resource "google_storage_bucket_iam_member" "secret_preparer_ledger" {
 
   condition {
     title       = "Secret-preparation ledger namespace only"
-    description = "Read and update objects only within the fixed versioned ledger namespace."
+    description = "Read and create immutable markers only within the fixed ledger namespace."
     expression  = "resource.type == \"storage.googleapis.com/Object\" && resource.name.startsWith(\"projects/_/buckets/${google_storage_bucket.secret_preparation_ledger.name}/objects/secret-preparation/v1/\")"
   }
 }

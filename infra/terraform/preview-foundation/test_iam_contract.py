@@ -149,6 +149,34 @@ run "otherwise_valid_alternate_project" {
         )
         self.assertEqual(permissions(creator), {"secretmanager.secrets.create"})
 
+    def test_deployer_parent_lifecycle_satisfies_bootstrap_and_teardown_without_versions(self):
+        role = self.foundation_resource(
+            "google_project_iam_custom_role", "preview_per_pr_secret_lifecycle"
+        )
+        allowed = permissions(role)
+        self.assertEqual(allowed, {
+            "secretmanager.secrets.get", "secretmanager.secrets.update",
+            "secretmanager.secrets.delete", "secretmanager.secrets.getIamPolicy",
+            "secretmanager.secrets.setIamPolicy",
+        })
+        bootstrap = {"secretmanager.secrets.get", "secretmanager.secrets.getIamPolicy",
+                     "secretmanager.secrets.setIamPolicy"}
+        teardown = bootstrap | {"secretmanager.secrets.delete"}
+        self.assertTrue(bootstrap <= allowed)
+        self.assertTrue(teardown <= allowed)
+        self.assertFalse(any(item.startswith("secretmanager.versions.") for item in allowed))
+        grant = self.foundation_resource(
+            "google_project_iam_member", "deployer_per_pr_secret_lifecycle"
+        )
+        self.assertEqual(attribute(grant, "member"), DEPLOYER_MEMBER)
+        self.assertEqual(attribute(grant, "project"), "var.preview_project_id")
+        self.assertEqual(attribute(grant, "role"),
+                         "google_project_iam_custom_role.preview_per_pr_secret_lifecycle.name")
+        self.assertEqual(json.loads(attribute(grant, "expression")),
+                         'resource.type == "secretmanager.googleapis.com/Secret" && '
+                         '(resource.name.startsWith("projects/${data.google_project.preview.number}/secrets/hh-web-pr-") || '
+                         'resource.name.startsWith("projects/${data.google_project.preview.number}/secrets/hh-engine-pr-"))')
+
     def test_secret_preparer_has_only_web_pr_version_metadata_and_add_permissions(self):
         role = self.foundation_resource(
             "google_project_iam_custom_role", "preview_per_pr_secret_preparer"
@@ -172,6 +200,7 @@ run "otherwise_valid_alternate_project" {
                          'resource.type == "secretmanager.googleapis.com/SecretVersion") && '
                          'resource.name.startsWith("projects/${data.google_project.preview.number}/secrets/hh-web-pr-")')
         self.assertNotIn("secretmanager.versions.access", role)
+        self.assertNotIn("secretmanager.secrets.delete", role)
         self.assertNotIn("hh-engine-pr-", attribute(grant, "expression"))
         self.assertNotIn("production", attribute(grant, "expression"))
         self.assertNotIn("staging", attribute(grant, "expression"))
@@ -193,6 +222,17 @@ run "otherwise_valid_alternate_project" {
         database = (FOUNDATION / "database.tf").read_text()
         self.assertIn('secret_id = "hh-preview-db-app-password"', database)
         self.assertNotIn("secretmanager.versions.access", database)
+        grants = []
+        for path in FOUNDATION.glob("*.tf"):
+            for block in re.findall(
+                r'^resource "google_secret_manager_secret_iam_member" "[^"]+" \{\n(.*?)^\}',
+                path.read_text(), re.MULTILINE | re.DOTALL,
+            ):
+                if attribute(block, "secret_id") == "google_secret_manager_secret.preview_app_password.id":
+                    grants.append(block)
+        self.assertEqual(len(grants), 1)
+        self.assertEqual(attribute(grants[0], "member"),
+                         '"serviceAccount:${google_service_account.secret_preparer.email}"')
 
     def test_preparer_project_identity_and_quota_permissions_are_narrow(self):
         role = self.foundation_resource(

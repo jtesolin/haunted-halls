@@ -1,6 +1,11 @@
 import json
 import re
 import unittest
+import os
+import subprocess
+import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,47 +37,52 @@ INCARNATION = "a" * 32
 PASSWORD = b"0123456789abcdef" * 4
 
 
-class MemoryLedger:
+class ApiError(Exception):
+    pass
+
+
+class NotFound(ApiError):
+    pass
+
+
+class PreconditionFailed(ApiError):
+    pass
+
+
+class FakeBucket:
+    """Model CREATE/GET only: overwrites, deletes and listing are unavailable."""
+
     def __init__(self):
-        self.record = None
-        self.revision = 0
-        self.history = []
+        self.objects = {}
+        self.creates = []
+        self.failures = {}
 
-    def reserve(self, identity, names):
-        if self.record is not None:
-            if self.record["state"] != "complete":
-                raise ReservationConflict("unresolved")
-            if identity.generation <= self.record["generation"]:
-                raise ReservationConflict("replay")
-            if identity.generation != self.record["generation"] + 1:
-                raise ReservationConflict("skip")
-        self.record = {
-            "schema_version": 1,
-            "repository_key": identity.repository_key,
-            "pull_request_number": identity.pull_request_number,
-            "pr_incarnation": identity.pr_incarnation,
-            "generation": identity.generation,
-            "secret_names": names,
-            "state": "reserved",
-            "current_role": None,
-            "secret_versions": {},
-        }
-        self.revision += 1
-        self.history.append(json.loads(json.dumps(self.record)))
-        return self.record, self.revision
+    def blob(self, name):
+        bucket = self
 
-    def update(self, identity, names, record, expected_generation):
-        if expected_generation != self.revision:
-            raise ReservationConflict("stale generation")
-        self.record = json.loads(json.dumps(record))
-        self.revision += 1
-        self.history.append(json.loads(json.dumps(self.record)))
-        return self.revision
+        class Blob:
+            def download_as_bytes(self, *, retry, timeout):
+                if name not in bucket.objects:
+                    raise NotFound()
+                return bucket.objects[name].encode()
 
-    def read(self, identity, names):
-        if self.record is None:
-            return None
-        return json.loads(json.dumps(self.record))
+            def upload_from_string(self, data, *, content_type, if_generation_match,
+                                   retry, timeout):
+                if if_generation_match != 0 or retry is not None:
+                    raise AssertionError("Every create must be single-attempt and create-only.")
+                bucket.creates.append(name)
+                if name in bucket.objects:
+                    raise PreconditionFailed()
+                failure = bucket.failures.get(name)
+                if failure == "absent":
+                    raise TimeoutError()
+                if failure == "conflict":
+                    raise PreconditionFailed()
+                bucket.objects[name] = data if failure != "mismatch" else "{}"
+                if failure in {"committed", "mismatch"}:
+                    raise TimeoutError()
+
+        return Blob()
 
 
 class FakeSecrets:
@@ -136,7 +146,7 @@ class IdentityTests(unittest.TestCase):
         self.assertTrue(all(len(value) <= 255 for value in secret_names(first).values()))
         self.assertEqual(
             GcsLedger.object_name(first),
-            f"secret-preparation/v1/web-pr-123/{INCARNATION}.json",
+            f"secret-preparation/v1/web-pr-123/{INCARNATION}/generations/1/reservation.json",
         )
 
     def test_rejects_malformed_repository_pr_incarnation_and_generation(self):
@@ -187,8 +197,20 @@ class IdentityTests(unittest.TestCase):
 
 class PreparationTests(unittest.TestCase):
     def setUp(self):
+        sdk = patch.dict("sys.modules", {
+            "google.api_core.exceptions": SimpleNamespace(
+                GoogleAPICallError=ApiError, NotFound=NotFound,
+                PreconditionFailed=PreconditionFailed,
+            )
+        })
+        sdk.start()
+        self.addCleanup(sdk.stop)
+        self.reset_runtime()
+
+    def reset_runtime(self):
         self.identity = validate_identity("web", "123", INCARNATION, "1")
-        self.ledger = MemoryLedger()
+        self.bucket = FakeBucket()
+        self.ledger = GcsLedger(self.bucket)
         self.secrets = FakeSecrets()
         self.preparer = SecretPreparer(self.ledger, self.secrets)
 
@@ -215,30 +237,31 @@ class PreparationTests(unittest.TestCase):
             self.assertNotIn(payload.decode(), output)
         self.assertNotIn("payload", output)
         self.assertNotIn("hash", output)
-        self.assertEqual(self.ledger.record["state"], "complete")
+        record = self.ledger.read(self.identity, secret_names(self.identity))
+        self.assertEqual(record["state"], "complete")
         self.assertEqual(
-            [entry["state"] for entry in self.ledger.history],
+            [json.loads(value)["marker"] for value in self.bucket.objects.values()],
             [
-                "reserved",
-                "writing",
-                "writing",
-                "writing",
-                "writing",
-                "writing",
-                "writing",
+                "reservation",
+                "nextauth.intent",
+                "nextauth.result",
+                "internal-token.intent",
+                "internal-token.result",
+                "database-url.intent",
+                "database-url.result",
                 "complete",
             ],
         )
-        self.assertEqual(
-            [entry["current_role"] for entry in self.ledger.history[1:-1]],
-            ["nextauth", None, "internal_token", None, "database_url", None],
-        )
-        for ledger_version in self.ledger.history:
+        for data in self.bucket.objects.values():
+            ledger_version = json.loads(data)
             self.assertFalse(set(ledger_version) - {
                 "schema_version", "repository_key", "pull_request_number",
-                "pr_incarnation", "generation", "secret_names", "state",
-                "current_role", "secret_versions",
+                "pr_incarnation", "generation", "secret_names", "marker", "version",
+                "reservation_id",
             })
+            for payload in self.secrets.payloads:
+                self.assertNotIn(payload.decode(), data)
+            self.assertNotIn("hash", data)
 
     def test_lost_response_requires_reconciliation_and_never_retries(self):
         self.secrets = FakeSecrets(fail_role="internal_token")
@@ -246,8 +269,9 @@ class PreparationTests(unittest.TestCase):
         with self.assertRaises(ReconciliationRequired):
             self.preparer.prepare(self.identity)
         self.assertEqual(self.secrets.calls, ["nextauth", "internal_token"])
-        self.assertEqual(self.ledger.record["state"], "reconciliation-required")
-        self.assertEqual(self.ledger.record["current_role"], "internal_token")
+        record = self.ledger.read(self.identity, secret_names(self.identity))
+        self.assertEqual(record["state"], "reconciliation-required")
+        self.assertEqual(record["current_role"], "internal_token")
         with self.assertRaises(ReservationConflict):
             self.preparer.prepare(self.identity)
         self.assertEqual(self.secrets.calls, ["nextauth", "internal_token"])
@@ -257,7 +281,7 @@ class PreparationTests(unittest.TestCase):
         with self.assertRaises(ReservationConflict):
             self.preparer.prepare(self.identity)
         later = validate_identity("web", "123", INCARNATION, "2")
-        unresolved_ledger = MemoryLedger()
+        unresolved_ledger = GcsLedger(FakeBucket())
         unresolved_secrets = FakeSecrets(fail_role="nextauth")
         unresolved = SecretPreparer(unresolved_ledger, unresolved_secrets)
         with self.assertRaises(ReconciliationRequired):
@@ -272,7 +296,7 @@ class PreparationTests(unittest.TestCase):
         self.preparer = SecretPreparer(self.ledger, self.secrets)
         with self.assertRaises(PreparationError):
             self.preparer.prepare(self.identity)
-        self.assertIsNone(self.ledger.record)
+        self.assertFalse(self.bucket.objects)
         self.assertEqual(self.secrets.access_calls, 0)
         self.assertEqual(self.secrets.calls, [])
 
@@ -284,7 +308,7 @@ class PreparationTests(unittest.TestCase):
         ):
             with self.subTest(identity=different_identity), self.assertRaises(LedgerError):
                 _validate_record(
-                    self.ledger.record,
+                    self.ledger.read(self.identity, secret_names(self.identity)),
                     different_identity,
                     secret_names(different_identity),
                 )
@@ -304,20 +328,205 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(report["in_flight_role"], "internal_token")
         self.assertFalse(report["automatic_resume_allowed"])
         self.assertNotIn("payload", json.dumps(report))
-        self.assertEqual(self.ledger.record["state"], "reconciliation-required")
-        self.assertEqual(len(self.ledger.history), 5)
+        self.assertEqual(self.ledger.read(self.identity, secret_names(self.identity))["state"],
+                         "reconciliation-required")
+        self.assertEqual(len(self.bucket.objects), 5)
 
     def test_completed_reconciliation_remains_read_only(self):
         self.preparer.prepare(self.identity)
-        history_size = len(self.ledger.history)
+        history_size = len(self.bucket.objects)
+        self.secrets.access_calls = 0
         report = self.preparer.reconcile(self.identity)
         self.assertFalse(report["automatic_resume_allowed"])
         self.assertFalse(report["operator_disposition_required"])
         self.assertIsNone(report["in_flight_role"])
-        self.assertEqual(len(self.ledger.history), history_size)
+        self.assertEqual(len(self.bucket.objects), history_size)
+        self.assertEqual(self.secrets.access_calls, 0)
+
+    def test_every_append_observes_its_durable_intent_and_previous_results(self):
+        original = self.secrets.add_version
+
+        def append(secret_id, payload):
+            role = next(role for role in ROLES if secret_id.endswith(role.replace("_", "-")))
+            marker = role.replace("_", "-")
+            self.assertIn(GcsLedger.object_name(self.identity, f"{marker}.intent"),
+                          self.bucket.objects)
+            for previous in ROLES[:ROLES.index(role)]:
+                self.assertIn(GcsLedger.object_name(
+                    self.identity, f"{previous.replace('_', '-')}.result"), self.bucket.objects)
+            return original(secret_id, payload)
+
+        self.secrets.add_version = append
+        self.preparer.prepare(self.identity)
+
+    def test_skip_and_unresolved_prior_generation_fail_without_payload_access(self):
+        for generation in ("2", "3"):
+            with self.assertRaises(ReservationConflict):
+                self.preparer.prepare(validate_identity("web", "123", INCARNATION, generation))
+        self.ledger.reserve(self.identity, secret_names(self.identity))
+        with self.assertRaises(ReservationConflict):
+            self.preparer.prepare(validate_identity("web", "123", INCARNATION, "2"))
+        self.assertEqual(self.secrets.access_calls, 0)
+        self.assertFalse(self.secrets.calls)
+
+    def test_next_generation_requires_complete_not_just_all_results(self):
+        self.preparer.prepare(self.identity)
+        next_identity = validate_identity("web", "123", INCARNATION, "2")
+        self.preparer.prepare(next_identity)
+        self.assertEqual(self.ledger.read(next_identity, secret_names(next_identity))["state"],
+                         "complete")
+        with self.assertRaises(ReservationConflict):
+            self.preparer.prepare(validate_identity("web", "123", INCARNATION, "4"))
+
+    def test_result_persistence_failure_is_reconciliation_not_retryable_conflict(self):
+        for failure in ("absent", "mismatch", "conflict"):
+            with self.subTest(failure=failure):
+                self.reset_runtime()
+                name = GcsLedger.object_name(self.identity, "nextauth.result")
+                self.bucket.failures[name] = failure
+                with self.assertRaises(ReconciliationRequired):
+                    self.preparer.prepare(self.identity)
+                self.assertEqual(self.secrets.calls, ["nextauth"])
+                self.assertIn(GcsLedger.object_name(self.identity, "reconciliation-required"),
+                              self.bucket.objects)
+                with self.assertRaises(ReservationConflict):
+                    self.preparer.prepare(self.identity)
+                self.assertEqual(self.secrets.calls, ["nextauth"])
+
+    def test_unresolved_intent_blocks_replay_even_without_reconciliation_marker(self):
+        self.bucket.failures[GcsLedger.object_name(self.identity, "nextauth.result")] = "absent"
+        self.bucket.failures[
+            GcsLedger.object_name(self.identity, "reconciliation-required")
+        ] = "absent"
+        with self.assertRaises(ReconciliationRequired):
+            self.preparer.prepare(self.identity)
+        record = self.ledger.read(self.identity, secret_names(self.identity))
+        self.assertEqual(record["state"], "reconciliation-required")
+        with self.assertRaises(ReservationConflict):
+            self.preparer.prepare(self.identity)
+        with self.assertRaises(ReservationConflict):
+            self.preparer.prepare(validate_identity("web", "123", INCARNATION, "2"))
+        self.assertEqual(self.secrets.calls, ["nextauth"])
+
+    def test_ambiguous_immutable_creates_are_adopted_only_after_exact_get(self):
+        for marker in ("reservation", "nextauth.intent", "nextauth.result", "complete"):
+            with self.subTest(marker=marker):
+                self.reset_runtime()
+                name = GcsLedger.object_name(self.identity, marker)
+                self.bucket.failures[name] = "committed"
+                result = self.preparer.prepare(self.identity)
+                self.assertEqual(self.secrets.calls, list(ROLES))
+                self.assertEqual(self.bucket.creates.count(name), 1)
+                self.assertEqual(result["secret_versions"],
+                                 {"nextauth": "1", "internal_token": "2", "database_url": "3"})
+
+    def test_ambiguous_intent_absent_or_mismatched_never_appends(self):
+        for failure in ("absent", "mismatch"):
+            with self.subTest(failure=failure):
+                self.reset_runtime()
+                self.bucket.failures[
+                    GcsLedger.object_name(self.identity, "nextauth.intent")
+                ] = failure
+                with self.assertRaises(LedgerError):
+                    self.preparer.prepare(self.identity)
+                self.assertFalse(self.secrets.calls)
+                with self.assertRaises(ReservationConflict):
+                    self.preparer.prepare(self.identity)
+
+    def test_all_results_without_complete_blocks_next_generation(self):
+        self.bucket.failures[GcsLedger.object_name(self.identity, "complete")] = "absent"
+        with self.assertRaises(ReconciliationRequired):
+            self.preparer.prepare(self.identity)
+        with self.assertRaises(ReservationConflict):
+            self.preparer.prepare(validate_identity("web", "123", INCARNATION, "2"))
+        self.assertEqual(self.secrets.calls, list(ROLES))
+
+    def test_completion_cannot_be_created_without_all_durable_results(self):
+        names = secret_names(self.identity)
+        self.ledger.reserve(self.identity, names)
+        with self.assertRaises(LedgerError):
+            self.ledger.complete(self.identity, names)
+        self.assertNotIn(GcsLedger.object_name(self.identity, "complete"), self.bucket.objects)
+
+    def test_existing_marker_cannot_be_overwritten_even_with_matching_content(self):
+        names = secret_names(self.identity)
+        self.ledger.reserve(self.identity, names)
+        self.ledger.intent(self.identity, names, "nextauth")
+        before = dict(self.bucket.objects)
+        with self.assertRaises(ReservationConflict):
+            self.ledger.intent(self.identity, names, "nextauth")
+        self.assertEqual(self.bucket.objects, before)
+
+    def test_ambiguous_reservation_absent_or_wrong_content_never_reads_payload(self):
+        for failure in ("absent", "mismatch"):
+            with self.subTest(failure=failure):
+                self.reset_runtime()
+                self.bucket.failures[GcsLedger.object_name(self.identity)] = failure
+                with self.assertRaises(LedgerError):
+                    self.preparer.prepare(self.identity)
+                self.assertEqual(self.secrets.access_calls, 0)
+                self.assertFalse(self.secrets.calls)
+
+    def test_gateway_performs_exactly_one_append_and_sanitizes_unknown_outcome(self):
+        client = SimpleNamespace(add_secret_version=unittest.mock.Mock(
+            side_effect=ApiError("sensitive response detail")
+        ))
+        gateway = SecretManagerGateway(client)
+        with self.assertRaises(SecretManagerWriteOutcomeUnknown) as caught:
+            gateway.add_version(secret_names(self.identity)["nextauth"], bytearray(b"test-value"))
+        self.assertEqual(client.add_secret_version.call_count, 1)
+        self.assertIsNone(client.add_secret_version.call_args.kwargs["retry"])
+        self.assertNotIn("sensitive response detail", str(caught.exception))
+
+    def test_mismatched_marker_identity_and_unsafe_fields_fail_closed(self):
+        self.preparer.prepare(self.identity)
+        name = GcsLedger.object_name(self.identity, "nextauth.result")
+        original = json.loads(self.bucket.objects[name])
+        for extra in ({"pull_request_number": "124"}, {"payload": "not-allowed"},
+                      {"version": "latest"}, {"generation": True}):
+            with self.subTest(extra=extra):
+                self.bucket.objects[name] = json.dumps({**original, **extra})
+                with self.assertRaises(LedgerError):
+                    self.preparer.reconcile(self.identity)
 
 
 class TrustedWorkflowAndTerraformBoundaryTests(unittest.TestCase):
+    def test_pre_auth_workflow_rejects_drafts_closed_wrong_repo_and_missing_metadata(self):
+        workflow = (
+            Path(__file__).parents[2] / ".github/workflows/preview-secret-prepare.yml"
+        ).read_text()
+        step = workflow.split("run: |", 1)[1].split("\n      - name:", 1)[0]
+        script = "\n".join(line[10:] for line in step.splitlines() if line)
+        self.assertLess(workflow.index("pr.get(\"draft\") is False"),
+                        workflow.index("uses: google-github-actions/auth"))
+        valid = {"number": 123, "state": "open", "draft": False,
+                 "base": {"repo": {"full_name": "jtesolin/haunted-halls"}}}
+        cases = [
+            (valid, True),
+            ({**valid, "draft": True}, False),
+            ({**valid, "state": "closed"}, False),
+            ({**valid, "number": 124}, False),
+            ({**valid, "base": {"repo": {"full_name": "elsewhere/repo"}}}, False),
+            ({key: value for key, value in valid.items() if key != "draft"}, False),
+        ]
+        for metadata, accepted in cases:
+            with self.subTest(metadata=metadata), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                gh = root / "gh"
+                gh.write_text("#!/bin/sh\nprintf '%s' \"$PR_FIXTURE\"\n")
+                gh.chmod(0o700)
+                result = subprocess.run(
+                    ["bash", "-c", script + "\nprintf AUTHENTICATION_REACHED"],
+                    env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                         "GITHUB_WORKFLOW_REF": "jtesolin/haunted-halls/.github/workflows/preview-secret-prepare.yml@refs/heads/main",
+                         "GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "workflow_dispatch",
+                         "PR_NUMBER": "123", "RUNNER_TEMP": directory,
+                         "PR_FIXTURE": json.dumps(metadata)},
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                self.assertEqual("AUTHENTICATION_REACHED" in result.stdout, accepted)
+
     def test_bootstrap_targets_are_exact_and_never_target_everything(self):
         self.assertEqual(
             TARGETS["containers"],

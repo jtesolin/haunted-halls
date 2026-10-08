@@ -1215,14 +1215,17 @@ No preview Cloud SQL instance or always-on service is created.
 
 The preview WIF provider maps `attribute.workflow_ref` and accepts only the
 default-branch refs
-`jtesolin/haunted-halls/.github/workflows/preview-deploy.yml@refs/heads/main`
-and
-`jtesolin/haunted-halls-engine/.github/workflows/preview-deploy.yml@refs/heads/main`,
+`jtesolin/haunted-halls/.github/workflows/preview-deploy.yml@refs/heads/main`,
+`jtesolin/haunted-halls-engine/.github/workflows/preview-deploy.yml@refs/heads/main`
+and `jtesolin/haunted-halls/.github/workflows/preview-secret-prepare.yml@refs/heads/main`,
 with `repository_owner == "jtesolin"` and `ref == "refs/heads/main"`.
 The deployer has two exact pool-scoped bindings:
 
 - `principalSet://iam.googleapis.com/projects/PREVIEW_PROJECT_NUMBER/locations/global/workloadIdentityPools/hh-preview-github/attribute.workflow_ref/jtesolin/haunted-halls/.github/workflows/preview-deploy.yml@refs/heads/main`
 - `principalSet://iam.googleapis.com/projects/PREVIEW_PROJECT_NUMBER/locations/global/workloadIdentityPools/hh-preview-github/attribute.workflow_ref/jtesolin/haunted-halls-engine/.github/workflows/preview-deploy.yml@refs/heads/main`
+
+The separate preparer binding uses only the exact secret-preparation workflow
+ref; that workflow does not receive deployer impersonation authority.
 
 No repository-wide principal binding or production/staging WIF change is
 introduced. Follow-up issues #41 and
@@ -1245,7 +1248,10 @@ The intended grants are:
 | `hh-preview-deployer` | `hh-preview-458395246135-per-pr-tf-state` only | `roles/storage.objectAdmin`; no access to `hh-preview-458395246135-foundation-tf-state` |
 | `hh-preview-deployer` | Three preview runtime service accounts | `roles/iam.serviceAccountUser`; no ability to act as the DB provisioner |
 | `hh-preview-deployer` | Preview project | `secretmanager.secrets.create` only; parent-project authorization permits arbitrary new names, while trusted configuration restricts intended names |
-| `hh-preview-deployer` | `hh-web-pr-*` / `hh-engine-pr-*` Secret and SecretVersion resources | Custom conditional metadata, version, and IAM-policy mutations; excludes durable foundation secrets and `secretmanager.versions.access` |
+| `hh-preview-deployer` | `hh-web-pr-*` / `hh-engine-pr-*` Secret parents only | Conditional `secrets.get/update/delete/getIamPolicy/setIamPolicy`; no version permissions or durable foundation secrets |
+| `hh-preview-secret-preparer` | `hh-web-pr-*` Secret/SecretVersion resources | Metadata and `versions.add/get/list` only; cannot delete parents or access per-PR payloads |
+| `hh-preview-secret-preparer` | Exact preview DB app-password secret | Payload access only on this secret; no deployer/runtime grant |
+| `hh-preview-secret-preparer` | Fixed secret-preparation ledger namespace | Immutable object CREATE/GET only, no delete/list/overwrite |
 | `hh-preview-deployer` | Preview project IAP WebService resources | Custom service-policy read/write role; condition permits only tester-role changes, not PR-prefix or email filtering |
 | `hh-preview-deployer` | Preview quota project | Custom `serviceusage.services.use` only; no API/quota administration |
 | `hh-preview-deployer` | Existing staging engine service | Custom `run.services.get` / `run.revisions.get` only, owned by the existing application root |
@@ -1255,7 +1261,7 @@ The intended grants are:
 | Preview frontend runtime | Existing Cloud SQL project | No Cloud SQL role |
 | Preview DB control-plane runtime | Existing Cloud SQL project | Custom `cloudsql.instances.connect/get`, conditional on the existing instance |
 | Preview DB control-plane runtime | Provisioner password secret | `roles/secretmanager.secretAccessor` on that one secret |
-| Preview engine runtime | Preview DB password and OpenAI secrets | `roles/secretmanager.secretAccessor` on those secrets |
+| Preview engine runtime | Preview OpenAI secret and exact per-PR token/DB URL | `roles/secretmanager.secretAccessor` on those secrets, not the shared DB password |
 | Existing project Cloud Run service agent | Preview Artifact Registry repository | `roles/artifactregistry.reader` on the provisioner image repository only |
 | IAP service agent | Each IAP-enabled preview frontend Cloud Run service | `roles/run.invoker`, granted directly on that service by the #41/#85 per-PR Terraform stack; no project-level binding |
 | Authorized preview testers | Each IAP-enabled preview frontend's IAP resource | `roles/iap.httpsResourceAccessor`, granted directly on that resource by the #41/#85 per-PR Terraform stack; no project-level binding |
@@ -1379,13 +1385,22 @@ independently. Password values for both shared preview database logins are
 operator-generated sensitive ephemeral Terraform inputs and are written to
 Secret Manager using write-only arguments; they are not outputs or tracked
 files.
-The deployer retains only preview-project secret-container creation authority;
-its prior per-PR version-management grant is removed. A separate
+The deployer retains separate preview-project parent creation authority and
+Secret-only `hh-web-pr-*`/`hh-engine-pr-*` container lifecycle authority
+(`secrets.get/update/delete/getIamPolicy/setIamPolicy`) for Terraform metadata,
+IAM and teardown; its prior version-management grant is removed. A separate
 `hh-preview-secret-preparer` identity receives metadata/list/add permissions
-conditioned on `hh-web-pr-*` resources and ledger read/create-update authority
-without delete. It can access the payload only of the exact
+conditioned on `hh-web-pr-*` resources and immutable ledger GET/create authority
+without overwrite/delete/list. Deterministic per-generation reservation,
+intent, result and complete markers use create-only preconditions. An
+unresolved intent blocks replay; no automatic takeover exists. Ledger-create
+ambiguity is resolved only by exact matching GET, never by retrying an external
+Secret Manager append. Both workflow modes reject draft/closed PRs before WIF.
+It can access the payload only of the exact
 `hh-preview-db-app-password` secret to assemble per-PR database URLs. It has no
-production/staging secret access. The accepted IAP canary and source Artifact
+production/staging secret access. The former runtime grants on that shared
+password are removed; engine/migration consume the pinned PR DB URL instead.
+The accepted IAP canary and source Artifact
 Registry `getIamPolicy` limitations remain intentionally fail-closed; do not
 broaden IAM to clear them.
 
