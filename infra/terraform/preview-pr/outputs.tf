@@ -3,6 +3,7 @@ output "preview_identity" {
     project_id     = local.project_id
     repository_key = var.repository_key
     pr_number      = var.pull_request_number
+    pr_incarnation = var.pr_incarnation
     state_bucket   = "hh-preview-458395246135-per-pr-tf-state"
     state_prefix   = var.backend_state_prefix
     database_name  = local.database_name

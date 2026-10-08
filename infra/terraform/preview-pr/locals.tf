@@ -3,6 +3,7 @@ locals {
   region               = "us-east1"
   resource_prefix      = "hh-${var.repository_key}-pr-${var.pull_request_number}"
   database_name        = "haunted_halls_${var.repository_key}_pr_${var.pull_request_number}"
+  secret_prefix        = "${local.resource_prefix}-i-${var.pr_incarnation}"
   frontend_name        = "${local.resource_prefix}-frontend"
   engine_name          = "${local.resource_prefix}-engine"
   migration_name       = "${local.resource_prefix}-migrate"
@@ -18,12 +19,13 @@ locals {
     environment  = "preview"
     repository   = var.repository_key
     pull_request = var.pull_request_number
+    incarnation  = var.pr_incarnation
     managed_by   = "terraform"
   }
   secret_names = {
-    nextauth       = "${local.resource_prefix}-nextauth"
-    internal_token = "${local.resource_prefix}-internal-token"
-    database_url   = "${local.resource_prefix}-database-url"
+    nextauth       = "${local.secret_prefix}-nextauth"
+    internal_token = "${local.secret_prefix}-internal-token"
+    database_url   = "${local.secret_prefix}-database-url"
   }
   secret_grants = {
     frontend_nextauth = { secret = "nextauth", member = local.frontend_runtime }

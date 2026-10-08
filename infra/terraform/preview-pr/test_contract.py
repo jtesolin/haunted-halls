@@ -97,9 +97,6 @@ class OwnershipTests(unittest.TestCase):
         inventory = set(re.findall(r'resource\s+"([^"]+)"\s+"([^"]+)"', source))
         self.assertEqual(inventory, {
             ("google_secret_manager_secret", "pr"),
-            ("google_secret_manager_secret_version", "nextauth"),
-            ("google_secret_manager_secret_version", "internal_token"),
-            ("google_secret_manager_secret_version", "database_url"),
             ("google_secret_manager_secret_iam_member", "runtime"),
             ("google_cloud_run_v2_job", "migration"),
             ("google_cloud_run_v2_service", "engine"),
@@ -110,17 +107,40 @@ class OwnershipTests(unittest.TestCase):
         })
         for forbidden in (r"\bdata\s+\"", r"\bimport\s*\{", r"\bprovisioner\s+\"",
                           r"\bsecret_data\s*=", r"\bpassword\s*=", r"\ballUsers\b",
-                          r"\ballAuthenticatedUsers\b", r"\bignore_changes\b"):
+                          r"\ballAuthenticatedUsers\b", r"\bignore_changes\b",
+                          r"google_secret_manager_secret_version", r"secret_data_wo",
+                          r"secret_revision", r"nextauth_secret\s*=",
+                          r"internal_engine_service_token\s*="):
             self.assertNotRegex(source, forbidden)
         variables = (ROOT / "variables.tf").read_text()
-        for name in ("database_url", "nextauth_secret", "internal_engine_service_token"):
-            block = variables.split(f'variable "{name}" {{', 1)[1].split("validation", 1)[0]
-            self.assertRegex(block, r"sensitive\s*=\s*true")
-            self.assertRegex(block, r"ephemeral\s*=\s*true")
-        self.assertEqual((ROOT / "secrets.tf").read_text().count("secret_data_wo "), 3)
+        for name in (
+            "database_url_secret_version",
+            "nextauth_secret_version",
+            "internal_engine_service_token_version",
+        ):
+            block = variables.split(f'variable "{name}" {{', 1)[1].split("}", 1)[0]
+            self.assertRegex(block, r'can\(regex\("\^\[1-9\]\[0-9\]\*\$"')
+            self.assertNotRegex(block, r"default\s*=")
+        for forbidden in (
+            'variable "database_url" {',
+            'variable "nextauth_secret" {',
+            'variable "internal_engine_service_token" {',
+            'variable "secret_revision" {',
+        ):
+            self.assertNotIn(forbidden, variables)
+        services = (ROOT / "services.tf").read_text()
+        migration = (ROOT / "migration.tf").read_text()
+        combined_runtime_config = services + migration
+        self.assertEqual(combined_runtime_config.count("var.nextauth_secret_version"), 1)
+        self.assertEqual(
+            combined_runtime_config.count("var.internal_engine_service_token_version"), 2
+        )
+        self.assertEqual(combined_runtime_config.count("var.database_url_secret_version"), 2)
+        self.assertNotIn("latest", combined_runtime_config)
+        self.assertNotIn("google_secret_manager_secret_version", combined_runtime_config)
+        self.assertIn('incarnation  = var.pr_incarnation', (ROOT / "locals.tf").read_text())
         migration = (ROOT / "migration.tf").read_text()
         self.assertNotIn("google_cloud_run_v2_service", migration)
-
 
 if __name__ == "__main__":
     unittest.main()

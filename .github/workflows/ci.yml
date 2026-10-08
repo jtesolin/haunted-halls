@@ -168,6 +168,22 @@ jobs:
           PYTHONDONTWRITEBYTECODE: "1"
         run: python -m unittest discover -s infra/terraform/preview-foundation -p 'test_iam_*.py'
 
+      - name: Run offline trusted secret-preparer contracts
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -m unittest discover -s tools/preview-secret-preparer -p 'test_*.py'
+
+      - name: Verify hash-locked secret-preparer runtime without credentials
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/secret-preparer-runtime"
+          "$RUNNER_TEMP/secret-preparer-runtime/bin/python" -m pip install \
+            --require-hashes --only-binary=:all: \
+            --requirement tools/preview-secret-preparer/requirements.lock
+          "$RUNNER_TEMP/secret-preparer-runtime/bin/python" -m pip check
+          "$RUNNER_TEMP/secret-preparer-runtime/bin/python" -c \
+            'import google.auth; from google.cloud import secretmanager, storage'
+
       - name: Run offline manual preview acceptance contracts
         env:
           PYTHONDONTWRITEBYTECODE: "1"

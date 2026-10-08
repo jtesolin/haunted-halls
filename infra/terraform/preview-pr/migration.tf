@@ -35,7 +35,7 @@ resource "google_cloud_run_v2_job" "migration" {
           value_source {
             secret_key_ref {
               secret  = google_secret_manager_secret.pr["database_url"].id
-              version = google_secret_manager_secret_version.database_url.version
+              version = var.database_url_secret_version
             }
           }
         }
@@ -50,7 +50,5 @@ resource "google_cloud_run_v2_job" "migration" {
 
   depends_on = [
     google_secret_manager_secret_iam_member.runtime,
-    google_secret_manager_secret_version.nextauth,
-    google_secret_manager_secret_version.internal_token,
   ]
 }

@@ -28,6 +28,16 @@ variable "backend_state_prefix" {
   }
 }
 
+variable "pr_incarnation" {
+  type        = string
+  description = "Trusted immutable 128-bit lowercase-hex ID for one disposable PR preview lifetime."
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{32}$", var.pr_incarnation))
+    error_message = "pr_incarnation must be exactly 32 lowercase hexadecimal characters."
+  }
+}
+
 variable "preview_project_number" {
   type        = string
   description = "Actual numeric project number from accepted foundation metadata, NOT the suffix of the project ID. Verify before live init."
@@ -81,49 +91,32 @@ variable "preview_openai_version" {
   }
 }
 
-variable "secret_revision" {
-  type        = number
-  description = "Write-only rotation trigger. Reuse exactly the same payloads on retries at this revision."
-
-  validation {
-    condition     = var.secret_revision >= 1 && var.secret_revision == floor(var.secret_revision)
-    error_message = "secret_revision must be a positive integer."
-  }
-}
-
-variable "nextauth_secret" {
-  type      = string
-  sensitive = true
-  ephemeral = true
-
-  validation {
-    condition     = can(regex("^[0-9a-f]{64}$", var.nextauth_secret))
-    error_message = "nextauth_secret must be a separately generated 32-byte lowercase hexadecimal secret."
-  }
-}
-
-variable "internal_engine_service_token" {
-  type      = string
-  sensitive = true
-  ephemeral = true
-
-  validation {
-    condition     = can(regex("^[0-9a-f]{64}$", var.internal_engine_service_token))
-    error_message = "internal_engine_service_token must be a separately generated 32-byte lowercase hexadecimal secret."
-  }
-}
-
-variable "database_url" {
+variable "nextauth_secret_version" {
   type        = string
-  sensitive   = true
-  ephemeral   = true
-  description = "Trusted provisioner-side assembly using the shared preview app login and only this PR's DB. Never read SQL credentials in this root."
+  description = "Explicit numeric Secret Manager version returned by the trusted preparer."
 
   validation {
-    condition = can(regex(
-      "^postgresql\\+psycopg://haunted_halls_preview_app:[0-9a-f]{64}@/haunted_halls_${var.repository_key}_pr_${var.pull_request_number}\\?host=/cloudsql/haunted-halls-development:us-east1:haunted-halls-postgres$",
-      var.database_url
-    ))
-    error_message = "database_url must use the hardened preview app login, this PR's database, and the accepted shared Cloud SQL socket only."
+    condition     = can(regex("^[1-9][0-9]*$", var.nextauth_secret_version))
+    error_message = "nextauth_secret_version must be an explicit positive numeric version; aliases are forbidden."
+  }
+}
+
+variable "internal_engine_service_token_version" {
+  type        = string
+  description = "Explicit numeric Secret Manager version returned by the trusted preparer."
+
+  validation {
+    condition     = can(regex("^[1-9][0-9]*$", var.internal_engine_service_token_version))
+    error_message = "internal_engine_service_token_version must be an explicit positive numeric version; aliases are forbidden."
+  }
+}
+
+variable "database_url_secret_version" {
+  type        = string
+  description = "Explicit numeric Secret Manager version returned by the trusted preparer."
+
+  validation {
+    condition     = can(regex("^[1-9][0-9]*$", var.database_url_secret_version))
+    error_message = "database_url_secret_version must be an explicit positive numeric version; aliases are forbidden."
   }
 }
