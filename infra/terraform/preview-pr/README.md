@@ -101,6 +101,11 @@ and `draft=false` for both modes; missing metadata fails closed. Draft PRs
 remain CI-only. It checks out the dispatch's `main` SHA and authenticates
 through exact-workflow-ref WIF as
 `hh-preview-secret-preparer@hh-preview-458395246135.iam.gserviceaccount.com`.
+One fixed-repository eligibility validator checks fresh GitHub API responses
+initially, immediately before WIF authentication, and again after authentication
+immediately before invoking the preparer. Each metadata file is deleted after
+use, including on failure. A late closed/draft or malformed response stops the
+job without invoking the preparer or creating preview state.
 It accepts only the frontend repository key, canonical PR number, a
 32-character lowercase-hex PR incarnation, and a positive generation number.
 The tool derives all three Secret Manager container names itself; it accepts no

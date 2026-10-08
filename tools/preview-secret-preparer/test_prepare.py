@@ -1,8 +1,10 @@
 import json
+import base64
 import re
 import unittest
 import os
 import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -11,6 +13,7 @@ from pathlib import Path
 from contextlib import ExitStack
 
 import prepare
+from validate_pr import validate_pr
 from terraform_targets import TARGETS
 from prepare import (
     DB_PASSWORD_SECRET,
@@ -665,8 +668,6 @@ class TrustedWorkflowAndTerraformBoundaryTests(unittest.TestCase):
         ).read_text()
         step = workflow.split("run: |", 1)[1].split("\n      - name:", 1)[0]
         script = "\n".join(line[10:] for line in step.splitlines() if line)
-        self.assertLess(workflow.index("pr.get(\"draft\") is False"),
-                        workflow.index("uses: google-github-actions/auth"))
         valid = {"number": 123, "state": "open", "draft": False,
                  "base": {"repo": {"full_name": "jtesolin/haunted-halls"}}}
         cases = [
@@ -681,19 +682,95 @@ class TrustedWorkflowAndTerraformBoundaryTests(unittest.TestCase):
             with self.subTest(metadata=metadata), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 gh = root / "gh"
-                gh.write_text("#!/bin/sh\nprintf '%s' \"$PR_FIXTURE\"\n")
+                helper = base64.b64encode(
+                    Path(__file__).with_name("validate_pr.py").read_bytes()
+                ).decode()
+                gh.write_text(
+                    '#!/bin/sh\ncase "$2" in\n*contents*) printf "%s" "$HELPER" ;;\n'
+                    '*) printf "%s" "$PR_FIXTURE" ;;\nesac\n'
+                )
                 gh.chmod(0o700)
                 result = subprocess.run(
                     ["bash", "-c", script + "\nprintf AUTHENTICATION_REACHED"],
                     env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
                          "GITHUB_WORKFLOW_REF": "jtesolin/haunted-halls/.github/workflows/preview-secret-prepare.yml@refs/heads/main",
                          "GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "workflow_dispatch",
+                         "GITHUB_SHA": "79d839031580e1d26d8b816d25d8262c293b0a95",
                          "PR_NUMBER": "123", "RUNNER_TEMP": directory,
+                         "HELPER": helper,
                          "PR_FIXTURE": json.dumps(metadata)},
                     capture_output=True, text=True, check=False,
                 )
                 self.assertEqual(result.returncode == 0, accepted, result.stderr)
                 self.assertEqual("AUTHENTICATION_REACHED" in result.stdout, accepted)
+                self.assertFalse((root / "pr-initial.json").exists())
+                self.assertFalse((root / "validate_pr.py").exists())
+
+    def test_canonical_validator_fails_closed_for_invalid_metadata(self):
+        valid = {"number": 123, "state": "open", "draft": False,
+                 "base": {"repo": {"full_name": "jtesolin/haunted-halls"}}}
+        self.assertTrue(validate_pr("123", valid))
+        for metadata in (
+            None, [], {}, {**valid, "number": True}, {**valid, "number": "123"},
+            {**valid, "draft": None}, {**valid, "draft": True},
+            {**valid, "state": "closed"}, {**valid, "number": 124},
+            {**valid, "base": None}, {**valid, "base": []},
+            {**valid, "base": {"repo": None}},
+            {**valid, "base": {"repo": {"full_name": "elsewhere/repo"}}},
+            *({k: v for k, v in valid.items() if k != missing} for missing in valid),
+        ):
+            with self.subTest(metadata=metadata):
+                self.assertFalse(validate_pr("123", metadata))
+        for number in ("01", "0", "../123", "1000000000"):
+            self.assertFalse(validate_pr(number, valid))
+
+    def test_fresh_late_gates_surround_auth_and_block_preparer_on_failure(self):
+        workflow = (Path(__file__).parents[2]
+                    / ".github/workflows/preview-secret-prepare.yml").read_text()
+        steps = workflow.split("\n      - name: ")
+        before = next(s for s in steps if s.startswith("Revalidate PR immediately"))
+        auth = next(s for s in steps if s.startswith("Authenticate only"))
+        final = next(s for s in steps if s.startswith("Prepare one generation"))
+        self.assertEqual(steps.index(auth), steps.index(before) + 1)
+        self.assertEqual(steps.index(final), steps.index(auth) + 1)
+        self.assertLess(final.index("validate_pr.py"), final.index("/prepare.py"))
+        self.assertEqual(workflow.count('gh api "repos/jtesolin/haunted-halls/pulls/$PR_NUMBER"'), 3)
+        self.assertIn("validate_pr.py?ref=$GITHUB_SHA", workflow)
+        for step, filename in ((before, "pr-before-auth.json"),
+                               (final, "pr-before-prepare.json")):
+            self.assertNotIn("pr-initial.json", step)
+            self.assertIn(f'> "$RUNNER_TEMP/{filename}"', step)
+            self.assertIn(f'trap \'rm -f "$RUNNER_TEMP/{filename}"\' EXIT', step)
+            script = step.split("run: |", 1)[1]
+            script = "\n".join(line[10:] for line in script.splitlines() if line)
+            if "/prepare.py" in script:
+                script = script.split("python tools/preview-secret-preparer/prepare.py", 1)[0]
+            script += "\nprintf PREPARER_REACHED"
+            valid = {"number": 123, "state": "open", "draft": False,
+                     "base": {"repo": {"full_name": "jtesolin/haunted-halls"}}}
+            for fixture, accepted in (
+                (json.dumps(valid), True),
+                (json.dumps({**valid, "state": "closed"}), False),
+                (json.dumps({**valid, "draft": True}), False),
+                ("{", False), ("null", False),
+            ):
+                with self.subTest(filename=filename, fixture=fixture), \
+                        tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    (root / "python").symlink_to(sys.executable)
+                    gh = root / "gh"
+                    gh.write_text('#!/bin/sh\nprintf "%s" "$PR_FIXTURE"\n')
+                    gh.chmod(0o700)
+                    result = subprocess.run(
+                        ["bash", "-c", script], cwd=Path(__file__).parents[2],
+                        env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                             "PR_NUMBER": "123", "RUNNER_TEMP": directory,
+                             "PR_FIXTURE": fixture},
+                        capture_output=True, text=True, check=False,
+                    )
+                    self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                    self.assertEqual("PREPARER_REACHED" in result.stdout, accepted)
+                    self.assertFalse((root / filename).exists())
 
     def test_bootstrap_targets_are_exact_and_never_target_everything(self):
         self.assertEqual(
