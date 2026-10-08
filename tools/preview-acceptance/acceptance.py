@@ -239,7 +239,8 @@ class Harness:
         return "Disposable IAP hello service created; service-scoped IAP agent invocation only"
 
     def iap_policy(self):
-        return self.api(self.iap_url + ":getIamPolicy?options.requestedPolicyVersion=3")
+        return self.api(self.iap_url + ":getIamPolicy", "POST",
+                        {"options": {"requestedPolicyVersion": 3}})
 
     def capture_iap(self, original):
         if "iap_reconciliation" not in self.report:
@@ -565,8 +566,10 @@ class Harness:
             lines.append("- No canary creation attempted.")
         lines += ["", "No Terraform, real preview DB, migration, application-image rollout, or image copy.",
                   "Source-policy audit cannot be proven by reader-only credentials; a BLOCKED result fails acceptance."]
+        rendered = "\n".join(lines) + "\n"
         with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as output:
-            output.write("\n".join(lines) + "\n")
+            output.write(rendered)
+        print(rendered, end="")
 
     def passed(self):
         return (all(c["result"] == "PASS" for c in self.report["checks"].values()) and

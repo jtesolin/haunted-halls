@@ -259,7 +259,41 @@ The broader prerequisite checks for IAP OAuth/browser bootstrap, tester allowlis
 OpenAI version metadata, effective SQL grants and cross-project `SELECT 1` are
 still operator/runtime acceptance and are **not** claimed by this workflow.
 
-### Cleanup and evidence
+### First live run and request-shape follow-up
+
+Live run [37708901189](https://github.com/jtesolin/haunted-halls/actions/runs/37708901189)
+used reviewed source `e6e9f3dfee1bcf89db1d33707bd59cd6a4760a20`.
+WIF authenticated as the exact preview deployer; project/number, canary
+permissions, Secret Manager boundaries, quota checks, staging metadata and
+source manifest/write boundaries passed. Both documented gaps reported BLOCKED.
+Service-level IAP policy read unexpectedly returned HTTP 404 because the harness
+used a GET/query form instead of the IAP v1 `getIamPolicy` POST/request body.
+Tester add/remove and admin/mixed-role checks did not run and remain pending.
+No IAP policy mutation occurred; live prerequisite acceptance is **not complete**.
+
+The workflow verified deletion of the Cloud Run canary
+`projects/hh-preview-458395246135/locations/us-east1/services/hh-web-iam-accept-37708901189-1`
+and prefixed secret
+`projects/1001419903197/secrets/hh-web-pr-acceptance-37708901189-1`.
+On October 8, 2026, operator ADC `jack.tesolin@gmail.com` inspected only metadata
+for the remaining
+`projects/1001419903197/secrets/iam-web-acceptance-37708901189-1`,
+verified project ID/number and labels `hh-purpose=iam-acceptance`,
+`hh-repository=web`, `hh-run=37708901189`, `hh-attempt=1`, deleted only that
+exact secret, and verified absence (HTTP 404). No payload was accessed.
+
+The focused follow-up corrects IAP policy reads to POST the unchanged Cloud Run
+WebService `:getIamPolicy` endpoint with
+`{"options":{"requestedPolicyVersion":3}}`. It adds no GET fallback or propagation
+retry. Version-3 reconciliation and `setIamPolicy` behavior remain unchanged;
+empty/condition-free version-1 responses remain valid. Future summaries render
+one sanitized string to both `GITHUB_STEP_SUMMARY` and ordinary job stdout;
+the fixed authentication-failure message likewise uses one literal block and
+`tee`. Neither path prints the private reconciliation journal or raw policies.
+This improves auditable log retrieval without changing nonzero failure semantics.
+No new acceptance dispatch occurs before this fix is reviewed and merged.
+
+### Owned canary reconciliation
 
 `always()` invokes cleanup with freshly verified deployer credentials. Only
 canaries created/attempted by this run and matching exact ownership labels may

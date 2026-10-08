@@ -1,6 +1,7 @@
 """Offline workflow contracts and mocked transport tests; no cloud authorization proof."""
 
 import copy
+from contextlib import redirect_stdout
 import importlib.util
 import io
 import json
@@ -60,6 +61,21 @@ class WorkflowContracts(unittest.TestCase):
         self.assertIn("always() && steps.auth.outcome == 'success'", self.workflow)
         self.assertIn("python3 tools/preview-acceptance/acceptance.py cleanup", self.workflow)
         self.assertNotIn("continue-on-error", self.workflow)
+
+    def test_auth_failure_fixed_text_has_identical_log_and_summary_output(self):
+        step = self.workflow.split("- name: Report authentication failure\n", 1)[1]
+        script = step.split("        run: |\n", 1)[1]
+        script = "\n".join(line.removeprefix("          ") for line in script.splitlines()) + "\n"
+        self.assertIn("cat <<'SUMMARY' | tee -a \"$GITHUB_STEP_SUMMARY\"", script)
+        self.assertNotIn("$", script.split("\n", 1)[1].split("\nSUMMARY")[0])
+        with tempfile.TemporaryDirectory() as directory:
+            summary = Path(directory) / "summary"
+            result = acceptance.subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script],
+                                              env={"GITHUB_STEP_SUMMARY": str(summary)},
+                                              capture_output=True, text=True, check=True)
+            self.assertEqual(result.stdout, summary.read_text())
+            self.assertIn("Principal: UNVERIFIED", result.stdout)
+            self.assertIn("No canaries created", result.stdout)
 
 
 class HarnessTests(unittest.TestCase):
@@ -122,6 +138,20 @@ class HarnessTests(unittest.TestCase):
         self.assertRegex(self.h.prefixed, r"^hh-web-pr-acceptance-[0-9]+-[0-9]+$")
         self.assertNotRegex(self.h.service_name, r"^hh-(web|engine)-pr-[0-9]+-")
         self.assertLessEqual(len(self.h.service_name), 49)
+
+    def test_iap_read_requires_post_exact_endpoint_and_version_three_body(self):
+        self.h.iap_url = f"https://iap.googleapis.com/v1/projects/{acceptance.NUMBER}/iap_web/cloud_run-us-east1/services/{self.h.service_name}"
+        for policy in ({}, {"version": 1, "bindings": []}, {
+                "version": 3, "bindings": [{"role": acceptance.TESTER_ROLE, "members": [acceptance.TESTER],
+                                         "condition": {"title": "conditional", "expression": "true"}}]}):
+            with patch.object(self.h, "api", return_value=policy) as api:
+                self.assertEqual(self.h.iap_policy(), policy)
+            api.assert_called_once_with(self.h.iap_url + ":getIamPolicy", "POST",
+                                        {"options": {"requestedPolicyVersion": 3}})
+        with patch.object(self.h, "api", side_effect=acceptance.ApiError(404, "UNKNOWN")) as api:
+            with self.assertRaises(acceptance.ApiError):
+                self.h.iap_policy()
+        self.assertEqual(api.call_count, 1)
 
     def test_policy_edit_preserves_conditions_members_and_etag(self):
         original = {"etag": "etag", "version": 3, "bindings": [
@@ -309,10 +339,21 @@ class HarnessTests(unittest.TestCase):
     def test_sanitized_summary_never_contains_credentials_or_payloads(self):
         self.h.report["checks"]["Identity"] = {"result": "PASS", "evidence": "Exact deployer verified"}
         summary = Path(self.directory.name) / "summary"
-        with patch.dict(acceptance.os.environ, {"GITHUB_STEP_SUMMARY": str(summary)}):
+        self.h.report["canaries"]["prefixed"] = {"name": self.h.prefixed, "attempted": True}
+        self.h.report["cleanup"]["prefixed"] = "PASS: deletion verified"
+        self.h.report["private_test_data"] = {
+            "access_token": "fake-token", "Authorization": "Bearer fake-token",
+            "payload": "aWFtLWFjY2VwdGFuY2UtY2FuYXJ5", "credentials": '{"private_key":"test-private-key"}'}
+        stdout = io.StringIO()
+        with patch.dict(acceptance.os.environ, {"GITHUB_STEP_SUMMARY": str(summary)}), redirect_stdout(stdout):
             self.h.summary()
         text = summary.read_text()
-        for forbidden in ("fake-token", "Bearer", "aWFtLWFjY2VwdGFuY2UtY2FuYXJ5", "credential.json"):
+        self.assertEqual(text, stdout.getvalue())
+        for check in acceptance.CHECKS:
+            self.assertIn(f"| {check} |", text)
+        self.assertIn("PASS: deletion verified", text)
+        for forbidden in ("fake-token", "Bearer", "aWFtLWFjY2VwdGFuY2UtY2FuYXJ5", "credential.json",
+                          "private_key", "test-private-key", "Authorization"):
             self.assertNotIn(forbidden, text)
 
 
@@ -341,12 +382,14 @@ class IapReconciliationTests(unittest.TestCase):
     def api(self, url, method="GET", body=None, headers=None):
         self.calls.append((url, method, copy.deepcopy(body)))
         if "iap.googleapis.com" in url:
-            if method == "GET":
-                self.assertIn("options.requestedPolicyVersion=3", url)
+            self.assertEqual(method, "POST")
+            if url == self.h.iap_url + ":getIamPolicy":
+                self.assertEqual(body, {"options": {"requestedPolicyVersion": 3}})
                 if self.get_fail_after == self.writes:
                     self.get_fail_after = None
                     raise acceptance.CheckError("Injected post-write read failure")
                 return copy.deepcopy(self.current)
+            self.assertEqual(url, self.h.iap_url + ":setIamPolicy")
             journal = json.loads(self.path.read_text())["iap_reconciliation"]
             self.assertEqual(journal["state"], "ambiguous")
             self.assertEqual(journal["original"]["bindings"], self.original["bindings"])
@@ -419,6 +462,15 @@ class IapReconciliationTests(unittest.TestCase):
         self.assertTrue(self.deleted)
         self.assertEqual(self.h.report["iap_reconciliation"]["state"], "restored")
 
+    def test_condition_free_version_one_policy_round_trip_uses_post_reads(self):
+        self.original = {"version": 1, "etag": "0", "bindings": []}
+        self.current = copy.deepcopy(self.original)
+        with patch.object(self.h, "api", side_effect=self.api):
+            self.h.iap_positive()
+        self.assertEqual(self.writes, 4)
+        self.assertEqual(self.h.report["iap_reconciliation"]["state"], "restored")
+        self.assertEqual(acceptance.canonical_policy(self.current), [])
+
     def test_lost_success_response_and_crash_keep_write_intent_durable(self):
         self.h.capture_iap(self.original)
         proposed = acceptance.changed_policy(self.original, acceptance.TESTER_ROLE, acceptance.TESTER)
@@ -440,7 +492,9 @@ class IapReconciliationTests(unittest.TestCase):
         self.cleanup()
         self.assertTrue(self.deleted)
         iap_calls = [call for call in self.calls if "iap.googleapis.com" in call[0]]
-        self.assertEqual([call[1] for call in iap_calls], ["GET", "POST", "GET", "POST", "GET"])
+        self.assertEqual([call[1] for call in iap_calls], ["POST"] * 5)
+        self.assertEqual([call[0].rsplit(":", 1)[1] for call in iap_calls],
+                         ["getIamPolicy", "setIamPolicy", "getIamPolicy", "setIamPolicy", "getIamPolicy"])
         self.assertEqual(iap_calls[3][2]["policy"]["etag"], "fresh-conflict-etag")
 
     def test_cleanup_cannot_prove_restore_retains_service_and_original_failure(self):
@@ -495,9 +549,11 @@ class IapReconciliationTests(unittest.TestCase):
         self.failed_positive(reads=1)
         self.cleanup()
         summary = Path(self.directory.name) / "summary"
-        with patch.dict(acceptance.os.environ, {"GITHUB_STEP_SUMMARY": str(summary)}):
+        stdout = io.StringIO()
+        with patch.dict(acceptance.os.environ, {"GITHUB_STEP_SUMMARY": str(summary)}), redirect_stdout(stdout):
             self.h.summary()
         text = summary.read_text()
+        self.assertEqual(text, stdout.getvalue())
         for private in ("original@example.com", "private-original-marker", "keep-condition", "bindings", "etag"):
             self.assertNotIn(private, text)
         self.assertIn("original IAP policy restored", text)
