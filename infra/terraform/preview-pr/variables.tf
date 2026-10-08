@@ -38,6 +38,16 @@ variable "pr_incarnation" {
   }
 }
 
+variable "secret_generation" {
+  type        = string
+  description = "Trusted last-attempted secret generation persisted on each PR container; zero denotes a new preview."
+
+  validation {
+    condition     = can(regex("^(0|[1-9][0-9]{0,8})$", var.secret_generation))
+    error_message = "secret_generation must be zero or a positive canonical decimal number."
+  }
+}
+
 variable "preview_project_number" {
   type        = string
   description = "Actual numeric project number from accepted foundation metadata, NOT the suffix of the project ID. Verify before live init."
@@ -60,11 +70,11 @@ variable "frontend_image" {
 
 variable "engine_image" {
   type        = string
-  description = "Frozen Ready/serving staging engine artifact; also used verbatim by the migration job."
+  description = "Exact digest-preserving copy of the frozen Ready/serving staging engine artifact in the preview registry; also used by migration."
 
   validation {
-    condition     = can(regex("^us-east1-docker\\.pkg\\.dev/haunted-halls-development/haunted-halls/engine@sha256:[0-9a-f]{64}$", var.engine_image))
-    error_message = "engine_image must be a lowercase sha256 digest in the existing engine image repository; tags are forbidden."
+    condition     = can(regex("^us-east1-docker\\.pkg\\.dev/hh-preview-458395246135/haunted-halls-preview/engine@sha256:[0-9a-f]{64}$", var.engine_image))
+    error_message = "engine_image must be a lowercase sha256 digest in the preview engine image repository; tags are forbidden."
   }
 }
 

@@ -22,6 +22,9 @@ locals {
     incarnation  = var.pr_incarnation
     managed_by   = "terraform"
   }
+  secret_labels = merge(local.labels, {
+    secret_generation = var.secret_generation
+  })
   secret_names = {
     nextauth       = "${local.secret_prefix}-nextauth"
     internal_token = "${local.secret_prefix}-internal-token"

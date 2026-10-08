@@ -445,6 +445,16 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(len(self.bucket.objects), history_size)
         self.assertEqual(self.secrets.access_calls, 0)
 
+    def test_absent_generation_reconciliation_is_read_only_and_safe_to_retry(self):
+        report = self.preparer.reconcile(self.identity)
+        self.assertEqual(report["state"], "absent")
+        self.assertEqual(report["secret_versions"], {})
+        self.assertFalse(report["operator_disposition_required"])
+        self.assertFalse(report["automatic_resume_allowed"])
+        self.assertEqual(self.bucket.objects, {})
+        self.assertEqual(self.secrets.access_calls, 0)
+        self.assertEqual(self.secrets.list_calls, [])
+
     def test_every_append_observes_its_durable_intent_and_previous_results(self):
         original = self.secrets.add_version
 
@@ -668,14 +678,22 @@ class TrustedWorkflowAndTerraformBoundaryTests(unittest.TestCase):
         ).read_text()
         step = workflow.split("run: |", 1)[1].split("\n      - name:", 1)[0]
         script = "\n".join(line[10:] for line in step.splitlines() if line)
-        valid = {"number": 123, "state": "open", "draft": False,
-                 "base": {"repo": {"full_name": "jtesolin/haunted-halls"}}}
+        valid = {
+            "number": 123,
+            "state": "open",
+            "draft": False,
+            "base": {"ref": "main", "repo": {"full_name": "jtesolin/haunted-halls"}},
+            "head": {
+                "sha": "79d839031580e1d26d8b816d25d8262c293b0a95",
+                "repo": {"full_name": "jtesolin/haunted-halls"},
+            },
+        }
         cases = [
             (valid, True),
             ({**valid, "draft": True}, False),
             ({**valid, "state": "closed"}, False),
             ({**valid, "number": 124}, False),
-            ({**valid, "base": {"repo": {"full_name": "elsewhere/repo"}}}, False),
+            ({**valid, "base": {"ref": "main", "repo": {"full_name": "elsewhere/repo"}}}, False),
             ({key: value for key, value in valid.items() if key != "draft"}, False),
         ]
         for metadata, accepted in cases:
@@ -697,6 +715,7 @@ class TrustedWorkflowAndTerraformBoundaryTests(unittest.TestCase):
                          "GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "workflow_dispatch",
                          "GITHUB_SHA": "79d839031580e1d26d8b816d25d8262c293b0a95",
                          "PR_NUMBER": "123", "RUNNER_TEMP": directory,
+                         "EXPECTED_HEAD_SHA": "79d839031580e1d26d8b816d25d8262c293b0a95",
                          "HELPER": helper,
                          "PR_FIXTURE": json.dumps(metadata)},
                     capture_output=True, text=True, check=False,
@@ -707,8 +726,16 @@ class TrustedWorkflowAndTerraformBoundaryTests(unittest.TestCase):
                 self.assertFalse((root / "validate_pr.py").exists())
 
     def test_canonical_validator_fails_closed_for_invalid_metadata(self):
-        valid = {"number": 123, "state": "open", "draft": False,
-                 "base": {"repo": {"full_name": "jtesolin/haunted-halls"}}}
+        valid = {
+            "number": 123,
+            "state": "open",
+            "draft": False,
+            "base": {"ref": "main", "repo": {"full_name": "jtesolin/haunted-halls"}},
+            "head": {
+                "sha": "79d839031580e1d26d8b816d25d8262c293b0a95",
+                "repo": {"full_name": "jtesolin/haunted-halls"},
+            },
+        }
         self.assertTrue(validate_pr("123", valid))
         for metadata in (
             None, [], {}, {**valid, "number": True}, {**valid, "number": "123"},
@@ -716,7 +743,7 @@ class TrustedWorkflowAndTerraformBoundaryTests(unittest.TestCase):
             {**valid, "state": "closed"}, {**valid, "number": 124},
             {**valid, "base": None}, {**valid, "base": []},
             {**valid, "base": {"repo": None}},
-            {**valid, "base": {"repo": {"full_name": "elsewhere/repo"}}},
+            {**valid, "base": {"ref": "main", "repo": {"full_name": "elsewhere/repo"}}},
             *({k: v for k, v in valid.items() if k != missing} for missing in valid),
         ):
             with self.subTest(metadata=metadata):
@@ -746,8 +773,16 @@ class TrustedWorkflowAndTerraformBoundaryTests(unittest.TestCase):
             if "/prepare.py" in script:
                 script = script.split("python tools/preview-secret-preparer/prepare.py", 1)[0]
             script += "\nprintf PREPARER_REACHED"
-            valid = {"number": 123, "state": "open", "draft": False,
-                     "base": {"repo": {"full_name": "jtesolin/haunted-halls"}}}
+            valid = {
+                "number": 123,
+                "state": "open",
+                "draft": False,
+                "base": {"ref": "main", "repo": {"full_name": "jtesolin/haunted-halls"}},
+                "head": {
+                    "sha": "79d839031580e1d26d8b816d25d8262c293b0a95",
+                    "repo": {"full_name": "jtesolin/haunted-halls"},
+                },
+            }
             for fixture, accepted in (
                 (json.dumps(valid), True),
                 (json.dumps({**valid, "state": "closed"}), False),
@@ -765,6 +800,7 @@ class TrustedWorkflowAndTerraformBoundaryTests(unittest.TestCase):
                         ["bash", "-c", script], cwd=Path(__file__).parents[2],
                         env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
                              "PR_NUMBER": "123", "RUNNER_TEMP": directory,
+                             "EXPECTED_HEAD_SHA": "79d839031580e1d26d8b816d25d8262c293b0a95",
                              "PR_FIXTURE": fixture},
                         capture_output=True, text=True, check=False,
                     )

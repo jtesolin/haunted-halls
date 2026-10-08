@@ -10,14 +10,23 @@ mock_provider "google" {
   }
 }
 
+run "reject_invalid_secret_generation" {
+  command = plan
+  variables {
+    secret_generation = "01"
+  }
+  expect_failures = [var.secret_generation]
+}
+
 variables {
   repository_key                        = "web"
   pull_request_number                   = "123"
   pr_incarnation                        = "0123456789abcdef0123456789abcdef"
+  secret_generation                     = "8"
   backend_state_prefix                  = "previews/web-pr-123"
   preview_project_number                = "123456789012"
   frontend_image                        = "us-east1-docker.pkg.dev/hh-preview-458395246135/haunted-halls-preview/frontend@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  engine_image                          = "us-east1-docker.pkg.dev/haunted-halls-development/haunted-halls/engine@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  engine_image                          = "us-east1-docker.pkg.dev/hh-preview-458395246135/haunted-halls-preview/engine@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   iap_testers                           = ["user:tester@example.com", "group:testers@example.com"]
   nextauth_secret_version               = "11"
   internal_engine_service_token_version = "12"
@@ -68,8 +77,8 @@ run "web_stack" {
       google_cloud_run_v2_job.migration.template[0].template[0].containers[0].image == var.engine_image &&
       google_cloud_run_v2_service.engine.template[0].containers[0].image == var.engine_image &&
       google_cloud_run_v2_service.frontend.template[0].containers[0].image == var.frontend_image &&
-      google_cloud_run_v2_job.migration.template[0].template[0].containers[0].command == tolist(["alembic"]) &&
-      google_cloud_run_v2_job.migration.template[0].template[0].containers[0].args == tolist(["upgrade", "head"]) &&
+      google_cloud_run_v2_job.migration.template[0].template[0].containers[0].command == tolist(["/bin/sh", "-ec"]) &&
+      google_cloud_run_v2_job.migration.template[0].template[0].containers[0].args == tolist(["alembic upgrade head && alembic current --check-heads"]) &&
       google_cloud_run_v2_job.migration.template[0].template[0].max_retries == 0 &&
       google_cloud_run_v2_job.migration.template[0].task_count == 1 &&
       google_cloud_run_v2_job.migration.template[0].parallelism == 1
@@ -105,6 +114,7 @@ run "web_stack" {
       length(google_secret_manager_secret.pr) == 3 &&
       google_secret_manager_secret.pr["nextauth"].secret_id == "hh-web-pr-123-i-0123456789abcdef0123456789abcdef-nextauth" &&
       google_secret_manager_secret.pr["internal_token"].labels.incarnation == var.pr_incarnation &&
+      google_secret_manager_secret.pr["database_url"].labels.secret_generation == var.secret_generation &&
       length(google_secret_manager_secret_iam_member.runtime) == 5 &&
       google_secret_manager_secret_iam_member.runtime["frontend_nextauth"].member == "serviceAccount:hh-preview-frontend@hh-preview-458395246135.iam.gserviceaccount.com" &&
       google_secret_manager_secret_iam_member.runtime["migrate_database"].member == "serviceAccount:hh-preview-migration@hh-preview-458395246135.iam.gserviceaccount.com"
@@ -209,7 +219,7 @@ run "reject_frontend_tag" {
 run "reject_wrong_engine_repository" {
   command = plan
   variables {
-    engine_image = "us-east1-docker.pkg.dev/hh-preview-458395246135/haunted-halls-preview/engine@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    engine_image = "us-east1-docker.pkg.dev/haunted-halls-development/haunted-halls/engine@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   }
   expect_failures = [var.engine_image]
 }
@@ -270,7 +280,7 @@ run "reject_wrong_project_frontend" {
 run "reject_uppercase_engine_digest" {
   command = plan
   variables {
-    engine_image = "us-east1-docker.pkg.dev/haunted-halls-development/haunted-halls/engine@sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+    engine_image = "us-east1-docker.pkg.dev/hh-preview-458395246135/haunted-halls-preview/engine@sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
   }
   expect_failures = [var.engine_image]
 }

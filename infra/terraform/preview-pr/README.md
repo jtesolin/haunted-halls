@@ -1,10 +1,11 @@
 # Isolated per-PR preview resources and secret interface
 
 This is a **separate Terraform root**, not a module in the foundation or the
-production/staging root. This change replaces the 41B per-PR payload/version
-ownership model with a trusted secret-preparation interface. It does not
-implement image copying, database provisioning, migration execution, preview
-rollout/teardown, or the complete 41C lifecycle. 41A's merged server-only IAP
+production/staging root. The trusted default-branch workflow now uses it for
+frontend PR preview creation and updates. The lifecycle creates/reuses the
+database, prepares a new secret generation, migrates before service rollout,
+verifies the deployed digests/privacy, and maintains one PR comment. Close/merge
+teardown remains intentionally deferred. 41A's merged server-only IAP
 authentication is consumed unchanged.
 
 ## Ownership and fixed boundary
@@ -51,10 +52,10 @@ modify, or destroy them, create DBs/users, or own project-level IAM.
 
 ## Runtime and immutable inputs
 
-Use accepted foundation metadata for `preview_project_number`; the digits in
-the project **ID** are not evidence of its project **number**. The trusted
-41C preflight must check that number against the project, IAP service agent,
-and the generated URL before deployment.
+Use the accepted foundation metadata for `preview_project_number`; the digits
+in the project **ID** are not evidence of its project **number**. The trusted
+preflight verifies the fixed preview project number against the generated
+frontend URL before deployment.
 
 Runtime service accounts are the existing `hh-preview-frontend`,
 `hh-preview-engine`, and `hh-preview-migration` in the preview project.
@@ -82,23 +83,28 @@ bypass is introduced.
 Accepted image formats are strictly:
 
 - `us-east1-docker.pkg.dev/hh-preview-458395246135/haunted-halls-preview/frontend@sha256:<64 lowercase hex>`
-- `us-east1-docker.pkg.dev/haunted-halls-development/haunted-halls/engine@sha256:<64 lowercase hex>`
+- `us-east1-docker.pkg.dev/hh-preview-458395246135/haunted-halls-preview/engine@sha256:<64 lowercase hex>`
 
 Tags, other repositories, partial/uppercase digests, and whitespace are rejected.
 There is no mutable image fallback or ignored image drift. The same frozen
-engine digest is used by the engine **and** the migration job.
-Terraform syntax validation cannot establish artifact provenance or current
-staging readiness: 41C must freeze/verify the Ready/serving staging digest and
-verify the frontend digest against the exact PR head before providing inputs.
+engine digest is used by the engine **and** the migration job. The trusted
+workflow captures the one Ready/latest serving revision from
+`haunted-halls-engine-staging`, verifies the source Artifact Registry digest,
+and copies the image into this preview-only repository without rebuilding it.
+The copy must retain the exact source manifest digest. The untrusted CI artifact
+is bound to its repository, PR, exact head SHA, workflow run and artifact ID
+before it is pushed to the frontend repository.
 
 ## Trusted secret preparation
 
 The fixed workflow
 [`preview-secret-prepare.yml`](../../../.github/workflows/preview-secret-prepare.yml)
-can run only as a manual dispatch on the reviewed default branch. Before WIF
+can run only as a dispatch on the reviewed default branch (the deployment
+workflow invokes it for each successful preview create/update; manual
+reconciliation remains available). Before WIF
 authentication it requires exact PR number/repository metadata, state `open`
-and `draft=false` for both modes; missing metadata fails closed. Draft PRs
-remain CI-only. It checks out the dispatch's `main` SHA and authenticates
+`draft=false`, and the expected exact PR head SHA; missing or stale metadata
+fails closed. Draft PRs remain CI-only. It checks out the dispatch's `main` SHA and authenticates
 through exact-workflow-ref WIF as
 `hh-preview-secret-preparer@hh-preview-458395246135.iam.gserviceaccount.com`.
 One fixed-repository eligibility validator checks fresh GitHub API responses
@@ -148,9 +154,15 @@ for one preview-environment lifetime. The three parent containers are fixed
 per incarnation; generation numbers distinguish individual appends inside
 those containers. This avoids creating extra containers for every ordinary
 secret generation while ensuring a fully destroyed/recreated environment has
-different container names. 41C must persist the active incarnation and allocate
-a new identifier only after a reviewed teardown/reopen transition. This
-workflow does not automatically take over an older incarnation.
+different container names. The first targeted Terraform apply persists the incarnation with generation
+`0` before database creation. After the DB exists, a read-only ledger
+reconciliation distinguishes a safe pre-reservation retry from a completed or
+ambiguous generation; Terraform persists the attempted generation before the
+preparer runs. Later updates increment only after confirming the prior
+generation is complete. A migration failure therefore cannot make a completed
+generation look unused, and an incomplete append is never replayed. While the state remains, PR
+updates and reopenings retain its incarnation and database. A future teardown
+must allocate a new identifier only after the old preview is removed.
 
 The preview foundation owns the separate
 `hh-preview-458395246135-pr-secret-ledger` bucket. It is private, versioned,
@@ -241,13 +253,14 @@ Each is a required string containing a canonical positive decimal integer.
 services and the migration job pin these exact values. OpenAI remains pinned
 separately to its existing preview-only numeric version.
 
-## Backend identity consistency (41C integration contract)
+## Backend identity consistency
 
 Backend configuration cannot interpolate input variables. Its bucket and
 impersonation identity are fixed here; **prefix must be supplied at init**.
 `backend_state_prefix` separately validates agreement with the resource identity,
 but Terraform cannot inspect its own selected backend from that input.
-Consequently 41C must enforce both checks before any stateful operation:
+The trusted deployment workflow enforces both checks before stateful
+operations:
 
 1. Validate trusted repository/PR identity before init. Use a fresh, private,
    PR-specific working directory and `TF_DATA_DIR`, never a shared initialized
@@ -276,11 +289,21 @@ Consequently 41C must enforce both checks before any stateful operation:
    trusted default-branch runner via the foundation's exact-workflow-ref WIF.
    Never run PR-controlled Terraform or scripts after authentication.
 
-Only backend-disabled init, `validate`, and mocked tests are used for this
-change. The live init sequence above remains a future integration contract, not
-authorization to initialize/deploy from this branch.
+The workflow runs on a fresh default-branch runner, uses a unique `TF_DATA_DIR`,
+and rechecks the backend metadata before every plan/state operation. It never
+uses `-migrate-state`, imports resources, or selects a non-default workspace.
+This implementation PR itself does not trigger the privileged `workflow_run`
+deployment path; a live preview is created only for eligible PRs after the
+trusted workflow is present on `main`.
 
-## Bootstrap and 41C lifecycle ordering
+## Create/update lifecycle ordering
+
+Configure the repository Actions variables `PREVIEW_IAP_TESTERS` as a
+comma-separated set of explicit `user:email` and/or `group:email` principals
+and `PREVIEW_DB_PROVISIONER_URL` as the fixed provisioner's HTTPS `run.app`
+URL. The trusted job rejects missing/malformed values and has no public-access
+or fallback identity. Do not put credentials or secret payloads in these
+variables.
 
 There is deliberately no "migration succeeded" Terraform flag: creating a job
 does **not** execute it or prove schema readiness, and an apply dependency
@@ -289,47 +312,40 @@ would destroy a healthy preview during an update.
 
 The required order is:
 
-1. Before cloud access, validate the trusted default-branch event, repository,
-   open PR, incarnation/generation, fixed project identity, WIF identity and
-   backend metadata. Freeze artifact digests and use a fresh private working
-   directory/`TF_DATA_DIR`.
-2. Create/reconcile just the three secret containers and their runtime access
-   grants using a reviewed targeted plan for exactly:
-   `google_secret_manager_secret.pr` and
-   `google_secret_manager_secret_iam_member.runtime`. The fixed inventory is
-   exposed by `python3 tools/preview-secret-preparer/terraform_targets.py
-   containers` and contract-tested; it is a narrow bootstrap exception, not a
-   general targeted apply/destroy pattern. Review the saved plan for any
-   unexpected actions before applying.
-3. Dispatch the fixed secret-preparation workflow with the same PR incarnation
-   and the next generation number. It writes versions once, records each
-   numeric result, and returns only non-secret metadata.
-4. Use the reviewed migration target from
-   `python3 tools/preview-secret-preparer/terraform_targets.py migration`:
-   exactly `google_cloud_run_v2_job.migration`. Its dependencies consume the
-   explicit DB version and already-created container/IAM prerequisites. Review
-   the saved targeted plan before applying; no general target expansion is
-   allowed.
-5. Create the empty PR database through the fixed trusted provisioner if absent
-   (preserve an existing DB; no seeds), then execute the fixed migration job
-   explicitly without command/env overrides. Reconcile uncertain execution
-   outcomes from actual execution state and require Alembic success. A failed
-   migration stops rollout and must not destroy a healthy preview.
-6. Only after successful migration, perform a fresh **full** plan/apply to roll
-   out the engine and frontend. Verify readiness, exact digests, engine
-   unauthenticated denial, frontend IAP interception, allowed tester
-   sign-in/gameplay/persistence, and update the single PR status comment.
-7. On close, destroy this root with the same identity/backend; reconcile jobs
-   and retained runtime executions; drop only this generated DB; retain
-   unresolved ledger history. A fully recreated environment must use a new
-   incarnation. Never delete foundation state or reset another PR's state.
+1. Normal CI must pass. For a ready same-repository PR, a credential-free job
+   builds the exact PR-head image and uploads only the image archive and its
+   checksum. The trusted `workflow_run` job verifies the run/workflow/PR/SHA,
+   unique artifact ID and GitHub artifact digest before authentication. Draft,
+   fork, stale-head and closed PR runs do not deploy.
+2. In the fresh default-branch runner, revalidate the PR and capture exactly
+   one Ready/latest serving staging engine revision. Resolve its immutable
+   source digest and copy that artifact into the preview registry without
+   rebuilding or mutating staging. Confirm the destination retains the digest.
+   Push the exact PR image artifact, and resolve its immutable preview digest.
+3. Initialize/reconcile only `previews/web-pr-<N>` in the fixed per-PR bucket.
+   Read the incarnation/generation from the three state-owned secret
+   containers, or create a new trusted incarnation for the first deployment.
+   Reconcile only the fixed container/runtime-IAM target inventory using a
+   saved plan that has no destructive or unexpected actions.
+4. Create the deterministic empty database if absent, or reuse it unchanged.
+   Dispatch the fixed secret-preparation workflow with the expected PR SHA,
+   incarnation, and next generation. It writes exactly one generation through
+   the dedicated secret preparer and returns only the three numeric versions.
+5. Target only the migration job (and its explicit secret/IAM prerequisites),
+   using the frozen engine digest and explicit numeric DB URL version. The job
+   runs `alembic upgrade head` followed by `alembic current --check-heads`.
+   Wait for exactly one successful task and stop on any failure.
+6. Only after migration succeeds, create a fresh full plan and reject any
+   unexpected resource or delete action before applying. Update the services
+   with the exact frontend/engine digests and numeric secret versions. Verify
+   both services Ready, exact digests, database/migration success, IAP
+   interception, engine unauthenticated denial, and configured IAP testers.
+7. Revalidate the PR and create or update its one stable-marker
+   `Preview Environment` comment with non-sensitive metadata. A failed
+   migration or Terraform operation never triggers an automatic destroy.
+   Close/merge teardown, DB drop, and ledger retention remain out of scope.
 
-The targeted bootstrap contract and secret preparer are implemented here;
-database lifecycle, migration invocation, artifact provenance/copy,
-rollout/update/teardown and end-to-end verification remain 41C work. No live
-backend, preview environment or migration is executed by this change.
-
-## Accepted IAM boundaries and remaining 41C work
+## Accepted IAM boundaries
 
 The prior preview-deployer/WIF/IAM phase is live-accepted and reconciled for its
 reviewed scope. This code-only change does not apply the new preparer identity,
@@ -341,17 +357,19 @@ role or ledger grants. Do not weaken either accepted fail-closed limitation:
   `artifactregistry.repositories.getIamPolicy`. Do not broaden its source
   registry grant.
 
-The new preparer identity is deliberately separate from the deployer and
-preview runtimes. Its proposed role permits Secret metadata/version metadata
-and `versions.add` only under `hh-web-pr-*`; payload access exists only through
-`roles/secretmanager.secretAccessor` on
-`hh-preview-db-app-password`. It cannot access production/staging secrets or
-delete containers/ledger records. This proposed IAM is not yet live.
+The preparer identity is deliberately separate from the deployer and preview
+runtimes. Its accepted role permits Secret metadata/version metadata and
+`versions.add` only under `hh-web-pr-*`; payload access exists only through
+`roles/secretmanager.secretAccessor` on `hh-preview-db-app-password`. It cannot
+access production/staging secrets or delete containers/ledger records. This
+lifecycle reuses those accepted boundaries without granting the deployer
+Secret Manager version authority.
 
 See [the prerequisite scope/acceptance guide](../preview-foundation/prerequisites.md)
 for operator ordering, backend/provider credential routing, the accepted
 permission boundaries, and the proposed preparer IAM. Issue #41 remains open
-for 41C and live end-to-end acceptance.
+for the original prerequisite acceptance details and existing permission
+boundaries. A separate teardown change completes the lifecycle.
 
 ## Offline validation
 
