@@ -16,6 +16,7 @@ from prepare import (
     PreparationError,
     ReconciliationRequired,
     ReservationConflict,
+    SecretManagerGateway,
     SecretManagerWriteOutcomeUnknown,
     SecretPreparer,
     _validate_record,
@@ -351,6 +352,23 @@ class TrustedWorkflowAndTerraformBoundaryTests(unittest.TestCase):
     def test_secret_manager_append_disables_sdk_retries(self):
         source = (Path(__file__).with_name("prepare.py")).read_text()
         self.assertIn("retry=None", source)
+
+    def test_secret_manager_response_must_name_exact_secret_and_numeric_version(self):
+        identity = validate_identity("web", "123", INCARNATION, "1")
+        secret_id = secret_names(identity)["database_url"]
+        valid = (
+            f"projects/{PREVIEW_PROJECT_NUMBER}/secrets/{secret_id}/versions/12"
+        )
+        self.assertEqual(SecretManagerGateway.numeric_version(secret_id, valid), "12")
+        for resource_name in (
+            f"projects/{PREVIEW_PROJECT_NUMBER}/secrets/other/versions/12",
+            f"projects/{PREVIEW_PROJECT_NUMBER}/secrets/{secret_id}/versions/latest",
+            f"projects/{PREVIEW_PROJECT_NUMBER}/secrets/{secret_id}/versions/12/extra",
+        ):
+            with self.subTest(resource_name=resource_name), self.assertRaises(
+                SecretManagerWriteOutcomeUnknown
+            ):
+                SecretManagerGateway.numeric_version(secret_id, resource_name)
 
 
 if __name__ == "__main__":

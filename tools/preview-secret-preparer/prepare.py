@@ -286,6 +286,22 @@ class SecretManagerGateway:
     def resource_name(secret_id: str) -> str:
         return f"projects/{PREVIEW_PROJECT_NUMBER}/secrets/{secret_id}"
 
+    @staticmethod
+    def numeric_version(secret_id: str, resource_name: str) -> str:
+        prefix = (
+            f"projects/{PREVIEW_PROJECT_NUMBER}/secrets/{secret_id}/versions/"
+        )
+        if not resource_name.startswith(prefix):
+            raise SecretManagerWriteOutcomeUnknown(
+                "Secret Manager returned a version for an unexpected secret."
+            )
+        version = resource_name[len(prefix):]
+        if not VERSION_RE.fullmatch(version):
+            raise SecretManagerWriteOutcomeUnknown(
+                "Secret Manager returned no usable numeric version identifier."
+            )
+        return version
+
     def labels(self, secret_id: str) -> dict[str, str]:
         secret = self.client.get_secret(request={"name": self.resource_name(secret_id)})
         return dict(secret.labels)
@@ -306,12 +322,7 @@ class SecretManagerGateway:
             raise SecretManagerWriteOutcomeUnknown(
                 "Secret Manager did not provide an authoritative addVersion response."
             ) from None
-        version = result.name.rsplit("/", 1)[-1]
-        if not VERSION_RE.fullmatch(version):
-            raise SecretManagerWriteOutcomeUnknown(
-                "Secret Manager returned no usable numeric version identifier."
-            )
-        return version
+        return self.numeric_version(secret_id, result.name)
 
     def access_database_password(self) -> bytearray:
         result = self.client.access_secret_version(request={"name": DB_PASSWORD_SECRET})
