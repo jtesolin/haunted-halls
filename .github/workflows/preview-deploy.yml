@@ -65,7 +65,9 @@ jobs:
       - name: Report authentication failure
         if: ${{ always() && steps.auth.outcome != 'success' }}
         run: |
-          echo "## Preview prerequisite acceptance" >> "$GITHUB_STEP_SUMMARY"
-          echo "Principal: UNVERIFIED. Preview project: hh-preview-458395246135 / 1001419903197." >> "$GITHUB_STEP_SUMMARY"
-          echo "FAIL: trusted preview authentication was not established; acceptance did not run." >> "$GITHUB_STEP_SUMMARY"
-          echo "IAP, Secret Manager, quota, staging metadata, and source registry checks: NOT RUN. No canaries created." >> "$GITHUB_STEP_SUMMARY"
+          cat <<'SUMMARY' | tee -a "$GITHUB_STEP_SUMMARY"
+          ## Preview prerequisite acceptance
+          Principal: UNVERIFIED. Preview project: hh-preview-458395246135 / 1001419903197.
+          FAIL: trusted preview authentication was not established; acceptance did not run.
+          IAP, Secret Manager, quota, staging metadata, and source registry checks: NOT RUN. No canaries created.
+          SUMMARY
