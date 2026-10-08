@@ -197,6 +197,9 @@ new writes; no lease timeout or automatic lock takeover exists.
 Failures after durable reservation retain these conservative no-retry and
 reconciliation requirements; pre-reservation retry safety does not permit
 post-reservation replay.
+An unestablished intent also attempts the reconciliation marker and raises
+reconciliation-required without appending that role. If that marker fails,
+the durable reservation still blocks replay and subsequent generations.
 
 Secret Manager `addVersion` has no operation idempotency key. SDK retries are
 disabled. If any response is ambiguous, the preparer makes no second

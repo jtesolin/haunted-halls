@@ -276,6 +276,14 @@ class PreparationTests(unittest.TestCase):
 
                 if phase == "success":
                     self.preparer.prepare(self.identity)
+                elif phase == "intent":
+                    with self.assertRaises(ReconciliationRequired):
+                        self.preparer.prepare(self.identity)
+                    self.assertFalse(self.secrets.calls)
+                    self.assertIn(
+                        GcsLedger.object_name(self.identity, "reconciliation-required"),
+                        self.bucket.objects,
+                    )
                 else:
                     with self.assertRaises(PreparationError):
                         self.preparer.prepare(self.identity)
@@ -508,21 +516,57 @@ class PreparationTests(unittest.TestCase):
                 result = self.preparer.prepare(self.identity)
                 self.assertEqual(self.secrets.calls, list(ROLES))
                 self.assertEqual(self.bucket.creates.count(name), 1)
+                self.assertEqual(self.secrets.calls.count("nextauth"), 1)
+                self.assertNotIn(
+                    GcsLedger.object_name(self.identity, "reconciliation-required"),
+                    self.bucket.creates,
+                )
                 self.assertEqual(result["secret_versions"],
                                  {"nextauth": "1", "internal_token": "2", "database_url": "3"})
 
-    def test_ambiguous_intent_absent_or_mismatched_never_appends(self):
-        for failure in ("absent", "mismatch"):
+    def test_unestablished_intent_requires_reconciliation_without_append_or_replay(self):
+        for failure in ("absent", "mismatch", "conflict"):
             with self.subTest(failure=failure):
                 self.reset_runtime()
                 self.bucket.failures[
                     GcsLedger.object_name(self.identity, "nextauth.intent")
                 ] = failure
-                with self.assertRaises(LedgerError):
+                reconciliation = GcsLedger.object_name(self.identity, "reconciliation-required")
+                with self.assertRaises(ReconciliationRequired):
                     self.preparer.prepare(self.identity)
                 self.assertFalse(self.secrets.calls)
+                self.assertIn(reconciliation, self.bucket.objects)
+                self.assertEqual(self.bucket.creates.count(reconciliation), 1)
                 with self.assertRaises(ReservationConflict):
                     self.preparer.prepare(self.identity)
+                self.assertFalse(self.secrets.calls)
+                self.assertEqual(
+                    self.bucket.creates.count(GcsLedger.object_name(self.identity, "nextauth.intent")),
+                    1,
+                )
+
+    def test_intent_and_reconciliation_failure_leave_reservation_blocking_generations(self):
+        for failure in ("absent", "mismatch", "conflict"):
+            with self.subTest(failure=failure):
+                self.reset_runtime()
+                intent = GcsLedger.object_name(self.identity, "nextauth.intent")
+                reconciliation = GcsLedger.object_name(self.identity, "reconciliation-required")
+                self.bucket.failures[intent] = "absent"
+                self.bucket.failures[reconciliation] = failure
+                with self.assertRaisesRegex(ReconciliationRequired,
+                                            "reservation still blocks replay"):
+                    self.preparer.prepare(self.identity)
+                self.assertIn(GcsLedger.object_name(self.identity), self.bucket.objects)
+                self.assertFalse(self.secrets.calls)
+                self.assertEqual(self.bucket.creates.count(intent), 1)
+                self.assertEqual(self.bucket.creates.count(reconciliation), 1)
+                with self.assertRaises(ReservationConflict):
+                    self.preparer.prepare(self.identity)
+                with self.assertRaises((ReservationConflict, LedgerError)):
+                    self.preparer.prepare(validate_identity("web", "123", INCARNATION, "2"))
+                self.assertFalse(self.secrets.calls)
+                self.assertEqual(self.bucket.creates.count(intent), 1)
+                self.assertEqual(self.bucket.creates.count(reconciliation), 1)
 
     def test_all_results_without_complete_blocks_next_generation(self):
         self.bucket.failures[GcsLedger.object_name(self.identity, "complete")] = "absent"

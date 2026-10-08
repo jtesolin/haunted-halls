@@ -451,7 +451,10 @@ class SecretPreparer:
             }
             self.ledger.reserve(identity, names)
             for role in ROLES:
-                self.ledger.intent(identity, names, role)
+                try:
+                    self.ledger.intent(identity, names, role)
+                except (LedgerError, ReservationConflict):
+                    self._stop(identity, names, "The append intent was not durably established.")
                 try:
                     version = self.secrets.add_version(names[role], payloads[role])
                 except SecretManagerWriteOutcomeUnknown:
@@ -486,7 +489,7 @@ class SecretPreparer:
             self.ledger.require_reconciliation(identity, names)
         except (LedgerError, ReservationConflict):
             raise ReconciliationRequired(
-                f"{reason} Reconciliation marker unavailable; intent still blocks replay. Do not retry."
+                f"{reason} Reconciliation marker unavailable; reservation still blocks replay. Do not retry."
             ) from None
         raise ReconciliationRequired(f"{reason} Reconcile; do not retry.") from None
 
