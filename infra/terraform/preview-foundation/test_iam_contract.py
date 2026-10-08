@@ -103,7 +103,15 @@ run "otherwise_valid_alternate_project" {
         self.assertEqual(attribute(backend, "bucket"), json.dumps(f"{project}-per-pr-tf-state"))
 
     def foundation_resource(self, kind: str, name: str) -> str:
-        return resource(FOUNDATION / "deployer-iam.tf", kind, name)
+        matches = []
+        for path in FOUNDATION.glob("*.tf"):
+            try:
+                matches.append(resource(path, kind, name))
+            except AssertionError:
+                continue
+        if len(matches) != 1:
+            raise AssertionError(f"Expected exactly one {kind}.{name} in preview foundation.")
+        return matches[0]
 
     def test_iap_role_has_only_service_policy_permissions(self):
         block = self.foundation_resource("google_project_iam_custom_role", "preview_iap_tester_policy")
@@ -131,24 +139,130 @@ run "otherwise_valid_alternate_project" {
         self.assertEqual(attribute(grant, "role"), "google_project_iam_custom_role.preview_per_pr_secret_creator.name")
         self.assertNotRegex(grant, r"\bcondition\s*\{")
 
-    def test_existing_secret_management_permissions_and_prefixes_are_preserved(self):
-        role = self.foundation_resource("google_project_iam_custom_role", "preview_per_pr_secret_manager")
+    def test_deployer_keeps_creation_only_and_loses_version_management(self):
+        source = (FOUNDATION / "deployer-iam.tf").read_text()
+        self.assertIn("preview_per_pr_secret_creator", source)
+        self.assertNotIn("preview_per_pr_secret_manager", source)
+        self.assertNotIn("secretmanager.versions.", source)
+        creator = self.foundation_resource(
+            "google_project_iam_custom_role", "preview_per_pr_secret_creator"
+        )
+        self.assertEqual(permissions(creator), {"secretmanager.secrets.create"})
+
+    def test_secret_preparer_has_only_web_pr_version_metadata_and_add_permissions(self):
+        role = self.foundation_resource(
+            "google_project_iam_custom_role", "preview_per_pr_secret_preparer"
+        )
         self.assertEqual(permissions(role), {
-            "secretmanager.secrets.delete", "secretmanager.secrets.get",
-            "secretmanager.secrets.update", "secretmanager.secrets.getIamPolicy",
-            "secretmanager.secrets.setIamPolicy", "secretmanager.versions.add",
-            "secretmanager.versions.disable", "secretmanager.versions.enable",
-            "secretmanager.versions.destroy", "secretmanager.versions.get",
+            "secretmanager.secrets.get",
+            "secretmanager.versions.add",
+            "secretmanager.versions.get",
             "secretmanager.versions.list",
         })
-        grant = self.foundation_resource("google_project_iam_member", "deployer_per_pr_secret_manager")
+        grant = self.foundation_resource(
+            "google_project_iam_member", "secret_preparer_per_pr_secrets"
+        )
         self.assertEqual(attribute(grant, "project"), "var.preview_project_id")
-        self.assertEqual(attribute(grant, "member"), DEPLOYER_MEMBER)
+        self.assertEqual(
+            attribute(grant, "member"),
+            '"serviceAccount:${google_service_account.secret_preparer.email}"',
+        )
         self.assertEqual(json.loads(attribute(grant, "expression")),
                          '(resource.type == "secretmanager.googleapis.com/Secret" || '
                          'resource.type == "secretmanager.googleapis.com/SecretVersion") && '
-                         '(resource.name.startsWith("projects/${data.google_project.preview.number}/secrets/hh-web-pr-") || '
-                         'resource.name.startsWith("projects/${data.google_project.preview.number}/secrets/hh-engine-pr-"))')
+                         'resource.name.startsWith("projects/${data.google_project.preview.number}/secrets/hh-web-pr-")')
+        self.assertNotIn("secretmanager.versions.access", role)
+        self.assertNotIn("hh-engine-pr-", attribute(grant, "expression"))
+        self.assertNotIn("production", attribute(grant, "expression"))
+        self.assertNotIn("staging", attribute(grant, "expression"))
+
+    def test_only_preparer_reads_the_fixed_preview_db_password(self):
+        grant = self.foundation_resource(
+            "google_secret_manager_secret_iam_member",
+            "secret_preparer_db_app_password",
+        )
+        self.assertEqual(
+            attribute(grant, "secret_id"),
+            "google_secret_manager_secret.preview_app_password.id",
+        )
+        self.assertEqual(attribute(grant, "role"), '"roles/secretmanager.secretAccessor"')
+        self.assertEqual(
+            attribute(grant, "member"),
+            '"serviceAccount:${google_service_account.secret_preparer.email}"',
+        )
+        database = (FOUNDATION / "database.tf").read_text()
+        self.assertIn('secret_id = "hh-preview-db-app-password"', database)
+        self.assertNotIn("secretmanager.versions.access", database)
+
+    def test_preparer_project_identity_and_quota_permissions_are_narrow(self):
+        role = self.foundation_resource(
+            "google_project_iam_custom_role",
+            "preview_secret_preparer_project_reader",
+        )
+        self.assertEqual(permissions(role), {"resourcemanager.projects.get"})
+        identity_grant = self.foundation_resource(
+            "google_project_iam_member", "secret_preparer_project_reader"
+        )
+        self.assertEqual(
+            attribute(identity_grant, "member"),
+            '"serviceAccount:${google_service_account.secret_preparer.email}"',
+        )
+        quota_grant = self.foundation_resource(
+            "google_project_iam_member", "secret_preparer_quota_consumer"
+        )
+        self.assertEqual(
+            attribute(quota_grant, "role"),
+            "google_project_iam_custom_role.preview_quota_consumer.name",
+        )
+
+    def test_ledger_is_versioned_private_and_preparer_cannot_delete_records(self):
+        bucket = self.foundation_resource(
+            "google_storage_bucket", "secret_preparation_ledger"
+        )
+        self.assertEqual(attribute(bucket, "name"),
+                         '"${var.preview_project_id}-pr-secret-ledger"')
+        self.assertEqual(attribute(bucket, "uniform_bucket_level_access"), "true")
+        self.assertEqual(attribute(bucket, "public_access_prevention"), '"enforced"')
+        self.assertIn("versioning {\n    enabled = true\n  }", bucket)
+        self.assertIn("prevent_destroy = true", bucket)
+        role = self.foundation_resource(
+            "google_project_iam_custom_role", "preview_secret_ledger_writer"
+        )
+        self.assertEqual(permissions(role), {"storage.objects.create", "storage.objects.get"})
+        self.assertNotIn("storage.objects.delete", role)
+        grant = self.foundation_resource(
+            "google_storage_bucket_iam_member", "secret_preparer_ledger"
+        )
+        self.assertIn("storage.googleapis.com/Object", grant)
+        self.assertIn("/objects/secret-preparation/v1/", grant)
+
+    def test_secret_preparer_wif_is_exact_trusted_default_branch_workflow(self):
+        provider = resource(
+            FOUNDATION / "workload-identity.tf",
+            "google_iam_workload_identity_pool_provider",
+            "github",
+        )
+        self.assertIn(
+            "${local.secret_preparation_workflow_ref}",
+            provider,
+        )
+        self.assertIn(
+            'secret_preparation_workflow_ref = "jtesolin/haunted-halls/.github/workflows/preview-secret-prepare.yml@refs/heads/main"',
+            (FOUNDATION / "workload-identity.tf").read_text(),
+        )
+        binding = resource(
+            FOUNDATION / "workload-identity.tf",
+            "google_service_account_iam_member",
+            "secret_preparation_workflow",
+        )
+        self.assertEqual(
+            attribute(binding, "service_account_id"),
+            "google_service_account.secret_preparer.name",
+        )
+        self.assertIn(
+            "/attribute.workflow_ref/${local.secret_preparation_workflow_ref}",
+            attribute(binding, "member"),
+        )
 
     def test_quota_use_is_preview_only_without_service_administration(self):
         role = self.foundation_resource("google_project_iam_custom_role", "preview_quota_consumer")

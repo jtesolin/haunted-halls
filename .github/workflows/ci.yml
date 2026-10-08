@@ -168,6 +168,11 @@ jobs:
           PYTHONDONTWRITEBYTECODE: "1"
         run: python -m unittest discover -s infra/terraform/preview-foundation -p 'test_iam_*.py'
 
+      - name: Run offline trusted secret-preparer contracts
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -m unittest discover -s tools/preview-secret-preparer -p 'test_*.py'
+
       - name: Run offline manual preview acceptance contracts
         env:
           PYTHONDONTWRITEBYTECODE: "1"

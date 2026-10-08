@@ -1029,25 +1029,34 @@ bypass or special unauthenticated path.
 > `E2E_AUTH_ENABLED=true` outside a disposable, loopback-only E2E stack, and never point
 > it at a non-loopback `NEXTAUTH_URL`.
 
-## Isolated per-PR Terraform resources (issue #41, slice 41B)
+## Isolated per-PR Terraform resources and secrets (issue #41)
 
 The dedicated [`infra/terraform/preview-pr`](infra/terraform/preview-pr/README.md)
 root owns only one repository/PR's disposable IAP frontend, private engine,
-explicit Alembic job, three write-only preview secrets, and resource-scoped IAM.
+explicit Alembic job, three incarnation-qualified Secret Manager containers,
+runtime access grants and consumers pinned to explicit numeric versions.
+Payload generation/version creation is handled by the fixed
+[`preview-secret-prepare.yml`](.github/workflows/preview-secret-prepare.yml)
+workflow and separate secret-preparer identity; Terraform receives no payloads.
 It reuses the accepted foundation without importing foundation resources or
 changing production/staging permissions. Names and backend prefixes share a
-validated `web|engine` namespace and canonical positive PR number.
+validated `web|engine` namespace and canonical positive PR number. Container
+names also include an immutable 128-bit PR-incarnation ID; each generation is
+reserved in a private versioned ledger and numeric version IDs are non-secret
+Terraform inputs.
 
-Read the root guide for the exact immutable image/secret/runtime contracts,
-offline backend identity guard, concrete missing permissions/input prerequisites,
-and the required migration-before-rollout lifecycle ordering for 41C.
+Read the root guide for the trusted preparer/ledger model, bootstrap target
+inventory, numeric version contract, offline backend identity guard and
+migration-before-rollout ordering.
 `make tf-preview-pr-test` runs focused offline ownership/backend tests and
-provider-mocked Terraform plans; the existing Terraform CI job validates this
-root without cloud credentials.
+provider-mocked Terraform plans. `make tf-preview-secret-preparer-test` covers
+the offline reservation and ambiguity protocol. CI runs these contracts without
+cloud credentials.
 
-**41B does not deploy, run migrations, initialize a live backend, or implement
-the trusted lifecycle.** Issue #41 remains open pending slice 41C and live
-end-to-end acceptance. The merged 41A app auth configuration remains unchanged.
+This slice does not copy images, initialize a live backend, create databases,
+run migrations, deploy previews or implement full 41C lifecycle automation.
+Issue #41 remains open pending 41C and live end-to-end acceptance. The merged
+41A app auth configuration remains unchanged.
 
 ## PR preview foundation (issue #40)
 
@@ -1071,6 +1080,9 @@ untrusted PR code -> build/test without preview credentials
 reviewed default-branch workflow -> fresh deployment job -> exact-ref WIF
   -> hh-preview-deployer -> preview project only
   -> invoke fixed DB control-plane endpoint (no command/credential overrides)
+reviewed default-branch secret-preparation workflow -> exact-ref WIF
+  -> hh-preview-secret-preparer -> web PR versions + fixed preview DB app password
+  -> payload-free version metadata in the separate preview ledger
 ```
 
 The trusted deployment job must not check out or execute PR-controlled scripts
@@ -1359,18 +1371,23 @@ test -n "$PREVIEW_OPENAI_API_KEY" &&
 unset PREVIEW_OPENAI_API_KEY
 ```
 
-This operator procedure is the only writer for the shared OpenAI key; the
-preview deployer has no version-adder grant on this durable foundation secret.
+This operator procedure is the only writer for the shared OpenAI key; neither
+the preview deployer nor the secret preparer has a version-adder grant on this
+durable foundation secret.
 Never copy or read the production OpenAI key. Rotate the preview key
 independently. Password values for both shared preview database logins are
 operator-generated sensitive ephemeral Terraform inputs and are written to
 Secret Manager using write-only arguments; they are not outputs or tracked
 files.
-The deployer's IAM-policy permissions are in a separate custom role with a
-project IAM condition restricted to secret resource names beginning with
-`hh-web-pr-` or `hh-engine-pr-`. It cannot change policies on shared foundation
-DB/OpenAI secrets. Neither custom role includes
-`secretmanager.versions.access`.
+The deployer retains only preview-project secret-container creation authority;
+its prior per-PR version-management grant is removed. A separate
+`hh-preview-secret-preparer` identity receives metadata/list/add permissions
+conditioned on `hh-web-pr-*` resources and ledger read/create-update authority
+without delete. It can access the payload only of the exact
+`hh-preview-db-app-password` secret to assemble per-PR database URLs. It has no
+production/staging secret access. The accepted IAP canary and source Artifact
+Registry `getIamPolicy` limitations remain intentionally fail-closed; do not
+broaden IAM to clear them.
 
 ### Preview database privilege hardening and verification
 

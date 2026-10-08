@@ -8,26 +8,20 @@ mock_provider "google" {
       uri = "https://private-engine.example.test"
     }
   }
-  mock_resource "google_secret_manager_secret_version" {
-    override_during = plan
-    defaults = {
-      version = "7"
-    }
-  }
 }
 
 variables {
-  repository_key                = "web"
-  pull_request_number           = "123"
-  backend_state_prefix          = "previews/web-pr-123"
-  preview_project_number        = "123456789012"
-  frontend_image                = "us-east1-docker.pkg.dev/hh-preview-458395246135/haunted-halls-preview/frontend@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  engine_image                  = "us-east1-docker.pkg.dev/haunted-halls-development/haunted-halls/engine@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-  iap_testers                   = ["user:tester@example.com", "group:testers@example.com"]
-  secret_revision               = 3
-  nextauth_secret               = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-  internal_engine_service_token = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-  database_url                  = "postgresql+psycopg://haunted_halls_preview_app:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@/haunted_halls_web_pr_123?host=/cloudsql/haunted-halls-development:us-east1:haunted-halls-postgres"
+  repository_key                        = "web"
+  pull_request_number                   = "123"
+  pr_incarnation                        = "0123456789abcdef0123456789abcdef"
+  backend_state_prefix                  = "previews/web-pr-123"
+  preview_project_number                = "123456789012"
+  frontend_image                        = "us-east1-docker.pkg.dev/hh-preview-458395246135/haunted-halls-preview/frontend@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  engine_image                          = "us-east1-docker.pkg.dev/haunted-halls-development/haunted-halls/engine@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  iap_testers                           = ["user:tester@example.com", "group:testers@example.com"]
+  nextauth_secret_version               = "11"
+  internal_engine_service_token_version = "12"
+  database_url_secret_version           = "13"
 }
 
 run "web_stack" {
@@ -109,11 +103,11 @@ run "web_stack" {
   assert {
     condition = (
       length(google_secret_manager_secret.pr) == 3 &&
+      google_secret_manager_secret.pr["nextauth"].secret_id == "hh-web-pr-123-i-0123456789abcdef0123456789abcdef-nextauth" &&
+      google_secret_manager_secret.pr["internal_token"].labels.incarnation == var.pr_incarnation &&
       length(google_secret_manager_secret_iam_member.runtime) == 5 &&
       google_secret_manager_secret_iam_member.runtime["frontend_nextauth"].member == "serviceAccount:hh-preview-frontend@hh-preview-458395246135.iam.gserviceaccount.com" &&
-      google_secret_manager_secret_iam_member.runtime["migrate_database"].member == "serviceAccount:hh-preview-migration@hh-preview-458395246135.iam.gserviceaccount.com" &&
-      google_secret_manager_secret_version.database_url.secret_data_wo_version == 3 &&
-      google_secret_manager_secret_version.nextauth.deletion_policy == "ABANDON"
+      google_secret_manager_secret_iam_member.runtime["migrate_database"].member == "serviceAccount:hh-preview-migration@hh-preview-458395246135.iam.gserviceaccount.com"
     )
     error_message = "Only three disposable secrets and five minimal runtime secret grants are allowed."
   }
@@ -129,9 +123,11 @@ run "web_stack" {
         OPENAI_API_KEY                = "projects/hh-preview-458395246135/secrets/hh-preview-openai-api-key"
       } &&
       one(google_cloud_run_v2_job.migration.template[0].template[0].containers[0].env).value_source[0].secret_key_ref[0].secret == google_secret_manager_secret.pr["database_url"].id &&
-      one(google_cloud_run_v2_job.migration.template[0].template[0].containers[0].env).value_source[0].secret_key_ref[0].version == "7" &&
+      one(google_cloud_run_v2_job.migration.template[0].template[0].containers[0].env).value_source[0].secret_key_ref[0].version == var.database_url_secret_version &&
+      [for env in google_cloud_run_v2_service.frontend.template[0].containers[0].env : env.value_source[0].secret_key_ref[0].version if env.name == "NEXTAUTH_SECRET"][0] == var.nextauth_secret_version &&
+      [for env in google_cloud_run_v2_service.frontend.template[0].containers[0].env : env.value_source[0].secret_key_ref[0].version if env.name == "INTERNAL_ENGINE_SERVICE_TOKEN"][0] == var.internal_engine_service_token_version &&
       alltrue([for env in google_cloud_run_v2_service.engine.template[0].containers[0].env :
-        env.value_source[0].secret_key_ref[0].version == (env.name == "OPENAI_API_KEY" ? "1" : "7") if length(env.value_source) > 0
+        env.value_source[0].secret_key_ref[0].version == (env.name == "OPENAI_API_KEY" ? var.preview_openai_version : (env.name == "DATABASE_URL" ? var.database_url_secret_version : var.internal_engine_service_token_version)) if length(env.value_source) > 0
       ])
     )
     error_message = "Secrets must be minimal, preview-only, and pinned to actual created versions, not the write-only rotation trigger."
@@ -144,12 +140,12 @@ run "bounded_engine_namespace" {
     repository_key       = "engine"
     pull_request_number  = "999999999"
     backend_state_prefix = "previews/engine-pr-999999999"
-    database_url         = "postgresql+psycopg://haunted_halls_preview_app:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@/haunted_halls_engine_pr_999999999?host=/cloudsql/haunted-halls-development:us-east1:haunted-halls-postgres"
   }
 
   assert {
     condition = (
       output.preview_identity.database_name == "haunted_halls_engine_pr_999999999" &&
+      google_secret_manager_secret.pr["database_url"].secret_id == "hh-engine-pr-999999999-i-0123456789abcdef0123456789abcdef-database-url" &&
       output.preview_identity.frontend_name == "hh-engine-pr-999999999-frontend" &&
       output.preview_identity.state_prefix == "previews/engine-pr-999999999" &&
       length(output.preview_identity.frontend_name) <= 49 &&
@@ -170,12 +166,10 @@ run "migration_prerequisites_only" {
   assert {
     condition = (
       google_cloud_run_v2_job.migration.template[0].template[0].containers[0].image == var.engine_image &&
-      google_secret_manager_secret_version.database_url.secret_data_wo_version == var.secret_revision &&
-      google_secret_manager_secret_version.internal_token.secret_data_wo_version == var.secret_revision &&
-      google_secret_manager_secret_version.nextauth.secret_data_wo_version == var.secret_revision &&
+      one(google_cloud_run_v2_job.migration.template[0].template[0].containers[0].env).value_source[0].secret_key_ref[0].version == var.database_url_secret_version &&
       length(google_secret_manager_secret_iam_member.runtime) == 5
     )
-    error_message = "Targeting migration must prepare all PR secrets and minimal runtime IAM before explicit execution."
+    error_message = "Targeting migration must consume the explicit DB version and minimal runtime IAM."
   }
 }
 
@@ -184,7 +178,6 @@ run "reject_leading_zero" {
   variables {
     pull_request_number  = "0123"
     backend_state_prefix = "previews/web-pr-0123"
-    database_url         = "postgresql+psycopg://haunted_halls_preview_app:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@/haunted_halls_web_pr_0123?host=/cloudsql/haunted-halls-development:us-east1:haunted-halls-postgres"
   }
   expect_failures = [var.pull_request_number]
 }
@@ -195,6 +188,14 @@ run "reject_wrong_state" {
     backend_state_prefix = "previews/web-pr-124"
   }
   expect_failures = [var.backend_state_prefix]
+}
+
+run "reject_malformed_incarnation" {
+  command = plan
+  variables {
+    pr_incarnation = "0123"
+  }
+  expect_failures = [var.pr_incarnation]
 }
 
 run "reject_frontend_tag" {
@@ -221,21 +222,7 @@ run "reject_public_testers" {
   expect_failures = [var.iap_testers]
 }
 
-run "reject_production_database" {
-  command = plan
-  variables {
-    database_url = "postgresql+psycopg://haunted_halls_preview_app:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@/haunted_halls?host=/cloudsql/haunted-halls-development:us-east1:haunted-halls-postgres"
-  }
-  expect_failures = [var.database_url]
-}
 
-run "reject_weak_token" {
-  command = plan
-  variables {
-    internal_engine_service_token = "placeholder"
-  }
-  expect_failures = [var.internal_engine_service_token]
-}
 
 run "reject_aliased_openai_version" {
   command = plan
@@ -250,7 +237,6 @@ run "reject_unknown_repository" {
   variables {
     repository_key       = "frontend"
     backend_state_prefix = "previews/frontend-pr-123"
-    database_url         = "postgresql+psycopg://haunted_halls_preview_app:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@/haunted_halls_frontend_pr_123?host=/cloudsql/haunted-halls-development:us-east1:haunted-halls-postgres"
   }
   expect_failures = [var.repository_key]
 }
@@ -260,7 +246,6 @@ run "reject_zero_pr" {
   variables {
     pull_request_number  = "0"
     backend_state_prefix = "previews/web-pr-0"
-    database_url         = "postgresql+psycopg://haunted_halls_preview_app:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@/haunted_halls_web_pr_0?host=/cloudsql/haunted-halls-development:us-east1:haunted-halls-postgres"
   }
   expect_failures = [var.pull_request_number]
 }
@@ -270,7 +255,6 @@ run "reject_unbounded_pr" {
   variables {
     pull_request_number  = "1000000000"
     backend_state_prefix = "previews/web-pr-1000000000"
-    database_url         = "postgresql+psycopg://haunted_halls_preview_app:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@/haunted_halls_web_pr_1000000000?host=/cloudsql/haunted-halls-development:us-east1:haunted-halls-postgres"
   }
   expect_failures = [var.pull_request_number]
 }
@@ -299,34 +283,10 @@ run "reject_empty_testers" {
   expect_failures = [var.iap_testers]
 }
 
-run "reject_other_pr_database" {
+run "reject_zero_secret_version" {
   command = plan
   variables {
-    database_url = "postgresql+psycopg://haunted_halls_preview_app:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@/haunted_halls_web_pr_124?host=/cloudsql/haunted-halls-development:us-east1:haunted-halls-postgres"
+    database_url_secret_version = "0"
   }
-  expect_failures = [var.database_url]
-}
-
-run "reject_admin_database_login" {
-  command = plan
-  variables {
-    database_url = "postgresql+psycopg://postgres:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@/haunted_halls_web_pr_123?host=/cloudsql/haunted-halls-development:us-east1:haunted-halls-postgres"
-  }
-  expect_failures = [var.database_url]
-}
-
-run "reject_weak_nextauth_secret" {
-  command = plan
-  variables {
-    nextauth_secret = "placeholder"
-  }
-  expect_failures = [var.nextauth_secret]
-}
-
-run "reject_fractional_secret_revision" {
-  command = plan
-  variables {
-    secret_revision = 1.5
-  }
-  expect_failures = [var.secret_revision]
+  expect_failures = [var.database_url_secret_version]
 }

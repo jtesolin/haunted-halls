@@ -6,6 +6,14 @@ resource "google_service_account" "deployer" {
   depends_on = [google_project_service.apis["iam.googleapis.com"]]
 }
 
+resource "google_service_account" "secret_preparer" {
+  account_id   = "hh-preview-secret-preparer"
+  display_name = "Haunted Halls trusted preview secret preparer"
+  description  = "Creates only disposable frontend per-PR secret versions from the dedicated trusted workflow."
+
+  depends_on = [google_project_service.apis["iam.googleapis.com"]]
+}
+
 resource "google_service_account" "frontend_runtime" {
   account_id   = "hh-preview-frontend"
   display_name = "Haunted Halls preview frontend runtime"

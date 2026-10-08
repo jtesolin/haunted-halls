@@ -2,7 +2,7 @@
 	docker-build docker-up docker-down docker-logs docker-ps docker-config docker-migrate \
 	debug-build debug-up debug-down debug-logs debug-config \
 	docker-reset-db tf-fmt tf-validate tf-init tf-plan tf-apply tf-output \
-	tf-bootstrap-init tf-bootstrap-apply tf-bootstrap-output tf-preview-db-test tf-preview-pr-test tf-preview-iam-test preview-acceptance-test
+	tf-bootstrap-init tf-bootstrap-apply tf-bootstrap-output tf-preview-db-test tf-preview-pr-test tf-preview-iam-test tf-preview-secret-preparer-test preview-acceptance-test
 
 PORT ?= 3000
 TERRAFORM_DIR := infra/terraform
@@ -40,6 +40,7 @@ help:
 	@echo "  tf-preview-db-test  Run preview DB provisioner input validation tests"
 	@echo "  tf-preview-pr-test  Run offline per-PR Terraform and backend identity tests"
 	@echo "  tf-preview-iam-test Run offline preview prerequisite IAM contract tests"
+	@echo "  tf-preview-secret-preparer-test Run offline secret-preparer and reservation tests"
 	@echo "  preview-acceptance-test Run offline manual acceptance harness contracts"
 	@echo ""
 	@echo "Docker Compose Stack (includes PostgreSQL, engine, frontend):"
@@ -118,6 +119,9 @@ tf-preview-pr-test:
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s $(TERRAFORM_PREVIEW_PR_DIR) -p 'test_*.py'
 	terraform -chdir=$(TERRAFORM_PREVIEW_PR_DIR) init -backend=false
 	terraform -chdir=$(TERRAFORM_PREVIEW_PR_DIR) test
+
+tf-preview-secret-preparer-test:
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools/preview-secret-preparer -p 'test_*.py'
 
 # Bootstrap flow: create the remote state bucket before configuring the main backend.
 tf-bootstrap-init:

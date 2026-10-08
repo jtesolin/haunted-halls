@@ -1,21 +1,27 @@
-# Frontend preview IAM/API prerequisites for #41
+# Frontend preview IAM and trusted secret preparation for #41
 
-This is the first prerequisite change after accepted foundation #40 and merged
-41A/41B (#47/#50). It does not reopen their acceptance or claim a live deployment.
-Secret preparation, the per-PR interface update, image copying, and the trusted
-41C lifecycle remain **pending**. Keep #41 open.
+The preview deployer/WIF/IAM prerequisite phase is live-accepted and fully
+reconciled for its reviewed scope. The accepted preview project is
+`hh-preview-458395246135` (project number `1001419903197`), in `us-east1`.
+Keep issue #41 open: this change adds the proposed trusted secret-preparer
+identity/IAM, durable ledger and per-PR numeric-version interface, but does not
+apply those new permissions, copy images, or implement full 41C lifecycle
+automation. The engine repository is unchanged.
 
-The original prerequisite PR added only IAM/API configuration. No apply, cloud-backed plan,
-secret access, migration, or live permission test was performed. Existing
-deployer version-management permissions remain until a replacement path exists.
-No provisioner permissions, ledger, runtime, WIF, or per-PR resource ownership
-change was included. Subsequent operator applies and the new manual acceptance
-harness are recorded below. The engine repository is unchanged.
+The existing accepted deployer role remains creation-only for Secret Manager
+containers. Its earlier per-PR version-management grant is removed from the
+proposed foundation configuration. A fixed WIF workflow and separate identity
+prepare frontend PR versions; that identity can access payloads only on the
+existing preview app-password secret. No payload is returned to Terraform or
+GitHub. No Terraform apply, live secret-version write, preview deployment,
+database operation, or live IAM mutation occurs in this change.
 
-## Principal, scope, and ownership
+## Principals, scope, and ownership
 
-The principal in every new grant is
+Existing accepted deployer grants use
 `hh-preview-deployer@hh-preview-458395246135.iam.gserviceaccount.com`.
+The new proposed preparer is
+`hh-preview-secret-preparer@hh-preview-458395246135.iam.gserviceaccount.com`.
 All grants use additive `*_iam_member` resources, not authoritative policies
 or bindings that replace other members.
 
@@ -38,9 +44,12 @@ identity. These checks do not prove live authorization.
 | Permission/role | Resource and restriction | Owning Terraform root | Reason |
 | --- | --- | --- | --- |
 | Custom `previewIapTesterPolicy`: only `iap.webServices.getIamPolicy`, `iap.webServices.setIamPolicy` | Project `hh-preview-458395246135`, with the condition below | `preview-foundation` | Manage tester policies on dynamically created IAP service resources |
-| Existing custom `previewPerPrSecretCreator`: only `secretmanager.secrets.create` | Preview project, unconditional creation-only grant | `preview-foundation` | CreateSecret authorizes its parent project, not a nonexistent Secret |
-| Existing custom `previewPerPrSecretManager` | Existing Secret/SecretVersion resources under numeric preview project paths `hh-web-pr-*` / `hh-engine-pr-*`; unchanged condition and permissions | `preview-foundation` | Preserve metadata/version/IAM management, without direct payload access |
-| Custom `previewQuotaConsumer`: only `serviceusage.services.use` | Preview project, unconditional | `preview-foundation` | Provider requests use this quota project; no API enablement or quota administration |
+| Existing custom `previewPerPrSecretCreator`: only `secretmanager.secrets.create` | Preview project; deployer only | `preview-foundation` | CreateSecret authorizes its parent project, not a nonexistent Secret; trusted Terraform derives names |
+| Custom `previewPerPrSecretPreparer`: `secretmanager.secrets.get`, `secretmanager.versions.add/get/list` | Secret and SecretVersion resources under `projects/1001419903197/secrets/hh-web-pr-*`; exact default-branch workflow identity only | `preview-foundation` | Validate container ownership, create each version once, and inspect version metadata; no payload access or mutation beyond add |
+| `roles/secretmanager.secretAccessor` | Only `hh-preview-db-app-password` in the preview project | `preview-foundation` | Read the durable preview app password to assemble the PR-specific DB URL |
+| Custom `previewSecretPreparerProjectReader`: only `resourcemanager.projects.get` | Preview project; preparer only | `preview-foundation` | Verify the actual fixed project number before any preparation |
+| Custom `previewSecretLedgerWriter`: only `storage.objects.get/create` | Fixed private, versioned `hh-preview-458395246135-pr-secret-ledger` bucket | `preview-foundation` | Generation-match ledger read/update; no object delete or Terraform-state access |
+| Custom `previewQuotaConsumer`: only `serviceusage.services.use` | Preview project, unconditional; deployer and preparer | `preview-foundation` | Trusted Google API requests use this quota project; no API enablement or quota administration |
 | Custom `previewStagingEngineMetadataReader`: only `run.services.get`, `run.revisions.get` | Individual `haunted-halls-engine-staging` service, `haunted-halls-development/us-east1`; binding created only when staging services are enabled | Existing application root `infra/terraform` | Named reads of the actual serving revision; no listing, invocation, IAM writes, or runtime mutation |
 | `roles/artifactregistry.reader` | Existing `haunted-halls` repository, `haunted-halls-development/us-east1` | Existing application root `infra/terraform` | Read the frozen source artifact; no source push, tagging, or delete |
 
@@ -92,13 +101,13 @@ Verification against public documentation and the checked-in lock:
 - Tester access stays on each frontend's IAP resource as
   `roles/iap.httpsResourceAccessor`; no project-wide tester grant is added.
   IAP service-agent `roles/run.invoker` stays on each frontend separately.
-- The creation-only Secret Manager grant allows **arbitrary new secret names**
+- The deployer's creation-only Secret Manager grant allows **arbitrary new secret names**
   in the preview project. A requested secret-name prefix cannot be restricted by
   the old Secret-resource condition because
   [CreateSecret](https://cloud.google.com/secret-manager/docs/reference/rest/v1/projects.secrets/create)
   authorizes `secretmanager.secrets.create` on the parent project. It does not
-  grant payload access or management of existing non-PR secrets. Existing
-  prefix-scoped management grants remain unchanged.
+  grant payload access or management of existing non-PR secrets. The separate
+  preparer role is conditioned on the `hh-web-pr-*` namespace.
 - Source registry reads cover **all packages in that repository**, not just the
   engine package. The future trusted copy code must validate the engine path and
   immutable digest. No source image-copy implementation is included here.
@@ -106,60 +115,30 @@ Verification against public documentation and the checked-in lock:
 The accepted deployer remains preview-secret-equivalent through its existing
 Cloud Run authority and runtime `actAs`; absence of direct Secret Manager
 payload permission is not a claim of effective isolation from preview runtime
-secrets. No production/staging secret authority or provisioner `actAs` is added.
+secrets. The new preparer has no production/staging secret authority and no
+provisioner `actAs`.
 
-## Operator ordering and live acceptance (not executed)
+## Accepted prerequisite scope and limits
 
-After review/merge, an authorized operator must:
+Live acceptance confirmed the exact WIF identity; preview Cloud Run
+create/delete/service-IAM authority; frontend runtime `actAs`; service-level
+IAP policy read and tester add/remove; admin and mixed-role denial; Secret
+Manager creation boundary, payload-access denial and secret-management
+restriction; quota-use boundary; named staging-engine service/revision reads
+and production/list/invocation/runtime/IAM denials; immutable source-manifest
+read; and registry-write denial.
 
-1. Confirm both root backends and project IDs using their existing state.
-   Do not move/import resources or initialize either root into per-PR state.
-2. Plan the preview foundation with the existing accepted inputs, image, and
-   password rotation triggers. Preserve `provisioner_image` and do not reset the
-   accepted provisioner or rotate credentials. Review only the new IAP/quota
-   roles/grants, creation-grant correction, and preview SQL API declaration.
-   Stop on unrelated SQL/runtime/secret changes; apply only an approved plan.
-   Foundation inputs remain ephemeral/write-only and operator-held.
-3. Plan the existing application root with staging services still enabled and
-   current inputs. Review the new metadata role/service member and repository
-   reader member only. Stop on runtime, image, DB, secret, or existing-policy
-   changes. Apply only the approved plan after the deployer identity exists.
-4. Allow for IAM propagation and run explicit authorization acceptance below
-   as the intended deployer, not as a project Owner. Only then consider the
-   separately reviewed secret/interface follow-up and 41C.
+Two fail-closed limits remain accepted and must not be repaired by broadening
+IAM:
 
-Future backend/provider credential routing remains distinct: use direct
-federated credential configuration as the GCS backend's credential source, so
-its fixed `impersonate_service_account` performs one impersonation to the preview
-deployer. Supply service-account-impersonated ADC to the Google provider.
-Do not feed already-impersonated deployer credentials through a second backend
-impersonation and repair the failure with deployer self Token Creator.
-No such grant is added. Keep exact-ref WIF, a fresh trusted runner,
-PR-specific `TF_DATA_DIR`, the default workspace, and the existing backend guard.
-Never execute PR-controlled Terraform/scripts after authentication.
+1. There is no approved outside-preview IAP WebService canary.
+2. The deployer's source Artifact Registry reader intentionally lacks
+   `artifactregistry.repositories.getIamPolicy`.
 
-Live acceptance must isolate the new grants from broader inherited grants:
-
-| Positive check | Negative check |
-| --- | --- |
-| Read a disposable preview frontend IAP service policy; add/remove an approved tester while preserving other roles/members | Reject adding/removing `roles/iap.admin`, mixed tester/admin changes, non-service IAP policies, and IAP writes outside the preview project |
-| Preview-prefixed container creation works; a disposable non-prefixed container can be created, documenting the intended limitation | Reject managing existing non-prefixed/shared containers and direct durable-secret payload access; creation outside the preview project remains denied |
-| Quota-billed preview provider requests work | No service enable/disable or quota-update authority from the new quota role |
-| Read staging engine service and named serving revision metadata | No source production-service access, service/revision listing, invocation, runtime changes, deletion, or IAM writes from the new role |
-| Read an existing source-repository image manifest as deployer | No source push/tag/delete, and no new source grant to preview runtime/service-agent identities |
-
-For negative mutations, use IAM policy simulation/troubleshooter where supported
-and safe operator-owned disposable resources where an actual API call is needed.
-Do not probe destructive calls against production/staging. For payload-denial
-checks, use authorization tooling or a non-sensitive canary; do not request real
-durable payloads. The operator cleans up disposable non-prefixed secrets, since
-the deployer intentionally cannot manage them.
-
-Also verify the actual preview project number (not its ID suffix), enabled APIs,
-IAP service agent and project-level no-org/external-user OAuth bootstrap, tester
-allowlist, OpenAI version, effective runtime/SQL grants and cross-project socket
-connection. Do not add per-PR OAuth callbacks, OAuth admin roles, or public access.
-The SQL API declaration is not evidence of working connectivity.
+No per-PR environment was created by that acceptance. It does not authorize
+applying the new preparer IAM proposed here. Preserve exact-ref WIF, the
+fresh-runner/default-workspace/backend-identity checks, and never execute
+PR-controlled Terraform or scripts after authentication.
 
 ## Manual WIF acceptance harness
 
@@ -167,9 +146,9 @@ The exact reviewed prerequisite plans at frontend source
 `b4b4e1c090916977ea3c591d5d39c6fc07565dfd` were subsequently applied successfully:
 foundation 6 add / 1 change / 1 destroy (serial 6 -> 8), application 3 add /
 0 change / 0 destroy (serial 27 -> 28). Authoritative inspection found no
-unreviewed mutations. **Do not reapply those consumed plans.** Effective
-deployer acceptance remains pending; the local operator has no impersonation
-grant by design.
+unreviewed mutations. **Do not reapply those consumed plans.** The deployer
+acceptance is now reconciled for the scope above; only the two documented
+fail-closed limitations remain. The local operator has no impersonation grant.
 
 The manual-only [workflow](../../../.github/workflows/preview-deploy.yml) and
 [standard-library harness](../../../tools/preview-acceptance/acceptance.py)
@@ -184,9 +163,11 @@ and `id-token: write`, with the repository's existing action-version convention.
 Read-only operator inspection on October 7, 2026 confirmed the accepted state
 output and ACTIVE live provider are exactly
 `projects/1001419903197/locations/global/workloadIdentityPools/hh-preview-github/providers/github-preview`.
-The live condition/mapping and deployer service-account policy still accept
-only the two documented main workflow refs. No operator impersonation or
-deployer self Token Creator is introduced.
+The live accepted deployer condition/mapping and service-account policy use the
+two documented deployment workflow refs. This change proposes a separate
+exact-ref binding for `preview-secret-prepare.yml` and its distinct service
+account; that binding is not yet live. No operator impersonation or deployer
+self Token Creator is introduced.
 
 ### Supported checks and canary boundary
 
@@ -252,12 +233,10 @@ and file/directory synchronization; no cloud results are downloaded as artifacts
    required check as `FAIL / BLOCKED`; it neither creates a canary outside the
    preview project nor writes production/staging IAP policies.
 
-Under current permissions/evidence these required gaps make the overall workflow
-fail, even if supported tests pass. They require a separately reviewed acceptance
-disposition/operator authorization-tooling procedure, not automatic role changes.
-The broader prerequisite checks for IAP OAuth/browser bootstrap, tester allowlist,
-OpenAI version metadata, effective SQL grants and cross-project `SELECT 1` are
-still operator/runtime acceptance and are **not** claimed by this workflow.
+These two gaps remain visibly blocked in the acceptance evidence; they require
+an approved canary or separately reviewed operator disposition, not automatic
+role changes. They are not prerequisites to or reasons for widening the trusted
+preparer boundary.
 
 ### Cleanup and evidence
 
@@ -294,8 +273,8 @@ prefix/wildcard or change runtime/IAM to make a negative test pass.
 
 Offline validation: `make preview-acceptance-test` (workflow trust contracts and
 mocked identity, strict denial, policy preservation, source-boundary and cleanup
-tests). CI runs the same checks without credentials. No cloud acceptance or
-workflow dispatch occurs in this PR.
+tests). CI runs the same checks without credentials. This secret-preparation
+slice performs no additional cloud acceptance or workflow dispatch.
 
 ## Offline validation
 
@@ -305,140 +284,173 @@ make tf-validate
 make tf-preview-iam-test
 make tf-preview-db-test
 make tf-preview-pr-test
+make tf-preview-secret-preparer-test
 git diff --check
 ```
 
-The new standard-library tests assert source-level permission sets, scopes,
-conditions, additive ownership, staging gating, existing version permissions,
+The standard-library tests assert source-level permission sets, scopes,
+conditions, additive ownership, staging gating, version/preparer boundaries,
 tester scope and authentication boundaries. Backend-disabled validation checks
-the pinned provider schemas. Existing per-PR tests use mocked plans. **None of
-these evaluates live IAM conditions or proves effective cloud authorization.**
+the pinned provider schemas; per-PR tests use mocked plans. **None of these
+evaluates the proposed live preparer IAM conditions or authorizes applying them.**
 
-## Next secret preparation/interface PR: proposed, not implemented
+## Trusted per-PR secret preparation and Terraform interface
 
-Recommend one coherent follow-up containing the fixed provisioner and its
-per-PR interface, rather than deploying a broker that the root cannot consume.
-It needs separate approval for provisioner access to the preview app-password
-version, per-PR version writes/metadata, and private metadata-ledger storage.
-It must not return DATABASE_URL, NextAuth, or service-token payloads to a runner.
-The current provisioner only creates/drops databases; it does not already have
-these capabilities.
+This slice introduces a dedicated, manual-only
+[default-branch workflow](../../../.github/workflows/preview-secret-prepare.yml)
+and a fixed preparer identity. The workflow accepts only an open frontend PR
+number, a 32-character lowercase-hex incarnation, a positive sequential
+secret-generation number and `operation=prepare|reconcile`. It checks the
+workflow ref, repository, branch and checked-out main SHA before authentication.
+It never checks out or executes PR code. Its WIF binding targets only
+`hh-preview-secret-preparer@hh-preview-458395246135.iam.gserviceaccount.com`.
+The preparer independently validates project ID/number, credential identity,
+all identity fields, derived resource names and ownership labels. It accepts no
+project ID, Secret Manager path, SQL host/user/database, command or payload.
 
-### Three distinct identities
+### Ownership and least privilege
 
-- **Lifecycle/incarnation:** `(repository key, canonical PR number, incarnation
-  UUID)`. Trusted control-plane state assigns a new UUID only after completed
-  close/teardown and an explicitly validated reopen. Commit SHA and workflow
-  attempt are not incarnation IDs. An incarnation remains closing/tombstoned
-  until in-flight writes, executions, runtime, secrets and DB are reconciled.
-- **Secret generation:** `(incarnation, generation UUID)`, with an explicit
-  rotation request and pinned durable app-password version. Initial creation
-  allocates one generation; pushes reuse it. Generation identities are never
-  recycled or inferred from `latest` or Secret Manager version numbers.
-- **Operation:** durable UUID plus immutable request tuple `(incarnation,
-  generation, prepare|rotate|close, expected lifecycle revision)`. An HTTP retry
-  uses the same operation ID; reusing it with a different tuple is a conflict.
-  GitHub run/attempt IDs are audit metadata, not idempotency identities.
+- Per-PR Terraform owns three Secret Manager parent containers, incarnation and
+  PR ownership labels, runtime Secret Accessor grants and Cloud Run/job
+  references to explicit numeric versions. It no longer declares payload
+  variables or `google_secret_manager_secret_version` resources.
+- The deployer keeps only `secretmanager.secrets.create` for parent containers;
+  its previous `previewPerPrSecretManager` version-management role/grant is
+  removed. It does not receive access to `hh-preview-db-app-password`.
+- `previewPerPrSecretPreparer` grants only
+  `secretmanager.secrets.get`, `secretmanager.versions.add/get/list` under the
+  numeric preview project `hh-web-pr-*` resource-name prefix. It does not grant
+  `secretmanager.versions.access`, container update/delete/IAM management,
+  version enable/disable/destroy, or project-wide Secret Manager Admin.
+- `roles/secretmanager.secretAccessor` is granted to the preparer only on the
+  preview foundation's existing `hh-preview-db-app-password` secret. This is
+  the sole source of the shared app password. The preparer has no production or
+  staging project/secret grant and no `actAs` on the SQL provisioner.
+- `previewSecretLedgerWriter` grants only `storage.objects.get/create` on the
+  fixed `hh-preview-458395246135-pr-secret-ledger` bucket. It has no object
+  delete, list, Terraform-state or bucket-administration permission. The
+  bucket is private, versioned, preview-project-owned and protected by
+  `prevent_destroy`; per-PR teardown cannot erase its history.
+- Runtime identities keep Secret Accessor only on their specific PR containers;
+  they have no version-creation authority. No live IAM apply is part of this
+  pull request.
 
-### Candidate identification and lost responses
+The role condition restricts the preparer's version metadata/add permissions to
+`projects/1001419903197/secrets/hh-web-pr-*`. That is a namespace boundary, not
+proof that arbitrary caller-supplied names are safe; trusted code derives each
+full name and verifies `app`, `environment`, `repository`, `pull_request` and
+`incarnation` labels before any write. The deployer can create arbitrary new
+names because Secret Manager authorizes `secrets.create` on the parent project;
+this accepted limitation is not widened into version access.
 
-Use distinct generation/incarnation-qualified candidate containers for each
-secret kind, with bounded canonical names owned by per-PR Terraform. This is
-an intentional future per-PR interface/name change, not a change in this PR.
-The metadata ledger records exact container IDs, operation/generation identity,
-pre-write version inventory, append intent and returned numeric version IDs.
-It records no payloads, credential hashes, or encoded credentials.
+### Incarnation and naming tradeoff
 
-The [addVersion request](https://cloud.google.com/secret-manager/docs/reference/rest/v1/projects.secrets/addVersion)
-has no caller-defined idempotency key/operation label.
-Do not correlate retries by creation time, `latest`, highest version number,
-or a version watermark in a shared container. Dedicated containers, an exclusive
-writer and a recorded initially empty inventory make an otherwise unattributed
-successful append identifiable only if exactly one candidate exists.
+An incarnation is a trusted, non-secret 128-bit lowercase-hex identifier,
+immutable for one frontend preview-environment lifetime. For `web` PR `123` and
+incarnation `aaaaaaaa...` the three names are derived exactly as:
 
-Before each `addVersion`, persist an append intent and disable SDK/transport
-automatic retries for that non-idempotent call. Permit at most one submitted
-append per kind/operation; retrying an HTTP prepare request must not reissue it.
-If the call succeeds but the response or ledger commit is lost, do not immediately
-append again. Once writer
-quiescence and a complete inventory are established, adopt the sole enabled
-candidate for that exact operation's dedicated container, record its numeric ID,
-and publish the generation only after all three kinds are complete. Reuse the
-mapping without reading payloads on pushes/retries. If a previous generation
-exists, leave it serving while preparing a new one.
+- `hh-web-pr-123-i-<incarnation>-nextauth`
+- `hh-web-pr-123-i-<incarnation>-internal-token`
+- `hh-web-pr-123-i-<incarnation>-database-url`
 
-If an append is definitively known not to have been submitted, it can be retried.
-An ambiguous submitted request with no visible version is **not** evidence that
-it failed: a late commit may still arrive. Multiple candidates, unexpected
-writers, destroyed/disabled candidates, mismatched identities or uncertain
-in-flight completion require `RECONCILIATION_REQUIRED`, no rollout and no
-automatic regeneration. Operator reconciliation may abandon the generation and
-allocate a fresh one only after quiescence, without reusing its containers.
+The containers are fixed for that incarnation; each strictly sequential
+positive generation appends exactly one version to each. Per-generation
+containers are unnecessary when version numbers are recorded and all writes
+are serialized; incarnation-qualified parents prevent a destroyed/recreated
+lifecycle from adopting old container/version metadata. The 41C lifecycle must
+persist the active incarnation and allocate a different random identifier
+after completed destruction. Reopen/recreation and tombstone transitions are
+not automated here; the preparer does not silently change an old incarnation.
 
-### Fencing and stale workers
+### Payload generation and database URL
 
-GCS compare-and-swap can serialize ledger changes but **cannot fence Secret
-Manager writes**. Cloud Run concurrency/max-instance settings are not a global
-writer lock across revisions. An expiring lease followed by automatic takeover
-is therefore not a safe protocol.
+The trusted preparer creates independent cryptographically strong 32-byte
+NextAuth and internal service-token values. It reads only the fixed preview
+secret `hh-preview-db-app-password`, validates the 64-character lowercase-hex
+password, and builds exactly:
 
-The smallest safe v1 is a durable, **non-expiring exclusive operation reservation**
-per repository/PR, with no automatic lock stealing. Expiration of a request,
-worker heartbeat or workflow only marks the operation indeterminate; it does
-not authorize a replacement writer, teardown or reopen. A worker may continue
-reconciliation for its operation while the lifecycle remains reserved; check
-the immutable operation/incarnation before every side effect and publication.
-Teardown and reopen cannot transition past that reservation.
+```text
+postgresql+psycopg://haunted_halls_preview_app:<password>@/haunted_halls_web_pr_<N>?host=/cloudsql/haunted-halls-development:us-east1:haunted-halls-postgres
+```
 
-Record a unique service-internal owner-session ID separately from the operation
-idempotency key. Duplicate HTTP requests may observe committed/pending metadata
-but may not become another writer merely because their operation ID matches.
-Persist and compare the owner-session ID when claiming each append intent.
-The same reservation must serialize the fixed provisioner's DB create/drop
-operations and close/reopen transitions, not just secret preparation, because
-the logical DB name is reused across incarnations.
+`N` is the canonical PR number, validated as `1..999999999`; no arbitrary DB
+name, host, username or credential fallback is accepted. The payloads exist
+only in process memory for the three `addVersion` calls and are best-effort
+zeroed after use. No payloads or payload hashes enter Terraform, the ledger,
+workflow artifacts, summaries, comments, logs or outputs. The tool returns
+only identity and numeric Secret Manager version metadata.
 
-Release only after confirmed API outcomes and no in-flight side effects. If the
-worker/session is lost, fail closed until an operator establishes the old writer
-cannot resume and outstanding Secret Manager requests have been reconciled.
-This can require stopping/draining all old provisioner revisions, temporarily
-revoking their version-write authority and verifying propagation before repair.
-Revocation alone does not cancel already accepted writes. Waiting for a lease
-timeout, inspecting a stale heartbeat, or a single zero-version listing is not
-proof of quiescence. If that proof cannot be established, retain the blocked
-reservation; do not claim unattended recovery. Reopen stays blocked.
+### Durable ledger, retry ambiguity and reconciliation
 
-Generation/incarnation-qualified destinations additionally keep old candidates
-out of a new runtime's references, but are not authorization fencing by
-themselves. If automatic takeover is required, design and review a genuinely
-fenced sole writer or operation-scoped identity/resource isolation first; do not
-patch it with another GCS CAS. This conservative v1 trades availability during
-ambiguous failures for correctness and makes operator recovery explicit.
+The ledger key is fixed by repository/PR/incarnation. Each JSON record contains
+only schema version, identity, expected container names, current generation,
+state, the role of any in-flight append, and numeric version IDs. Allowed
+states are `reserved`, `writing`, `complete` and `reconciliation-required`.
+Before each individual Secret Manager append, the role-specific intent is
+persisted; a returned numeric version is persisted before the next role begins.
+GCS generation-match writes provide optimistic concurrency; bucket object
+versioning preserves every prior record generation.
+The one record per incarnation is non-expiring, and a new generation is
+accepted only after the prior generation is complete and only at the next
+number. There is no timeout-based lease takeover or automatic reservation
+stealing. An unresolved/crashed writer blocks the incarnation.
 
-### Ownership, rotation, teardown and tests
+Secret Manager `addVersion` has no caller-supplied idempotency key. The SDK
+retry parameter is disabled, each role is submitted at most once per generation,
+and the numeric version is durably recorded immediately after a successful
+response. A lost/ambiguous response is marked `reconciliation-required` and
+stops the operation; no second `addVersion` is issued. If a successful version
+write cannot be durably recorded, the generation remains non-terminal and is
+also blocked. GCS compare-and-swap does **not** fence an external Secret
+Manager write.
 
-The follow-up should atomically introduce provisioner version ownership and
-numeric version inputs in the per-PR root, remove its payload/version resources,
-and create/retain generation-qualified containers and runtime grants there.
-Foundation still owns durable credentials, the fixed trusted image/identity and
-metadata storage. Drop unnecessary deployer version-mutation permissions only
-with the working replacement path. No payload data source, Terraform output,
-runner response, artifact, ledger object or log is permitted.
+The workflow's read-only `reconcile` mode reads the ledger, container labels,
+and Secret Manager version number/state/create-time metadata only; it never
+calls `versions.access`. With shared incarnation containers, an unrecorded
+version cannot always be attributed to an ambiguous generation. In that case
+the report expressly requires operator disposition and does not guess, adopt,
+retry or release the reservation. There is no automatic resolution command in
+v1. Correctness is preferred over availability.
 
-After successful migration and rollout, commit the serving mapping; retain old
-versions/containers until no runtime references them. Internal-token rotation
-needs a reviewed coordinated window with the current single-token contract;
-NextAuth rotation invalidates sessions. Shared SQL-password rotation requires
-coordination across every active preview; retaining old URL secrets does not
-keep old SQL passwords valid. Close tombstones the incarnation, drains work,
-destroys runtime/parent secrets, drops the DB through the fixed provisioner,
-then removes only that incarnation's metadata/state. Delayed old requests must
-be rejected before a reopen can allocate a new incarnation.
+### Numeric Terraform interface and bootstrap ordering
 
-Test crash points before/after every append/ledger commit, lost HTTP responses,
-duplicate/conflicting operation IDs, simultaneous calls, stopped/stale workers,
-uncertain API completion, failed rotation, closed/reopened PRs, and late writes.
-Assert metadata-only responses and fail-closed ambiguous recovery. Preserve old
-runtime/DB on failed preparation. Live gates later prove exact-image migration
-success before rollout, IAP/private-engine behavior, update continuity and
-idempotent teardown. Image capture/copy and the 41C workflow remain separate.
+The root requires three non-sensitive strings:
+
+- `nextauth_secret_version`
+- `internal_engine_service_token_version`
+- `database_url_secret_version`
+
+Each must be a canonical positive decimal integer; `latest`, aliases, zero,
+signs and leading zeroes fail validation. All three must be explicit even for
+the targeted container bootstrap, although the bootstrap target does not
+consume them. Cloud Run pins the exact inputs. Destroying a PR root deletes the
+three parent containers and therefore all versions they contain; it does not
+delete the foundation ledger.
+
+The future 41C workflow must enforce this narrow sequence before rollout:
+
+1. Validate trusted default-branch event/repository/PR/head, incarnation and
+   generation; verify project ID/number, exact WIF identity and GCS backend
+   metadata. Use a private PR-specific directory/`TF_DATA_DIR` and default
+   workspace.
+2. Create/reconcile containers and runtime access prerequisites using only
+   `google_secret_manager_secret.pr` and
+   `google_secret_manager_secret_iam_member.runtime`. The reviewed target list
+   is emitted by `python3 tools/preview-secret-preparer/terraform_targets.py
+   containers`; offline tests lock the exact two addresses. Review the saved
+   plan before apply. This is the sole container-bootstrap target exception.
+3. Invoke the fixed preparer workflow. It creates one generation, records the
+   three numeric versions and returns sanitized metadata.
+4. Plan only `google_cloud_run_v2_job.migration`, using the fixed target list
+   from `python3 tools/preview-secret-preparer/terraform_targets.py migration`.
+   Review the saved plan; run the job explicitly and require successful Alembic
+   completion before rollout.
+5. Only then perform a fresh full plan/apply for frontend and engine rollout.
+   Image provenance/capture/copy, database creation/drop, migration invocation,
+   rollout/update/teardown and live acceptance remain full 41C work, not part
+   of this secret-preparation slice.
+
+No Terraform apply, live IAM mutation, live Secret Manager write, live backend
+initialization, preview creation, database operation or migration occurred in
+this change. The two accepted IAP/source-registry limitations above remain
+unchanged.

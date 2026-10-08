@@ -47,7 +47,7 @@ resource "google_cloud_run_v2_service" "engine" {
         value_source {
           secret_key_ref {
             secret  = google_secret_manager_secret.pr["database_url"].id
-            version = google_secret_manager_secret_version.database_url.version
+            version = var.database_url_secret_version
           }
         }
       }
@@ -56,7 +56,7 @@ resource "google_cloud_run_v2_service" "engine" {
         value_source {
           secret_key_ref {
             secret  = google_secret_manager_secret.pr["internal_token"].id
-            version = google_secret_manager_secret_version.internal_token.version
+            version = var.internal_engine_service_token_version
           }
         }
       }
@@ -136,7 +136,7 @@ resource "google_cloud_run_v2_service" "frontend" {
         value_source {
           secret_key_ref {
             secret  = google_secret_manager_secret.pr["nextauth"].id
-            version = google_secret_manager_secret_version.nextauth.version
+            version = var.nextauth_secret_version
           }
         }
       }
@@ -145,7 +145,7 @@ resource "google_cloud_run_v2_service" "frontend" {
         value_source {
           secret_key_ref {
             secret  = google_secret_manager_secret.pr["internal_token"].id
-            version = google_secret_manager_secret_version.internal_token.version
+            version = var.internal_engine_service_token_version
           }
         }
       }
