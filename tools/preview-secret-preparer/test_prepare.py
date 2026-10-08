@@ -8,7 +8,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from datetime import datetime, timezone
 from pathlib import Path
+from contextlib import ExitStack
 
+import prepare
 from terraform_targets import TARGETS
 from prepare import (
     DB_PASSWORD_SECRET,
@@ -214,6 +216,95 @@ class PreparationTests(unittest.TestCase):
         self.secrets = FakeSecrets()
         self.preparer = SecretPreparer(self.ledger, self.secrets)
 
+    def test_password_access_failure_leaves_no_ledger_and_same_generation_can_retry(self):
+        with patch.object(self.secrets, "access_database_password",
+                          side_effect=PreparationError("Password unavailable.")):
+            with self.assertRaises(PreparationError):
+                self.preparer.prepare(self.identity)
+        self.assertFalse(self.bucket.creates)
+        self.assertFalse(self.bucket.objects)
+        self.assertFalse(self.secrets.calls)
+        self.assertEqual(self.preparer.prepare(self.identity)["state"], "complete")
+
+    def test_sensitive_buffers_are_wiped_on_every_preparation_exit(self):
+        phases = (
+            "generation", "invalid_generation", "duplicate_generation",
+            "password_access", "invalid_password", "database_url",
+            "reservation_conflict", "reservation_failure", "intent",
+            "append", "result", "complete", "success",
+        )
+        for phase in phases:
+            with self.subTest(phase=phase), ExitStack() as stack:
+                self.reset_runtime()
+                wiped = []
+                original_wipe = prepare._wipe
+
+                def wipe(value):
+                    wiped.append((value, len(value)))
+                    original_wipe(value)
+
+                stack.enter_context(patch("prepare._wipe", side_effect=wipe))
+                if phase in {"generation", "invalid_generation", "duplicate_generation"}:
+                    second = {
+                        "generation": PreparationError("Generation failed."),
+                        "invalid_generation": "invalid",
+                        "duplicate_generation": "a" * 64,
+                    }[phase]
+                    stack.enter_context(patch("prepare.secrets.token_hex",
+                                              side_effect=["a" * 64, second]))
+                elif phase == "password_access":
+                    stack.enter_context(patch.object(
+                        self.secrets, "access_database_password",
+                        side_effect=PreparationError("Password unavailable.")))
+                elif phase == "invalid_password":
+                    password = bytearray(b"invalid")
+                    stack.enter_context(patch.object(
+                        self.secrets, "access_database_password", return_value=password))
+                elif phase == "database_url":
+                    stack.enter_context(patch("prepare.database_url",
+                                              side_effect=PreparationError("URL failed.")))
+                elif phase.startswith("reservation"):
+                    error = (ReservationConflict if phase == "reservation_conflict"
+                             else LedgerError)
+                    stack.enter_context(patch.object(self.ledger, "reserve",
+                                                      side_effect=error("Reservation failed.")))
+                elif phase in {"intent", "result", "complete"}:
+                    stack.enter_context(patch.object(self.ledger, phase,
+                                                      side_effect=LedgerError("Marker failed.")))
+                elif phase == "append":
+                    self.secrets.fail_role = "nextauth"
+
+                if phase == "success":
+                    self.preparer.prepare(self.identity)
+                else:
+                    with self.assertRaises(PreparationError):
+                        self.preparer.prepare(self.identity)
+                self.assertEqual(len(wiped), 4)
+                for value, length in wiped:
+                    self.assertEqual(value, bytearray(length))
+                self.assertEqual(wiped[0][1], 64)
+                if phase == "invalid_password":
+                    self.assertIs(wiped[2][0], password)
+                if phase.startswith("reservation") or phase in {
+                        "intent", "append", "result", "complete", "success"}:
+                    self.assertTrue(all(length > 0 for _, length in wiped))
+                if phase not in {"intent", "append", "result", "complete", "success"}:
+                    self.assertFalse(self.bucket.creates)
+                    self.assertFalse(self.bucket.objects)
+                    self.assertFalse(self.secrets.calls)
+
+    def test_payload_preparation_finishes_before_reservation(self):
+        original = self.ledger.reserve
+
+        def reserve(identity, names):
+            self.assertEqual(self.secrets.access_calls, 1)
+            self.assertFalse(self.secrets.calls)
+            self.assertFalse(self.bucket.objects)
+            return original(identity, names)
+
+        with patch.object(self.ledger, "reserve", side_effect=reserve):
+            self.preparer.prepare(self.identity)
+
     def test_prepares_three_independent_values_and_emits_only_numeric_versions(self):
         result = self.preparer.prepare(self.identity)
         self.assertEqual(self.secrets.calls, list(ROLES))
@@ -359,14 +450,14 @@ class PreparationTests(unittest.TestCase):
         self.secrets.add_version = append
         self.preparer.prepare(self.identity)
 
-    def test_skip_and_unresolved_prior_generation_fail_without_payload_access(self):
+    def test_skip_and_unresolved_prior_generation_fail_without_append(self):
         for generation in ("2", "3"):
             with self.assertRaises(ReservationConflict):
                 self.preparer.prepare(validate_identity("web", "123", INCARNATION, generation))
         self.ledger.reserve(self.identity, secret_names(self.identity))
         with self.assertRaises(ReservationConflict):
             self.preparer.prepare(validate_identity("web", "123", INCARNATION, "2"))
-        self.assertEqual(self.secrets.access_calls, 0)
+        self.assertEqual(self.secrets.access_calls, 3)
         self.assertFalse(self.secrets.calls)
 
     def test_next_generation_requires_complete_not_just_all_results(self):
@@ -457,14 +548,14 @@ class PreparationTests(unittest.TestCase):
             self.ledger.intent(self.identity, names, "nextauth")
         self.assertEqual(self.bucket.objects, before)
 
-    def test_ambiguous_reservation_absent_or_wrong_content_never_reads_payload(self):
+    def test_ambiguous_reservation_absent_or_wrong_content_never_appends(self):
         for failure in ("absent", "mismatch"):
             with self.subTest(failure=failure):
                 self.reset_runtime()
                 self.bucket.failures[GcsLedger.object_name(self.identity)] = failure
                 with self.assertRaises(LedgerError):
                     self.preparer.prepare(self.identity)
-                self.assertEqual(self.secrets.access_calls, 0)
+                self.assertEqual(self.secrets.access_calls, 1)
                 self.assertFalse(self.secrets.calls)
 
     def test_gateway_performs_exactly_one_append_and_sanitizes_unknown_outcome(self):
@@ -491,6 +582,39 @@ class PreparationTests(unittest.TestCase):
 
 
 class TrustedWorkflowAndTerraformBoundaryTests(unittest.TestCase):
+    def test_privileged_workflow_installs_only_committed_hash_lock(self):
+        root = Path(__file__).parents[2]
+        workflow = (root / ".github/workflows/preview-secret-prepare.yml").read_text()
+        self.assertIn(
+            "python -m pip install --require-hashes --only-binary=:all:\n"
+            "          --requirement tools/preview-secret-preparer/requirements.lock",
+            workflow,
+        )
+        self.assertNotIn("requirements.txt", workflow)
+        self.assertTrue(Path(__file__).with_name("requirements.lock").is_file())
+
+    def test_runtime_lock_contains_only_exact_pins_with_sha256_hashes(self):
+        lock = Path(__file__).with_name("requirements.lock").read_text()
+        lines = [line for line in lock.splitlines()
+                 if line.strip() and not line.lstrip().startswith("#")]
+        entries = "\n".join(lines).replace("\\\n", " ").splitlines()
+        self.assertTrue(entries)
+        names = set()
+        for entry in entries:
+            with self.subTest(entry=entry):
+                self.assertRegex(
+                    entry,
+                    r"^[a-z0-9]+(?:-[a-z0-9]+)*==[0-9]+(?:\.[0-9]+)*"
+                    r"(?:\s+--hash=sha256:[a-f0-9]{64})+\s*$",
+                )
+                name = entry.split("==", 1)[0]
+                self.assertNotIn(name, names)
+                names.add(name)
+        source = Path(__file__).with_name("requirements.txt").read_text().splitlines()
+        for requirement in source:
+            if requirement.strip() and not requirement.startswith("#"):
+                self.assertTrue(any(entry.startswith(requirement + " ") for entry in entries))
+
     def test_pre_auth_workflow_rejects_drafts_closed_wrong_repo_and_missing_metadata(self):
         workflow = (
             Path(__file__).parents[2] / ".github/workflows/preview-secret-prepare.yml"

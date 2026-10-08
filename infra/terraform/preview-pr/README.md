@@ -106,6 +106,15 @@ It accepts only the frontend repository key, canonical PR number, a
 The tool derives all three Secret Manager container names itself; it accepts no
 project, secret path, database, SQL endpoint, command, or payload override.
 
+Before authentication, the privileged job installs its complete Python 3.12
+Linux x86_64 runtime dependency closure from the committed, reviewed
+[`requirements.lock`](../../../tools/preview-secret-preparer/requirements.lock)
+using `pip --require-hashes --only-binary=:all:`. Every package is exactly
+pinned with a SHA-256 hash for its compatible wheel. The small
+`requirements.txt` is development input only, not a workflow install source;
+lock generation never runs in the privileged job. Normal CI verifies the lock
+in an isolated environment without cloud credentials.
+
 For `web` PR `123`, the exact database URL payload is:
 
 ```text
@@ -168,7 +177,16 @@ correctness does not depend on replacing versioned objects. The preparer has
 only `storage.objects.get/create`, never delete/list. PR teardown cannot erase
 ledger history.
 
-The reservation is non-expiring and exclusive for the incarnation. A generation
+Before creating any ledger marker, the preparer derives/validates names, checks
+all three container labels, generates and validates distinct NextAuth/internal
+values, reads and validates the fixed DB password, builds the exact PR DB URL,
+and establishes its in-memory payload map. Failure in that preparation is safe
+to retry: there is no reservation, intent or external append. A single `finally`
+path best-effort wipes all four sensitive bytearrays on success or any failure,
+including password/URL preparation and reservation rejection.
+
+After payload preparation, the reservation is non-expiring and exclusive for
+the incarnation. A generation
 can be reserved only once; generation N requires the immutable complete marker
 and results of N-1. Skips fail closed. Before each external append, its intent
 is durable; a numeric result must be durable before the next append.
@@ -176,6 +194,9 @@ Only after all results may `complete.json` be created.
 Reconstructed states are `reserved`, `writing`,
 `complete`, and `reconciliation-required`. A crash or unresolved state blocks
 new writes; no lease timeout or automatic lock takeover exists.
+Failures after durable reservation retain these conservative no-retry and
+reconciliation requirements; pre-reservation retry safety does not permit
+post-reservation replay.
 
 Secret Manager `addVersion` has no operation idempotency key. SDK retries are
 disabled. If any response is ambiguous, the preparer makes no second

@@ -376,6 +376,15 @@ not automated here; the preparer does not silently change an old incarnation.
 
 ### Payload generation and database URL
 
+The privileged workflow installs only the committed, reviewed
+[`requirements.lock`](../../../tools/preview-secret-preparer/requirements.lock),
+with `pip --require-hashes --only-binary=:all:` before WIF authentication.
+It pins the full transitive closure and SHA-256 wheel hashes for the supported
+Ubuntu x86_64 / Python 3.12 runtime. The top-level `requirements.txt` remains
+development input only. Resolve/update the lock during development and review
+it before committing, never within the privileged job. Credential-free CI
+verifies an isolated install, dependency consistency and SDK imports.
+
 The trusted preparer creates independent cryptographically strong 32-byte
 NextAuth and internal service-token values. It reads only the fixed preview
 secret `hh-preview-db-app-password`, validates the 64-character lowercase-hex
@@ -391,6 +400,15 @@ only in process memory for the three `addVersion` calls and are best-effort
 zeroed after use. No payloads or payload hashes enter Terraform, the ledger,
 workflow artifacts, summaries, comments, logs or outputs. The tool returns
 only identity and numeric Secret Manager version metadata.
+
+All expected preparation finishes before reservation: derive/validate names,
+verify all three ownership labels, generate/validate distinct NextAuth and
+internal-token values, read/validate the fixed DB password, construct the exact
+PR DB URL, and establish the in-memory payload map. No ledger marker is created
+until these steps succeed. A failure here is safe to retry because there is no
+intent or external append. A single `finally` path best-effort wipes every
+allocated NextAuth, token, password and URL bytearray on every exit, including
+preparation failure, reservation conflict and all post-reservation failures.
 
 ### Durable ledger, retry ambiguity and reconciliation
 
@@ -420,6 +438,8 @@ complete marker plus all results for N-1 before reserving; skips fail closed.
 Reservations do not expire. Intent without a result blocks replay even when
 the reconciliation marker cannot be written. There is no timeout-based
 takeover, automatic reservation stealing or automatic resume.
+Once reservation is durable, failures retain this conservative protocol;
+pre-reservation retry safety does not allow replay of a reserved generation.
 
 Secret Manager `addVersion` has no caller-supplied idempotency key. The SDK
 retry parameter is disabled, each role is submitted at most once per generation,

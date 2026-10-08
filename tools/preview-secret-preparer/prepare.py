@@ -429,15 +429,18 @@ class SecretPreparer:
     def prepare(self, identity: Identity) -> dict[str, Any]:
         names = secret_names(identity)
         self._preflight(identity, names)
-        self.ledger.reserve(identity, names)
         versions = {}
 
-        nextauth = bytearray(secrets.token_hex(32).encode("ascii"))
-        internal_token = bytearray(secrets.token_hex(32).encode("ascii"))
+        nextauth = bytearray()
+        internal_token = bytearray()
         password = bytearray()
         db_url = bytearray()
         try:
-            if nextauth == internal_token:
+            nextauth = bytearray(secrets.token_hex(32).encode("ascii"))
+            internal_token = bytearray(secrets.token_hex(32).encode("ascii"))
+            if (not PASSWORD_RE.fullmatch(nextauth)
+                    or not PASSWORD_RE.fullmatch(internal_token)
+                    or nextauth == internal_token):
                 raise PreparationError("Independent secret generation failed.")
             password = self.secrets.access_database_password()
             db_url = database_url(identity, password)
@@ -446,6 +449,7 @@ class SecretPreparer:
                 "internal_token": internal_token,
                 "database_url": db_url,
             }
+            self.ledger.reserve(identity, names)
             for role in ROLES:
                 self.ledger.intent(identity, names, role)
                 try:
