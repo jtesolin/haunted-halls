@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import io
 import json
@@ -471,8 +473,10 @@ def state_secret_identity(state: object, number: str) -> tuple[str, int] | None:
 
 
 def validate_secret_metadata(
-    metadata: object, number: str, incarnation: str, generation: int
+    metadata: object, number: str, incarnation: str, generation: int, request_id: str
 ) -> dict[str, str]:
+    _expect(isinstance(request_id, str) and INCARNATION_RE.fullmatch(request_id),
+            "Secret dispatch request ID is invalid.")
     _expect(isinstance(metadata, dict), "Secret version artifact is malformed.")
     _expect(
         set(metadata)
@@ -482,10 +486,12 @@ def validate_secret_metadata(
             "generation",
             "state",
             "secret_versions",
+            "request_id",
         }
         and metadata.get("pull_request_number") == number
         and metadata.get("pr_incarnation") == incarnation
-        and metadata.get("generation") == str(generation),
+        and metadata.get("generation") == str(generation)
+        and metadata.get("request_id") == request_id,
         "Secret version artifact belongs to a different preview generation.",
     )
     _expect(
@@ -561,7 +567,11 @@ def execution_succeeded(execution: object) -> bool:
     if not isinstance(execution, dict):
         return False
     status = _resource_status(execution)
-    if not isinstance(status, dict) or status.get("succeededCount") != 1:
+    if (not isinstance(status, dict)
+            or type(status.get("succeededCount")) is not int
+            or status["succeededCount"] != 1
+            or status.get("failedCount", 0) != 0
+            or status.get("cancelledCount", 0) != 0):
         return False
     conditions = status.get("conditions")
     if not isinstance(conditions, list):
@@ -574,6 +584,54 @@ def execution_succeeded(execution: object) -> bool:
     return len(completed) == 1 and completed[0].get(
         "state", completed[0].get("status")
     ) in {"CONDITION_SUCCEEDED", "True"}
+
+
+def execution_terminal(execution: object) -> bool:
+    status = _resource_status(execution)
+    conditions = status.get("conditions")
+    _expect(isinstance(conditions, list), "Migration execution conditions are unavailable.")
+    completed = [
+        item for item in conditions if isinstance(item, dict)
+        and item.get("type") in {"Completed", "CompletedCondition"}
+    ]
+    _expect(len(completed) == 1, "Migration execution completion state is ambiguous.")
+    state = completed[0].get("state", completed[0].get("status"))
+    _expect(state in {"True", "False", "Unknown", "CONDITION_SUCCEEDED",
+                      "CONDITION_FAILED", "CONDITION_PENDING", "CONDITION_RECONCILING"},
+            "Migration execution completion state is unknown.")
+    return state in {"True", "False", "CONDITION_SUCCEEDED", "CONDITION_FAILED"}
+
+
+def verify_ci_source(record: object, trusted: bytes) -> None:
+    """Compare both Git blob identity and bytes, without executing PR source."""
+    _expect(isinstance(record, dict) and record.get("type") == "file"
+            and record.get("encoding") == "base64",
+            "PR CI workflow source is unavailable.")
+    try:
+        content = base64.b64decode("".join(record["content"].split()), validate=True)
+    except (KeyError, TypeError, AttributeError, ValueError, binascii.Error):
+        raise LifecycleError("PR CI workflow source is malformed.") from None
+    blob_sha = hashlib.sha1(
+        f"blob {len(trusted)}\0".encode() + trusted
+    ).hexdigest()
+    _expect(content == trusted and record.get("sha") == blob_sha,
+            "PR CI workflow differs from the trusted default-branch workflow.")
+
+
+def verify_policy_members(policy: object, role: str, expected: set[str]) -> None:
+    _expect(isinstance(policy, dict) and isinstance(policy.get("bindings"), list),
+            "Live IAM policy is malformed.")
+    members: set[str] = set()
+    for binding in policy["bindings"]:
+        _expect(isinstance(binding, dict), "Live IAM binding is malformed.")
+        if binding.get("role") != role:
+            continue
+        _expect(not binding.get("condition")
+                and isinstance(binding.get("members"), list)
+                and all(isinstance(member, str) for member in binding["members"]),
+                "Live access binding is conditional or malformed.")
+        members.update(binding["members"])
+    _expect(members == expected, "Live IAM access differs from the exact intended principals.")
 
 
 def comment_body(
@@ -755,6 +813,10 @@ def prepare(args: argparse.Namespace) -> int:
         expected_number == number
         and sha == linked_prs[0]["head"].get("sha"),
         "The workflow event, CI run and current PR head do not match.",
+    )
+    verify_ci_source(
+        github.api(f"repos/{REPOSITORY}/contents/.github/workflows/ci.yml?ref={sha}"),
+        Path(".github/workflows/ci.yml").read_bytes(),
     )
     attempt = run.get("run_attempt")
     expected_name = artifact_name(number, sha, attempt)
@@ -1225,10 +1287,10 @@ class PreviewDeployment:
         self.revalidate_pr()
         testers = parse_testers(os.environ.get("PREVIEW_IAP_TESTERS", ""))
         _expect(bool(testers), "No explicit preview IAP testers are configured.")
-        dispatch_time = time.time()
+        request_id = secrets.token_hex(16)
         title = (
             f"Preview secret preparation {operation} "
-            f"PR-{self.number}-{incarnation}-gen-{generation}"
+            f"PR-{self.number}-{incarnation}-gen-{generation}-request-{request_id}"
         )
         self.github.api(
             f"repos/{REPOSITORY}/actions/workflows/{SECRET_WORKFLOW}/dispatches",
@@ -1241,10 +1303,11 @@ class PreviewDeployment:
                     "pr_incarnation": incarnation,
                     "generation": str(generation),
                     "expected_head_sha": self.sha,
+                    "request_id": request_id,
                 },
             },
         )
-        run = self.wait_for_secret_workflow(title, dispatch_time)
+        run = self.wait_for_secret_workflow(title)
         artifact_response = self.github.api(
             f"repos/{REPOSITORY}/actions/runs/{run['id']}/artifacts?per_page=100"
         )
@@ -1261,13 +1324,15 @@ class PreviewDeployment:
             metadata = json.loads(files["secret-version-metadata.json"])
         except (UnicodeDecodeError, json.JSONDecodeError):
             raise LifecycleError("Secret version artifact is invalid.") from None
-        versions = validate_secret_metadata(metadata, self.number, incarnation, generation)
+        versions = validate_secret_metadata(
+            metadata, self.number, incarnation, generation, request_id
+        )
         return {
             "state": metadata["state"],
             "secret_versions": versions,
         }
 
-    def wait_for_secret_workflow(self, expected_title: str, dispatch_time: float) -> dict[str, Any]:
+    def wait_for_secret_workflow(self, expected_title: str) -> dict[str, Any]:
         workflow = self.github.api(f"repos/{REPOSITORY}/actions/workflows/{SECRET_WORKFLOW}")
         _expect(
             isinstance(workflow, dict)
@@ -1294,8 +1359,6 @@ class PreviewDeployment:
                 and item.get("event") == "workflow_dispatch"
                 and item.get("head_branch") == "main"
                 and item.get("workflow_id") == workflow["id"]
-                and isinstance(item.get("created_at"), str)
-                and _parse_time(item["created_at"]).timestamp() >= dispatch_time - 30
             ]
             _expect(len(candidates) <= 1, "Secret-preparation dispatch is ambiguous.")
             if candidates:
@@ -1327,6 +1390,16 @@ class PreviewDeployment:
 
     def run_migration(self) -> None:
         job = f"hh-web-pr-{self.number}-migrate"
+        active = Commands.json(
+            ["gcloud", "run", "jobs", "executions", "list", f"--job={job}",
+             f"--project={PREVIEW_PROJECT}", f"--region={PREVIEW_REGION}", "--format=json"],
+            label="Active migration execution precheck",
+        )
+        _expect(isinstance(active, list), "Migration execution inventory is malformed.")
+        for execution in active:
+            execution_id = self.migration_execution_id(execution, job)
+            if not execution_terminal(execution):
+                self.wait_for_migration(execution_id)
         result = Commands.json(
             [
                 "gcloud",
@@ -1336,38 +1409,50 @@ class PreviewDeployment:
                 job,
                 f"--project={PREVIEW_PROJECT}",
                 f"--region={PREVIEW_REGION}",
-                "--wait",
+                "--async",
                 "--format=json",
             ],
             label="Alembic migration execution",
-            timeout=900,
+            timeout=120,
         )
+        self.wait_for_migration(self.migration_execution_id(result, job))
+
+    def migration_execution_id(self, result: object, job: str) -> str:
         _expect(isinstance(result, dict), "Migration execution metadata is malformed.")
+        metadata = result.get("metadata")
         execution_name = result.get("name")
         if not isinstance(execution_name, str):
-            metadata = result.get("metadata")
             execution_name = metadata.get("name") if isinstance(metadata, dict) else None
-        _expect(isinstance(execution_name, str) and execution_name,
-                "Migration execution name is unavailable.")
-        execution_id = execution_name.rsplit("/", 1)[-1]
-        execution = Commands.json(
-            [
-                "gcloud",
-                "run",
-                "jobs",
-                "executions",
-                "describe",
-                execution_id,
-                f"--project={PREVIEW_PROJECT}",
-                f"--region={PREVIEW_REGION}",
-                "--format=json",
-            ],
-            label="Alembic migration result verification",
-        )
         _expect(
-            execution_succeeded(execution),
-            "Alembic migration did not complete successfully at head.",
+            isinstance(execution_name, str)
+            and re.fullmatch(
+                rf"(?:projects/{PREVIEW_PROJECT}/locations/{PREVIEW_REGION}/"
+                rf"jobs/{job}/executions/)?{job}-[a-z0-9]+", execution_name),
+            "Migration execution does not belong to the exact PR job.",
         )
+        labels = metadata.get("labels", {}) if isinstance(metadata, dict) else {}
+        _expect(labels.get("run.googleapis.com/job", job) == job,
+                "Migration execution belongs to another job.")
+        return execution_name.rsplit("/", 1)[-1]
+
+    def wait_for_migration(self, execution_id: str) -> None:
+        deadline = time.monotonic() + 15 * 60
+        while time.monotonic() < deadline:
+            execution = Commands.json(
+                ["gcloud", "run", "jobs", "executions", "describe", execution_id,
+                 f"--project={PREVIEW_PROJECT}", f"--region={PREVIEW_REGION}", "--format=json"],
+                label="Alembic migration result verification",
+            )
+            _expect(
+                self.migration_execution_id(execution, f"hh-web-pr-{self.number}-migrate")
+                == execution_id, "Migration result identifies another execution.",
+            )
+            if execution_terminal(execution):
+                _expect(execution_succeeded(execution),
+                        "Alembic migration did not complete successfully at head.")
+                return
+            time.sleep(10)
+        raise LifecycleError("Migration execution did not resolve before the deadline.")
 
     def apply_runtime(self, incarnation: str, generation: int) -> None:
         allowed = {
@@ -1451,6 +1536,14 @@ class PreviewDeployment:
             == f"{frontend_name}-{PREVIEW_PROJECT_NUMBER}.{PREVIEW_REGION}.run.app",
             "The frontend IAP URL or direct Cloud Run configuration is unexpected.",
         )
+        self.verify_invokers(
+            engine_name,
+            {f"serviceAccount:hh-preview-frontend@{PREVIEW_PROJECT}.iam.gserviceaccount.com"},
+        )
+        self.verify_invokers(
+            frontend_name,
+            {f"serviceAccount:service-{PREVIEW_PROJECT_NUMBER}@gcp-sa-iap.iam.gserviceaccount.com"},
+        )
         self.verify_testers()
         verify_unauthenticated_denied(
             f"{url}/", allow_google_redirect=True
@@ -1468,6 +1561,14 @@ class PreviewDeployment:
             "Database create/reuse status is malformed.",
         )
         return url
+
+    def verify_invokers(self, service: str, expected: set[str]) -> None:
+        policy = Commands.json(
+            ["gcloud", "run", "services", "get-iam-policy", service,
+             f"--project={PREVIEW_PROJECT}", f"--region={PREVIEW_REGION}", "--format=json"],
+            label="Live Cloud Run invoker policy verification",
+        )
+        verify_policy_members(policy, "roles/run.invoker", expected)
 
     def verify_testers(self) -> None:
         state = self.terraform_state()
@@ -1497,6 +1598,29 @@ class PreviewDeployment:
         _expect(
             members == parse_testers(os.environ.get("PREVIEW_IAP_TESTERS", "")),
             "IAP tester grants differ from the explicitly configured tester set.",
+        )
+        token = Commands.run(
+            ["gcloud", "auth", "print-access-token"], label="IAP policy access token"
+        ).decode().strip()
+        _expect(bool(token), "IAP policy access token is unavailable.")
+        resource = (
+            f"https://iap.googleapis.com/v1/projects/{PREVIEW_PROJECT_NUMBER}"
+            f"/iap_web/cloud_run-{PREVIEW_REGION}/services/hh-web-pr-{self.number}-frontend"
+        )
+        request = urllib.request.Request(
+            resource + ":getIamPolicy",
+            data=json.dumps({"options": {"requestedPolicyVersion": 3}}).encode(),
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                policy = json.load(response)
+        except (OSError, ValueError):
+            raise LifecycleError("Live IAP policy could not be verified.") from None
+        verify_policy_members(
+            policy, "roles/iap.httpsResourceAccessor",
+            parse_testers(os.environ.get("PREVIEW_IAP_TESTERS", "")),
         )
 
     def update_comment(self, url: str) -> None:
@@ -1629,20 +1753,14 @@ def verify_unauthenticated_denied(url: str, allow_google_redirect: bool) -> None
         raise LifecycleError("Unauthenticated Cloud Run privacy verification failed.") from None
     allowed = {401, 403}
     if allow_google_redirect and status == 302:
-        host = urllib.parse.urlparse(location).hostname or ""
+        redirect = urllib.parse.urlparse(location)
         _expect(
-            host == "google.com" or host.endswith(".google.com"),
+            redirect.scheme == "https" and redirect.hostname == "accounts.google.com"
+            and redirect.netloc == "accounts.google.com",
             "Unauthenticated frontend redirect is not the Google IAP sign-in flow.",
         )
         return
     _expect(status in allowed, "Unauthenticated request was not denied by IAP or Cloud Run IAM.")
-
-
-def _parse_time(value: str) -> datetime:
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        raise LifecycleError("GitHub workflow time metadata is invalid.") from None
 
 
 def deploy(args: argparse.Namespace) -> int:

@@ -716,6 +716,7 @@ class TrustedWorkflowAndTerraformBoundaryTests(unittest.TestCase):
                          "GITHUB_SHA": "79d839031580e1d26d8b816d25d8262c293b0a95",
                          "PR_NUMBER": "123", "RUNNER_TEMP": directory,
                          "EXPECTED_HEAD_SHA": "79d839031580e1d26d8b816d25d8262c293b0a95",
+                         "REQUEST_ID": "a" * 32,
                          "HELPER": helper,
                          "PR_FIXTURE": json.dumps(metadata)},
                     capture_output=True, text=True, check=False,

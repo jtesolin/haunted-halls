@@ -487,8 +487,9 @@ class StagingAndTerraformTests(unittest.TestCase):
                 "internal_token": "14",
                 "database_url": "16",
             },
+            "request_id": "d" * 32,
         }
-        versions = lifecycle.validate_secret_metadata(metadata, "41", INCARNATION, 8)
+        versions = lifecycle.validate_secret_metadata(metadata, "41", INCARNATION, 8, "d" * 32)
         self.assertEqual(set(versions), lifecycle.SECRET_ROLES)
         with self.assertRaises(lifecycle.LifecycleError):
             lifecycle.validate_secret_metadata(
@@ -499,6 +500,7 @@ class StagingAndTerraformTests(unittest.TestCase):
                 "41",
                 INCARNATION,
                 8,
+                "d" * 32,
             )
         deployment = lifecycle.PreviewDeployment(
             lifecycle.BuildContext(
