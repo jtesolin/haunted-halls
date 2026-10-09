@@ -23,8 +23,8 @@ resource "google_cloud_run_v2_job" "migration" {
 
       containers {
         image   = var.engine_image
-        command = ["alembic"]
-        args    = ["upgrade", "head"]
+        command = ["/bin/sh", "-ec"]
+        args    = ["alembic upgrade head && alembic current --check-heads"]
 
         resources {
           limits = { cpu = "1", memory = "512Mi" }

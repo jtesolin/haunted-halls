@@ -2,7 +2,7 @@ resource "google_secret_manager_secret" "pr" {
   for_each  = local.secret_names
   project   = local.project_id
   secret_id = each.value
-  labels    = local.labels
+  labels    = local.secret_labels
 
   replication {
     auto {}

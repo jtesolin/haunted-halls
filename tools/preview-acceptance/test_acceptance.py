@@ -22,19 +22,52 @@ class WorkflowContracts(unittest.TestCase):
     def setUp(self):
         self.workflow = WORKFLOW.read_text()
 
-    def test_only_dispatch_no_inputs_or_automatic_lifecycle(self):
-        self.assertEqual(self.workflow.split("on:\n")[1].split("\npermissions:")[0].strip(),
-                         "workflow_dispatch:")
-        for forbidden in ("pull_request_target", "pull_request:", "workflow_run:", "push:", "schedule:",
-                          "inputs:", "inputs.", "github.event.inputs", "terraform", "migrate",
-                          "docker build", "docker push", "preview-pr/", "engine-deployer", "production-promoter"):
-            self.assertNotIn(forbidden, self.workflow)
+    def test_manual_acceptance_is_scoped_and_separate_from_automatic_deploy(self):
+        triggers = self.workflow.split("on:\n", 1)[1].split("\npermissions:", 1)[0]
+        self.assertIn("workflow_dispatch:", triggers)
+        self.assertIn("workflow_run:", triggers)
+        jobs = self.workflow.split("\njobs:\n", 1)[1]
+        acceptance_job, deploy_job = jobs.split("\n  deploy:\n", 1)
+        self.assertIn("github.event_name == 'workflow_dispatch'", acceptance_job)
+        self.assertIn("github.ref == 'refs/heads/main'", acceptance_job)
+        self.assertIn("github.repository == 'jtesolin/haunted-halls'", acceptance_job)
+        self.assertIn("preview-prerequisite-acceptance", acceptance_job)
+        self.assertNotIn("workflow_run", acceptance_job)
+        self.assertEqual(
+            acceptance_job.count("python3 tools/preview-acceptance/acceptance.py"),
+            2,
+        )
+        self.assertIn("python3 tools/preview-acceptance/acceptance.py run", acceptance_job)
+        self.assertIn(
+            "python3 tools/preview-acceptance/acceptance.py cleanup",
+            acceptance_job,
+        )
+        for forbidden in (
+            "terraform",
+            "migrate",
+            "artifact",
+            "tools/preview-deploy/lifecycle.py",
+            "docker build",
+            "docker push",
+            "preview-pr/",
+            "engine-deployer",
+            "production-promoter",
+        ):
+            self.assertNotIn(forbidden, acceptance_job.lower())
+        self.assertIn("github.event_name == 'workflow_run'", deploy_job)
+        self.assertIn("tools/preview-deploy/lifecycle.py", deploy_job)
 
     def test_exact_permission_set_and_hosted_runner(self):
-        self.assertEqual(self.workflow.split("permissions:\n")[1].split("\nconcurrency:")[0].strip(),
-                         "contents: read\n  id-token: write")
-        self.assertIn("runs-on: ubuntu-latest", self.workflow)
-        self.assertIn("cancel-in-progress: false", self.workflow)
+        acceptance_job = self.workflow.split("\n  acceptance:\n", 1)[1].split(
+            "\n  deploy:\n", 1
+        )[0]
+        permissions = acceptance_job.split("\n    permissions:\n", 1)[1].split(
+            "\n    timeout-minutes:", 1
+        )[0]
+        self.assertEqual(permissions.strip(), "contents: read\n      id-token: write")
+        self.assertIn("runs-on: ubuntu-latest", acceptance_job)
+        self.assertIn("cancel-in-progress: false", acceptance_job)
+        self.assertNotIn("\nconcurrency:", self.workflow.split("\njobs:\n", 1)[0])
 
     def test_fixed_main_identity_and_checkout_before_auth(self):
         self.assertIn(acceptance.WORKFLOW_REF, self.workflow)
@@ -55,6 +88,25 @@ class WorkflowContracts(unittest.TestCase):
         for forbidden in ("458395246135/locations/global", "haunted-halls-development.iam", "secrets.", "impersonate-service-account"):
             self.assertNotIn(forbidden, self.workflow)
 
+    def test_deploy_job_uses_distinct_backend_and_provider_credentials(self):
+        deploy = self.workflow.split("\n  deploy:\n", 1)[1]
+        backend_auth = deploy.split(
+            "- name: Authenticate directly with WIF for the Terraform backend\n", 1
+        )[1].split("\n      - name:", 1)[0]
+        deployer_auth = deploy.split(
+            "- name: Authenticate as the preview deployer for gcloud and the provider\n", 1
+        )[1].split("\n      - name:", 1)[0]
+        self.assertIn("workload_identity_provider: ${{ env.WIF_PROVIDER }}", backend_auth)
+        self.assertIn("create_credentials_file: true", backend_auth)
+        self.assertIn("export_environment_variables: false", backend_auth)
+        self.assertNotIn("service_account:", backend_auth)
+        self.assertIn("service_account: ${{ env.DEPLOY_SERVICE_ACCOUNT }}", deployer_auth)
+        self.assertIn("export_environment_variables: true", deployer_auth)
+        self.assertIn(
+            "GOOGLE_BACKEND_CREDENTIALS: ${{ steps.backend-auth.outputs.credentials_file_path }}",
+            deploy,
+        )
+
     def test_existing_action_conventions_and_always_cleanup(self):
         for action in ("actions/checkout@v7", "google-github-actions/auth@v3", "google-github-actions/setup-gcloud@v3"):
             self.assertIn(action, self.workflow)
@@ -63,7 +115,10 @@ class WorkflowContracts(unittest.TestCase):
         self.assertNotIn("continue-on-error", self.workflow)
 
     def test_auth_failure_fixed_text_has_identical_log_and_summary_output(self):
-        step = self.workflow.split("- name: Report authentication failure\n", 1)[1]
+        acceptance_job = self.workflow.split("\n  acceptance:\n", 1)[1].split(
+            "\n  deploy:\n", 1
+        )[0]
+        step = acceptance_job.split("- name: Report authentication failure\n", 1)[1]
         script = step.split("        run: |\n", 1)[1]
         script = "\n".join(line.removeprefix("          ") for line in script.splitlines()) + "\n"
         self.assertIn("cat <<'SUMMARY' | tee -a \"$GITHUB_STEP_SUMMARY\"", script)

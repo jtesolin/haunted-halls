@@ -498,7 +498,19 @@ class SecretPreparer:
         self._preflight(identity, names)
         record = self.ledger.read(identity, names)
         if record is None:
-            raise PreparationError("No durable intent exists for this preview generation.")
+            return {
+                "repository_key": identity.repository_key,
+                "pull_request_number": identity.pull_request_number,
+                "pr_incarnation": identity.pr_incarnation,
+                "generation": identity.generation,
+                "state": "absent",
+                "in_flight_role": None,
+                "secret_names": names,
+                "secret_versions": {},
+                "observed_version_metadata": {},
+                "automatic_resume_allowed": False,
+                "operator_disposition_required": False,
+            }
         if int(record["generation"]) != identity.generation:
             raise PreparationError("The ledger currently contains a different generation.")
         versions = {

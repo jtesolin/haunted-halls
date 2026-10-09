@@ -2,14 +2,12 @@ name: Preview Prerequisite Acceptance
 
 on:
   workflow_dispatch:
+  workflow_run:
+    workflows: ["Frontend CI"]
+    types: [completed]
 
 permissions:
   contents: read
-  id-token: write
-
-concurrency:
-  group: preview-prerequisite-acceptance
-  cancel-in-progress: false
 
 env:
   GCP_PROJECT: hh-preview-458395246135
@@ -24,6 +22,12 @@ jobs:
       github.ref == 'refs/heads/main' &&
       github.repository == 'jtesolin/haunted-halls'
     runs-on: ubuntu-latest
+    concurrency:
+      group: preview-prerequisite-acceptance
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
     timeout-minutes: 30
     steps:
       - name: Require exact trusted workflow identity
@@ -71,3 +75,96 @@ jobs:
           FAIL: trusted preview authentication was not established; acceptance did not run.
           IAP, Secret Manager, quota, staging metadata, and source registry checks: NOT RUN. No canaries created.
           SUMMARY
+
+  deploy:
+    name: Create or update the frontend PR preview
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.repository == 'jtesolin/haunted-halls'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: frontend-preview-pr-${{ github.event.workflow_run.pull_requests[0].number || github.run_id }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: write
+      id-token: write
+      pull-requests: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GCP_PROJECT: hh-preview-458395246135
+      WIF_PROVIDER: projects/1001419903197/locations/global/workloadIdentityPools/hh-preview-github/providers/github-preview
+      DEPLOY_SERVICE_ACCOUNT: hh-preview-deployer@hh-preview-458395246135.iam.gserviceaccount.com
+      PREVIEW_IAP_TESTERS: ${{ vars.PREVIEW_IAP_TESTERS }}
+    steps:
+      - name: Require a fresh trusted default-branch workflow context
+        run: |
+          set -euo pipefail
+          test "$GITHUB_WORKFLOW_REF" = "jtesolin/haunted-halls/.github/workflows/preview-deploy.yml@refs/heads/main"
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_EVENT_NAME" = "workflow_run"
+          test "$GITHUB_REPOSITORY" = "jtesolin/haunted-halls"
+
+      - name: Check out only the trusted default-branch revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify trusted source and set up deployment tools
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.11.4
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Validate workflow/artifact provenance before cloud authentication
+        id: provenance
+        run: >-
+          python tools/preview-deploy/lifecycle.py prepare
+          --event "$GITHUB_EVENT_PATH"
+          --output-directory "$RUNNER_TEMP"
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Authenticate directly with WIF for the Terraform backend
+        id: backend-auth
+        if: steps.provenance.outputs.deploy == 'true'
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          create_credentials_file: true
+          export_environment_variables: false
+
+      - name: Authenticate as the preview deployer for gcloud and the provider
+        id: deployer-auth
+        if: steps.provenance.outputs.deploy == 'true'
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT }}
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOY_SERVICE_ACCOUNT }}
+          export_environment_variables: true
+
+      - name: Create or update the isolated PR preview
+        if: steps.provenance.outputs.deploy == 'true'
+        env:
+          CLOUDSDK_CORE_PROJECT: ${{ env.GCP_PROJECT }}
+          GOOGLE_BACKEND_CREDENTIALS: ${{ steps.backend-auth.outputs.credentials_file_path }}
+        run: >-
+          python tools/preview-deploy/lifecycle.py deploy
+          --context "$RUNNER_TEMP/preview-context.json"

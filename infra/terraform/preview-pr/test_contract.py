@@ -121,6 +121,10 @@ class OwnershipTests(unittest.TestCase):
             block = variables.split(f'variable "{name}" {{', 1)[1].split("}", 1)[0]
             self.assertRegex(block, r'can\(regex\("\^\[1-9\]\[0-9\]\*\$"')
             self.assertNotRegex(block, r"default\s*=")
+        self.assertIn(
+            'regex("^(0|[1-9][0-9]{0,8})$", var.secret_generation)',
+            variables,
+        )
         for forbidden in (
             'variable "database_url" {',
             'variable "nextauth_secret" {',
@@ -139,8 +143,10 @@ class OwnershipTests(unittest.TestCase):
         self.assertNotIn("latest", combined_runtime_config)
         self.assertNotIn("google_secret_manager_secret_version", combined_runtime_config)
         self.assertIn('incarnation  = var.pr_incarnation', (ROOT / "locals.tf").read_text())
+        self.assertIn("secret_generation = var.secret_generation", (ROOT / "locals.tf").read_text())
         migration = (ROOT / "migration.tf").read_text()
         self.assertNotIn("google_cloud_run_v2_service", migration)
+        self.assertIn("alembic upgrade head && alembic current --check-heads", migration)
 
 if __name__ == "__main__":
     unittest.main()
