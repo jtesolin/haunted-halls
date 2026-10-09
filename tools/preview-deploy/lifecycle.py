@@ -895,9 +895,10 @@ class PreviewDeployment:
         self.database_was_created: bool | None = None
 
     def revalidate_pr(self) -> dict[str, Any]:
-        metadata = self.github.api(f"repos/{REPOSITORY}/pulls/{self.number}")
+        number = self.context.pull_request_number
+        metadata = self.github.api(f"repos/{REPOSITORY}/pulls/{number}")
         _expect(
-            validate_secret_preparation_pr(self.number, metadata, self.sha),
+            validate_secret_preparation_pr(number, metadata, self.context.head_sha),
             "The PR is closed, draft, forked, or no longer at the artifact head SHA.",
         )
         return metadata
@@ -1162,6 +1163,16 @@ class PreviewDeployment:
         *,
         allowed: set[str],
     ) -> None:
+        """Plan, validate and apply one saved plan for the exact frozen PR context.
+
+        Every caller is protected centrally by this fixed ordering: revalidate the
+        PR, verify the backend, create the saved plan, inspect and validate it,
+        verify the backend again, freshly revalidate the PR immediately before
+        apply, then apply only that validated saved plan. A failed check never
+        replans or updates the deployment context; the saved plan is removed on a
+        best-effort basis and the sanitized LifecycleError propagates.
+        """
+        self.revalidate_pr()
         self.check_backend()
         plan_path = Path(os.environ.get("RUNNER_TEMP", "/tmp")) / f"preview-{self.number}-{name}.tfplan"
         plan_args = [
@@ -1174,34 +1185,40 @@ class PreviewDeployment:
         ]
         plan_args.extend(f"-target={target}" for target in sorted(targets))
         plan_args.extend(variables)
-        Commands.run(plan_args, label=f"{name} Terraform plan", timeout=900)
-        plan_json = Commands.json(
-            [
-                "terraform",
-                f"-chdir={self.terraform_root}",
-                "show",
-                "-json",
-                str(plan_path),
-            ],
-            label=f"{name} Terraform plan inspection",
-            timeout=300,
-        )
-        validate_plan(plan_json, allowed)
-        self.check_backend()
-        Commands.run(
-            [
-                "terraform",
-                f"-chdir={self.terraform_root}",
-                "apply",
-                "-input=false",
-                "-no-color",
-                "-auto-approve",
-                str(plan_path),
-            ],
-            label=f"{name} Terraform apply",
-            timeout=900,
-        )
-        plan_path.unlink(missing_ok=True)
+        try:
+            Commands.run(plan_args, label=f"{name} Terraform plan", timeout=900)
+            plan_json = Commands.json(
+                [
+                    "terraform",
+                    f"-chdir={self.terraform_root}",
+                    "show",
+                    "-json",
+                    str(plan_path),
+                ],
+                label=f"{name} Terraform plan inspection",
+                timeout=300,
+            )
+            validate_plan(plan_json, allowed)
+            self.check_backend()
+            self.revalidate_pr()
+            Commands.run(
+                [
+                    "terraform",
+                    f"-chdir={self.terraform_root}",
+                    "apply",
+                    "-input=false",
+                    "-no-color",
+                    "-auto-approve",
+                    str(plan_path),
+                ],
+                label=f"{name} Terraform apply",
+                timeout=900,
+            )
+        finally:
+            try:
+                plan_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def ensure_database(self) -> bool:
         service = Commands.json(

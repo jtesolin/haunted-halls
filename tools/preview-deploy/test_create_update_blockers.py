@@ -2,6 +2,7 @@
 
 import argparse
 import base64
+import contextlib
 import copy
 import hashlib
 import io
@@ -381,6 +382,96 @@ class DispatchTests(unittest.TestCase):
         self.assertNotIn("request_id", "\n".join(
             path.read_text() for path in Path("infra/terraform/preview-pr").glob("*.tf")
         ))
+
+
+class ApplyPlanRevalidationTests(unittest.TestCase):
+    """apply_plan centrally revalidates the exact PR around one saved plan."""
+
+    def harness(self, temp, second_pr, unlink_error=False):
+        current = deployment()
+        context = current.context
+        calls = []
+        responses = [github_pr(), second_pr]
+
+        def api(endpoint, method="GET", data=None):
+            self.assertEqual((endpoint, method, data),
+                             (f"repos/{lifecycle.REPOSITORY}/pulls/41", "GET", None))
+            calls.append("revalidate")
+            return responses.pop(0)
+
+        def run(arguments, **kwargs):
+            command = arguments[2]
+            calls.append(command)
+            if command == "plan":
+                out = next(a for a in arguments if a.startswith("-out="))
+                Path(out.removeprefix("-out=")).write_bytes(b"saved-plan")
+            return b""
+
+        def show(arguments, **kwargs):
+            calls.append("show")
+            return {"resource_changes": [
+                {"address": address, "change": {"actions": ["create"]}}
+                for address in sorted(lifecycle.TARGETS["containers"])
+            ]}
+
+        def check_backend():
+            calls.append("check-backend")
+
+        current.github.api.side_effect = api
+        current.check_backend = check_backend
+        stack = contextlib.ExitStack()
+        stack.enter_context(patch.dict(os.environ, {"RUNNER_TEMP": temp}))
+        run_mock = stack.enter_context(patch.object(lifecycle.Commands, "run", side_effect=run))
+        stack.enter_context(patch.object(lifecycle.Commands, "json", side_effect=show))
+        if unlink_error:
+            stack.enter_context(patch.object(Path, "unlink", side_effect=OSError("busy")))
+        return current, context, calls, stack, run_mock
+
+    @staticmethod
+    def apply(current, stack):
+        targets = set(lifecycle.TARGETS["containers"])
+        with stack:
+            current.apply_plan("secret-containers", ["-var=x=1"], targets, allowed=targets)
+
+    def test_exact_ordering_and_one_saved_plan_apply(self):
+        with tempfile.TemporaryDirectory() as temp:
+            current, context, calls, stack, run = self.harness(temp, github_pr())
+            self.apply(current, stack)
+            plan_path = Path(temp) / "preview-41-secret-containers.tfplan"
+            self.assertEqual(calls, ["revalidate", "check-backend", "plan", "show",
+                                     "check-backend", "revalidate", "apply"])
+            applies = [c.args[0] for c in run.call_args_list if c.args[0][2] == "apply"]
+            self.assertEqual(len(applies), 1)
+            self.assertEqual(applies[0][-1], str(plan_path))
+            self.assertFalse(any(a.startswith("-var") or a.startswith("-target")
+                                 for a in applies[0]))
+            self.assertFalse(plan_path.exists())
+            self.assertIs(current.context, context)
+
+    def test_stale_closed_or_draft_pr_after_planning_blocks_apply(self):
+        cases = {
+            "stale-head": github_pr(sha="e" * 40),
+            "closed": {**github_pr(), "state": "closed"},
+            "draft": github_pr(draft=True),
+            "base-not-main": {**github_pr(), "base": {"ref": "release",
+                              "repo": {"full_name": lifecycle.REPOSITORY}}},
+            "other-pr": github_pr(number=42),
+        }
+        for label, second in cases.items():
+            for unlink_error in (False, True):
+                with self.subTest(label=label, unlink_error=unlink_error), \
+                        tempfile.TemporaryDirectory() as temp:
+                    current, context, calls, stack, _ = self.harness(temp, second, unlink_error)
+                    with self.assertRaises(lifecycle.LifecycleError):
+                        self.apply(current, stack)
+                    self.assertEqual(calls, ["revalidate", "check-backend", "plan", "show",
+                                             "check-backend", "revalidate"])
+                    self.assertNotIn("apply", calls)
+                    self.assertEqual(calls.count("plan"), 1)
+                    plan_path = Path(temp) / "preview-41-secret-containers.tfplan"
+                    self.assertEqual(plan_path.exists(), unlink_error)
+                    self.assertIs(current.context, context)
+                    self.assertEqual((current.number, current.sha), ("41", SHA))
 
 
 if __name__ == "__main__":
