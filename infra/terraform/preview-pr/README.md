@@ -284,10 +284,14 @@ operations:
    delegates without echoing metadata. Missing/malformed metadata or mismatches
    fail closed. Run it again before plan/apply/destroy and before deleting a
    state object. Do not substitute this check for resource-state reconciliation.
-4. Ensure the provider's ADC is also the expected preview deployer: backend
-   impersonation does not set provider credentials. Authenticate only on a fresh
-   trusted default-branch runner via the foundation's exact-workflow-ref WIF.
-   Never run PR-controlled Terraform or scripts after authentication.
+4. Use separate credentials for the backend and provider. Authenticate directly
+   through the exact trusted WIF provider without a service-account target and
+   keep that credentials file private; pass its path to Terraform only through
+   `GOOGLE_BACKEND_CREDENTIALS`. Separately authenticate through the same WIF
+   provider as the expected preview deployer for gcloud and the Google
+   provider's ADC. The backend's fixed `impersonate_service_account` then
+   performs the one explicit deployer impersonation. Never run PR-controlled
+   Terraform or scripts after authentication.
 
 The workflow runs on a fresh default-branch runner, uses a unique `TF_DATA_DIR`,
 and rechecks the backend metadata before every plan/state operation. It never
@@ -298,12 +302,14 @@ trusted workflow is present on `main`.
 
 ## Create/update lifecycle ordering
 
-Configure the repository Actions variables `PREVIEW_IAP_TESTERS` as a
-comma-separated set of explicit `user:email` and/or `group:email` principals
-and `PREVIEW_DB_PROVISIONER_URL` as the fixed provisioner's HTTPS `run.app`
-URL. The trusted job rejects missing/malformed values and has no public-access
-or fallback identity. Do not put credentials or secret payloads in these
-variables.
+Configure the repository Actions variable `PREVIEW_IAP_TESTERS` as a
+comma-separated set of explicit `user:email` and/or `group:email` principals.
+The trusted job resolves the fixed `hh-preview-db-provisioner` Cloud Run
+service in `haunted-halls-development/us-east1` after authentication, verifies
+its service/project/region identity and HTTPS `run.app` URL, and uses only that
+returned URL as both token audience and request base. It has no
+repository-configurable provisioner host, public-access fallback, or
+credential/secret payload variables.
 
 There is deliberately no "migration succeeded" Terraform flag: creating a job
 does **not** execute it or prove schema readiness, and an apply dependency

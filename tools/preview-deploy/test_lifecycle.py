@@ -2,6 +2,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import copy
 import sys
 import unittest
 import zipfile
@@ -108,9 +109,12 @@ class EligibilityTests(unittest.TestCase):
         closed["state"] = "closed"
         fork = github_pr()
         fork["head"]["repo"]["full_name"] = "someone/fork"
+        retargeted = github_pr()
+        retargeted["base"]["ref"] = "preview-branch"
         self.assertIsNone(lifecycle.eligibility(workflow_run(), closed))
         self.assertIsNone(lifecycle.eligibility(workflow_run(sha="d" * 40), github_pr()))
         self.assertIsNone(lifecycle.eligibility(workflow_run(), fork))
+        self.assertIsNone(lifecycle.eligibility(workflow_run(), retargeted))
         with self.assertRaises(lifecycle.LifecycleError):
             lifecycle.eligibility(
                 {"pull_requests": [{"number": 41}, {"number": 42}]},
@@ -204,24 +208,37 @@ class EligibilityTests(unittest.TestCase):
 class StagingAndTerraformTests(unittest.TestCase):
     def staging_metadata(self, image=SOURCE_ENGINE):
         service = {
-            "name": "projects/haunted-halls-development/locations/us-east1/services/haunted-halls-engine-staging",
+            "apiVersion": "serving.knative.dev/v1",
+            "kind": "Service",
+            "metadata": {
+                "name": "haunted-halls-engine-staging",
+                "namespace": "123456789012",
+                "labels": {"cloud.googleapis.com/location": "us-east1"},
+            },
             "status": {
-                "conditions": ready_conditions(),
+                "conditions": [{"type": "Ready", "status": "True"}],
                 "latestReadyRevisionName": "haunted-halls-engine-staging-00042-abc",
                 "latestCreatedRevisionName": "haunted-halls-engine-staging-00042-abc",
-                "trafficStatuses": [
+                "traffic": [
                     {
-                        "revision": "haunted-halls-engine-staging-00042-abc",
+                        "revisionName": "haunted-halls-engine-staging-00042-abc",
                         "percent": 100,
                     }
                 ],
+                "url": "https://haunted-halls-engine-staging-123456789012.us-east1.run.app",
             },
         }
         revision = {
-            "name": "projects/haunted-halls-development/locations/us-east1/revisions/haunted-halls-engine-staging-00042-abc",
+            "apiVersion": "serving.knative.dev/v1",
+            "kind": "Revision",
+            "metadata": {
+                "name": "haunted-halls-engine-staging-00042-abc",
+                "namespace": "123456789012",
+                "labels": {"cloud.googleapis.com/location": "us-east1"},
+            },
+            "spec": {"containers": [{"image": image}]},
             "status": {
-                "conditions": ready_conditions(),
-                "containerStatuses": [{"imageDigest": image}],
+                "conditions": [{"type": "Ready", "status": "True"}],
             },
         }
         return service, revision
@@ -240,14 +257,204 @@ class StagingAndTerraformTests(unittest.TestCase):
             with self.subTest(image=image), self.assertRaises(lifecycle.LifecycleError):
                 lifecycle.staging_engine_digest(service, revision)
         service, revision = self.staging_metadata()
-        service["status"]["trafficStatuses"][0]["percent"] = 50
+        service["status"]["traffic"][0]["percent"] = 50
         with self.assertRaises(lifecycle.LifecycleError):
             lifecycle.staging_engine_digest(service, revision)
-        revision["status"]["conditions"] = [{"type": "Ready", "state": "CONDITION_FAILED"}]
+        service, revision = self.staging_metadata()
+        service["status"]["latestCreatedRevisionName"] = "haunted-halls-engine-staging-00043-def"
+        with self.assertRaises(lifecycle.LifecycleError):
+            lifecycle.staging_engine_digest(service, revision)
+        service, revision = self.staging_metadata()
+        revision["spec"]["containers"].append({"image": SOURCE_ENGINE})
+        with self.assertRaises(lifecycle.LifecycleError):
+            lifecycle.staging_engine_digest(service, revision)
         service, revision = self.staging_metadata()
         revision["status"]["conditions"] = [{"type": "Ready", "state": "CONDITION_FAILED"}]
         with self.assertRaises(lifecycle.LifecycleError):
             lifecycle.staging_engine_digest(service, revision)
+
+    def test_preview_verification_checks_the_actual_nested_serving_revision(self):
+        service_name = "hh-web-pr-41-frontend"
+        url = f"https://{service_name}-1001419903197.us-east1.run.app"
+        service = {
+            "apiVersion": "serving.knative.dev/v1",
+            "kind": "Service",
+            "metadata": {
+                "name": service_name,
+                "namespace": "1001419903197",
+                "labels": {"cloud.googleapis.com/location": "us-east1"},
+            },
+            "spec": {
+                "template": {
+                    "spec": {"containers": [{"image": PREVIEW_FRONTEND}]}
+                }
+            },
+            "status": {
+                "conditions": [{"type": "Ready", "status": "True"}],
+                "latestCreatedRevisionName": "hh-web-pr-41-frontend-00007-xyz",
+                "latestReadyRevisionName": "hh-web-pr-41-frontend-00007-xyz",
+                "traffic": [
+                    {
+                        "revisionName": "hh-web-pr-41-frontend-00007-xyz",
+                        "percent": 100,
+                    }
+                ],
+                "url": url,
+            },
+        }
+        revision = {
+            "apiVersion": "serving.knative.dev/v1",
+            "kind": "Revision",
+            "metadata": {
+                "name": "hh-web-pr-41-frontend-00007-xyz",
+                "namespace": "1001419903197",
+                "labels": {"cloud.googleapis.com/location": "us-east1"},
+            },
+            "spec": {"containers": [{"image": PREVIEW_FRONTEND}]},
+            "status": {"conditions": [{"type": "Ready", "status": "True"}]},
+        }
+        self.assertEqual(
+            lifecycle.verify_serving_revision(
+                service, revision, service_name, PREVIEW_FRONTEND
+            ),
+            (PREVIEW_FRONTEND, url),
+        )
+        invalid_cases = []
+        old_revision_traffic = copy.deepcopy(service)
+        old_revision_traffic["status"]["traffic"][0]["revisionName"] = (
+            "hh-web-pr-41-frontend-00006-old"
+        )
+        invalid_cases.append((old_revision_traffic, revision))
+        stale_creation = copy.deepcopy(service)
+        stale_creation["status"]["latestCreatedRevisionName"] = (
+            "hh-web-pr-41-frontend-00008-new"
+        )
+        invalid_cases.append((stale_creation, revision))
+        failed_revision = copy.deepcopy(revision)
+        failed_revision["status"]["conditions"][0]["status"] = "False"
+        invalid_cases.append((service, failed_revision))
+        multiple_containers = copy.deepcopy(revision)
+        multiple_containers["spec"]["containers"].append(
+            {"image": PREVIEW_FRONTEND}
+        )
+        invalid_cases.append((service, multiple_containers))
+        wrong_image = copy.deepcopy(revision)
+        wrong_image["spec"]["containers"][0]["image"] = PREVIEW_ENGINE
+        invalid_cases.append((service, wrong_image))
+        invalid_url = copy.deepcopy(service)
+        invalid_url["status"]["url"] = "http://example.com"
+        invalid_cases.append((invalid_url, revision))
+        for candidate_service, candidate_revision in invalid_cases:
+            with self.subTest(
+                service=candidate_service["status"],
+                revision=candidate_revision["status"],
+            ), self.assertRaises(lifecycle.LifecycleError):
+                lifecycle.verify_serving_revision(
+                    candidate_service,
+                    candidate_revision,
+                    service_name,
+                    PREVIEW_FRONTEND,
+                )
+
+    def test_database_provisioner_is_resolved_from_fixed_service_identity(self):
+        service = {
+            "apiVersion": "serving.knative.dev/v1",
+            "kind": "Service",
+            "metadata": {
+                "name": "hh-preview-db-provisioner",
+                "namespace": "123456789012",
+                "labels": {"cloud.googleapis.com/location": "us-east1"},
+            },
+            "status": {
+                "url": "https://hh-preview-db-provisioner-123456789012.us-east1.run.app"
+            },
+        }
+        canonical_url = service["status"]["url"]
+        self.assertEqual(
+            lifecycle.database_provisioner_url(service),
+            canonical_url,
+        )
+        for mutate in (
+            lambda item: item["metadata"].update(name="attacker-service"),
+            lambda item: item["metadata"].update(namespace="not-a-project-number"),
+            lambda item: item["metadata"]["labels"].update(
+                {"cloud.googleapis.com/location": "us-west1"}
+            ),
+            lambda item: item["status"].update(url="https://attacker.example.com"),
+            lambda item: item["status"].update(url="http://unsafe.run.app"),
+        ):
+            invalid = copy.deepcopy(service)
+            mutate(invalid)
+            with self.assertRaises(lifecycle.LifecycleError):
+                lifecycle.database_provisioner_url(invalid)
+
+    def test_database_provisioner_token_audience_and_request_use_described_url(self):
+        context = lifecycle.BuildContext(
+            "41", SHA, 1234, 1, 5678, "sha256:" + "d" * 64, "image", "/tmp/image.tar"
+        )
+        deployment = lifecycle.PreviewDeployment(context, object())
+        deployment.database = "haunted_halls_web_pr_41"
+        service = {
+            "metadata": {
+                "name": "hh-preview-db-provisioner",
+                "namespace": "123456789012",
+                "labels": {"cloud.googleapis.com/location": "us-east1"},
+            },
+            "status": {
+                "url": "https://hh-preview-db-provisioner-123456789012.us-east1.run.app"
+            },
+        }
+        canonical_url = service["status"]["url"]
+        command_calls = []
+
+        def run(arguments, **kwargs):
+            command_calls.append(arguments)
+            if arguments[:3] == ["gcloud", "auth", "print-identity-token"] and arguments[3] == (
+                f"--audiences={canonical_url}"
+            ):
+                return b"private-test-token"
+            raise AssertionError(f"Unexpected command: {arguments}")
+
+        def describe(arguments, **kwargs):
+            self.assertEqual(
+                arguments,
+                [
+                    "gcloud",
+                    "run",
+                    "services",
+                    "describe",
+                    "hh-preview-db-provisioner",
+                    "--project=haunted-halls-development",
+                    "--region=us-east1",
+                    "--format=json",
+                ],
+            )
+            return service
+
+        with (
+            patch.object(lifecycle.Commands, "run", side_effect=run),
+            patch.object(lifecycle.Commands, "json", side_effect=describe),
+            patch.object(
+                lifecycle.urllib.request,
+                "urlopen",
+                return_value=io.BytesIO(
+                    json.dumps(
+                        {
+                            "database": "haunted_halls_web_pr_41",
+                            "operation": "create",
+                            "created": True,
+                        }
+                    ).encode(),
+                ),
+            ) as urlopen,
+        ):
+            self.assertTrue(deployment.ensure_database())
+        self.assertEqual(
+            command_calls[-1][3],
+            f"--audiences={canonical_url}",
+        )
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, f"{canonical_url}/provision")
 
     def test_pr_secret_incarnation_and_generation_survive_updates(self):
         self.assertIsNone(lifecycle.state_secret_identity({"resources": []}, "41"))
@@ -303,7 +510,6 @@ class StagingAndTerraformTests(unittest.TestCase):
         deployment.preview_engine_image = PREVIEW_ENGINE
         environment = {
             "PREVIEW_IAP_TESTERS": "user:tester@example.com",
-            "PREVIEW_DB_PROVISIONER_URL": "https://preview-provisioner-abc-ue.a.run.app",
         }
         with patch.dict("os.environ", environment, clear=False):
             arguments = deployment.tf_arguments(INCARNATION, 8, versions)
@@ -426,9 +632,6 @@ class OrchestrationTests(unittest.TestCase):
             "GITHUB_REF": "refs/heads/main",
             "GITHUB_EVENT_NAME": "workflow_run",
             "PREVIEW_IAP_TESTERS": "user:tester@example.com",
-            "PREVIEW_DB_PROVISIONER_URL": (
-                "https://preview-provisioner-abc-ue.a.run.app"
-            ),
         }
         with patch.dict("os.environ", environment, clear=False):
             deployment.run()
@@ -464,9 +667,6 @@ class OrchestrationTests(unittest.TestCase):
             "GITHUB_REF": "refs/heads/main",
             "GITHUB_EVENT_NAME": "workflow_run",
             "PREVIEW_IAP_TESTERS": "user:tester@example.com",
-            "PREVIEW_DB_PROVISIONER_URL": (
-                "https://preview-provisioner-abc-ue.a.run.app"
-            ),
         }
         with patch.dict("os.environ", environment, clear=False):
             with self.assertRaises(lifecycle.LifecycleError):
@@ -482,11 +682,18 @@ class OrchestrationTests(unittest.TestCase):
         class FakeGithub:
             def __init__(self):
                 self.calls = []
+                self.comments = [
+                    {
+                        "id": 17,
+                        "body": f"{lifecycle.COMMENT_MARKER}\nold",
+                        "user": {"login": "github-actions[bot]", "type": "Bot"},
+                    }
+                ]
 
             def api(self, endpoint, method="GET", data=None):
                 self.calls.append((endpoint, method, data))
                 if method == "GET":
-                    return [{"id": 17, "body": f"{lifecycle.COMMENT_MARKER}\nold"}]
+                    return self.comments
                 return {}
 
         fake = FakeGithub()
@@ -499,15 +706,62 @@ class OrchestrationTests(unittest.TestCase):
         self.assertIn(f"**PR head SHA:** `{SHA}`", writes[0][2]["body"])
         self.assertIn("**PR database:** `haunted_halls_web_pr_41`", writes[0][2]["body"])
 
-        fake.api = lambda *args, **kwargs: [
-            {"id": 17, "body": lifecycle.COMMENT_MARKER},
-            {"id": 18, "body": lifecycle.COMMENT_MARKER},
+        fake.calls.clear()
+        fake.comments = [
+            {
+                "id": 99,
+                "body": lifecycle.COMMENT_MARKER,
+                "user": {"login": "pr-participant", "type": "User"},
+            }
+        ]
+        deployment.update_comment("https://preview.run.app")
+        writes = [call for call in fake.calls if call[1] != "GET"]
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0][1], "POST")
+
+        fake.calls.clear()
+        fake.comments = [
+            {
+                "id": 99,
+                "body": lifecycle.COMMENT_MARKER,
+                "user": {"login": "pr-participant", "type": "User"},
+            },
+            {
+                "id": 18,
+                "body": lifecycle.COMMENT_MARKER,
+                "user": {"login": "github-actions[bot]", "type": "Bot"},
+            },
+        ]
+        deployment.update_comment("https://preview.run.app")
+        writes = [call for call in fake.calls if call[1] != "GET"]
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0][1], "PATCH")
+        self.assertTrue(writes[0][0].endswith("/18"))
+
+        fake.comments = [
+            {
+                "id": comment_id,
+                "body": lifecycle.COMMENT_MARKER,
+                "user": {"login": "github-actions[bot]", "type": "Bot"},
+            }
+            for comment_id in (17, 18)
         ]
         with self.assertRaises(lifecycle.LifecycleError):
             deployment.update_comment("https://preview.run.app")
 
 
 class WorkflowBoundaryTests(unittest.TestCase):
+    def test_automatic_deploy_is_limited_to_successful_pr_workflow_runs(self):
+        workflow = (ROOT.parents[1] / ".github/workflows/preview-deploy.yml").read_text()
+        triggers = workflow.split("on:\n", 1)[1].split("\npermissions:", 1)[0]
+        deploy = workflow.split("\n  deploy:\n", 1)[1]
+        self.assertIn('workflows: ["Frontend CI"]', triggers)
+        self.assertIn("types: [completed]", triggers)
+        self.assertIn("github.event_name == 'workflow_run'", deploy)
+        self.assertIn("github.event.workflow_run.event == 'pull_request'", deploy)
+        self.assertIn("github.event.workflow_run.conclusion == 'success'", deploy)
+        self.assertIn("github.repository == 'jtesolin/haunted-halls'", deploy)
+
     def test_privileged_workflow_checks_out_only_its_default_branch(self):
         workflow = (ROOT.parents[1] / ".github/workflows/preview-deploy.yml").read_text()
         deployment_workflow = workflow.split("\n  deploy:\n", 1)[1]
@@ -516,9 +770,30 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertNotIn("ref: ${{ github.event.pull_request.head.sha }}", workflow)
         self.assertLess(
             deployment_workflow.index("Validate workflow/artifact provenance"),
-            deployment_workflow.index("Authenticate only as the preview deployer"),
+            deployment_workflow.index("Authenticate directly with WIF for the Terraform backend"),
+        )
+        self.assertLess(
+            deployment_workflow.index("Authenticate directly with WIF for the Terraform backend"),
+            deployment_workflow.index("Authenticate as the preview deployer for gcloud and the provider"),
         )
         self.assertIn("actions: write", workflow)
+        self.assertIn(
+            "GOOGLE_BACKEND_CREDENTIALS: ${{ steps.backend-auth.outputs.credentials_file_path }}",
+            deployment_workflow,
+        )
+        self.assertNotIn("PREVIEW_DB_PROVISIONER_URL", workflow)
+
+    def test_acceptance_and_deploy_concurrency_are_scoped_independently(self):
+        workflow = (ROOT.parents[1] / ".github/workflows/preview-deploy.yml").read_text()
+        self.assertNotIn("\nconcurrency:\n", workflow.split("\njobs:\n", 1)[0])
+        acceptance, deploy = workflow.split("\n  deploy:\n", 1)
+        acceptance = acceptance.split("\n  acceptance:\n", 1)[1]
+        self.assertIn("group: preview-prerequisite-acceptance", acceptance)
+        self.assertIn(
+            "group: frontend-preview-pr-${{ github.event.workflow_run.pull_requests[0].number || github.run_id }}",
+            deploy,
+        )
+        self.assertIn("cancel-in-progress: false", deploy)
 
     def test_cloud_workflow_has_no_pr_checkout_or_staging_mutation_path(self):
         workflow = (ROOT.parents[1] / ".github/workflows/ci.yml").read_text()

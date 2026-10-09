@@ -38,6 +38,7 @@ PREVIEW_PROJECT_NUMBER = "1001419903197"
 PREVIEW_REGION = "us-east1"
 SOURCE_PROJECT = "haunted-halls-development"
 SOURCE_REGION = "us-east1"
+DB_PROVISIONER_SERVICE = "hh-preview-db-provisioner"
 SOURCE_ENGINE_REPOSITORY = (
     "us-east1-docker.pkg.dev/haunted-halls-development/haunted-halls/engine"
 )
@@ -143,6 +144,8 @@ def eligibility(run: object, pr: object) -> tuple[str, str] | None:
         or head_repo.get("full_name") != REPOSITORY
         or not isinstance(base_repo, dict)
         or base_repo.get("full_name") != REPOSITORY
+        or not isinstance(base, dict)
+        or base.get("ref") != "main"
         or not SHA_RE.fullmatch(str(head.get("sha", "")))
         or not isinstance(linked_head, dict)
         or linked_head.get("sha") != head.get("sha")
@@ -216,71 +219,143 @@ def validate_image_archive(files: dict[str, bytes], number: str, sha: str) -> st
     return f"hh-web-pr-{number}-frontend:{sha}"
 
 
-def staging_engine_digest(service: object, revision: object) -> str:
-    if not isinstance(service, dict) or not isinstance(revision, dict):
-        raise LifecycleError("Staging engine metadata is malformed.")
-    service_name = str(service.get("name", service.get("metadata", {}).get("name", "")))
+def latest_ready_revision_name(service: object, expected_service: str) -> str:
+    _expect(isinstance(service, dict), "Cloud Run service metadata is malformed.")
     _expect(
-        service_name.rsplit("/", 1)[-1] == "haunted-halls-engine-staging",
-        "The staging service is not the expected engine service.",
+        _cloud_run_service_name(service) == expected_service,
+        "A different Cloud Run service was returned.",
+    )
+    status = _resource_status(service)
+    revision_name = status.get("latestReadyRevisionName")
+    _expect(
+        isinstance(revision_name, str) and bool(revision_name),
+        "Cloud Run service has no latest Ready revision.",
+    )
+    return revision_name.rsplit("/", 1)[-1]
+
+
+def _cloud_run_service_name(service: dict[str, Any]) -> str:
+    name = service.get("name")
+    metadata = service.get("metadata")
+    if not isinstance(name, str) and isinstance(metadata, dict):
+        name = metadata.get("name")
+    return name.rsplit("/", 1)[-1] if isinstance(name, str) else ""
+
+
+def _cloud_run_url(value: object) -> str:
+    _expect(isinstance(value, str), "Cloud Run service URL is unavailable.")
+    parsed = urllib.parse.urlparse(value)
+    try:
+        port = parsed.port
+    except ValueError:
+        port = -1
+    _expect(
+        parsed.scheme == "https"
+        and parsed.hostname is not None
+        and parsed.hostname.endswith(".run.app")
+        and port is None
+        and parsed.path in {"", "/"}
+        and not parsed.params
+        and not parsed.query
+        and not parsed.fragment
+        and not parsed.username
+        and not parsed.password,
+        "Cloud Run service URL is invalid.",
+    )
+    return value.rstrip("/")
+
+
+def verify_serving_revision(
+    service: object,
+    revision: object,
+    expected_service: str,
+    expected_image: str | None = None,
+) -> tuple[str, str]:
+    """Verify the Ready revision actually receiving all Cloud Run service traffic."""
+    _expect(isinstance(service, dict), "Cloud Run service metadata is malformed.")
+    _expect(
+        _cloud_run_service_name(service) == expected_service,
+        "A different Cloud Run service was returned.",
     )
     service_status = _resource_status(service)
-    _expect(_ready(service_status.get("conditions")), "Staging engine service is not Ready.")
+    _expect(_ready(service_status.get("conditions")), "Cloud Run service is not Ready.")
     ready_revision = service_status.get("latestReadyRevisionName")
     created_revision = service_status.get("latestCreatedRevisionName")
     _expect(
         isinstance(ready_revision, str)
-        and ready_revision
-        and isinstance(created_revision, str)
-        and ready_revision.rsplit("/", 1)[-1] == created_revision.rsplit("/", 1)[-1],
-        "The staging engine does not have one current Ready revision.",
+        and bool(ready_revision)
+        and created_revision == ready_revision,
+        "Cloud Run latest-created revision is not latest-Ready.",
     )
     ready_revision_id = ready_revision.rsplit("/", 1)[-1]
-    traffic = service_status.get("trafficStatuses")
-    _expect(isinstance(traffic, list), "Staging engine traffic status is unavailable.")
-    serving = [
+    traffic = service_status.get("traffic")
+    _expect(
+        isinstance(traffic, list)
+        and all(
+            isinstance(item, dict)
+            and type(item.get("percent")) is int
+            and 0 <= item["percent"] <= 100
+            for item in traffic
+        ),
+        "Cloud Run service traffic is unavailable or malformed.",
+    )
+    full_traffic_targets = [
         item for item in traffic
-        if isinstance(item, dict) and item.get("percent") == 100
+        if isinstance(item, dict) and type(item.get("percent")) is int and item["percent"] == 100
+    ]
+    positive_targets = [
+        item for item in traffic
+        if isinstance(item, dict) and type(item.get("percent")) is int and item["percent"] > 0
     ]
     _expect(
-        len(serving) == 1
-        and isinstance(serving[0].get("revision"), str)
-        and serving[0]["revision"].rsplit("/", 1)[-1] == ready_revision_id
-        and len([item for item in traffic if isinstance(item, dict) and item.get("percent", 0) > 0]) == 1,
-        "Staging traffic is not serving exactly the latest Ready engine revision.",
+        len(full_traffic_targets) == 1
+        and len(positive_targets) == 1
+        and full_traffic_targets[0].get("revisionName") == ready_revision
+        and positive_targets[0].get("revisionName") == ready_revision,
+        "Cloud Run traffic is not serving exactly the latest Ready revision.",
     )
-    revision_name = str(revision.get("name", revision.get("metadata", {}).get("name", "")))
+    _expect(isinstance(revision, dict), "Cloud Run revision metadata is malformed.")
+    revision_name = _cloud_run_service_name(revision)
     _expect(
-        revision_name.rsplit("/", 1)[-1] == ready_revision_id,
-        "The described staging revision is not the service's Ready revision.",
+        revision_name == ready_revision_id,
+        "The described Cloud Run revision is not the service's latest Ready revision.",
     )
     revision_status = _resource_status(revision)
     _expect(
-        isinstance(revision_status, dict)
-        and _ready(revision_status.get("conditions")),
-        "The staging engine revision is not Ready.",
+        _ready(revision_status.get("conditions")),
+        "Cloud Run serving revision is not Ready.",
     )
-    containers = revision_status.get("containerStatuses")
-    digests = [
-        item.get("imageDigest")
-        for item in containers
-        if isinstance(item, dict) and isinstance(item.get("imageDigest"), str)
-    ] if isinstance(containers, list) else []
+    spec = revision.get("spec")
+    containers = spec.get("containers") if isinstance(spec, dict) else None
     _expect(
-        not isinstance(containers, list) or len(containers) == 1,
-        "The staging revision does not have exactly one serving container.",
+        isinstance(containers, list) and len(containers) == 1
+        and isinstance(containers[0], dict)
+        and isinstance(containers[0].get("image"), str),
+        "Cloud Run serving revision must have exactly one image container.",
     )
-    if not digests and isinstance(revision_status.get("imageDigest"), str):
-        digests.append(revision_status["imageDigest"])
-    if not digests and isinstance(revision_status.get("image"), str):
-        digests.append(revision_status["image"])
-    _expect(len(digests) == 1, "The staging revision does not expose one immutable image digest.")
-    image = digests[0]
+    image = containers[0]["image"]
+    if expected_image is not None:
+        _expect(
+            image == expected_image,
+            "Deployed serving revision image differs from its frozen digest.",
+        )
+    url = _cloud_run_url(service_status.get("url") or service.get("uri"))
+    return image, url
+
+
+def staging_engine_digest(service: object, revision: object) -> str:
+    image, _ = verify_serving_revision(
+        service,
+        revision,
+        "haunted-halls-engine-staging",
+    )
     _expect(
-        image.startswith(f"{SOURCE_ENGINE_REPOSITORY}@")
-        and DIGEST_RE.search(image) is not None
-        and image.endswith(DIGEST_RE.search(image).group(0)),
-        "The staging engine digest is not in the expected source Artifact Registry.",
+        isinstance(image, str)
+        and re.fullmatch(
+            re.escape(SOURCE_ENGINE_REPOSITORY) + r"@sha256:[0-9a-f]{64}",
+            image,
+        ) is not None,
+        "The staging engine image is not an immutable source Artifact Registry digest.",
     )
     return image
 
@@ -499,29 +574,6 @@ def execution_succeeded(execution: object) -> bool:
     return len(completed) == 1 and completed[0].get(
         "state", completed[0].get("status")
     ) in {"CONDITION_SUCCEEDED", "True"}
-
-
-def service_image_and_url(service: object, name: str, expected_image: str) -> str:
-    _expect(isinstance(service, dict), "Preview Cloud Run service metadata is malformed.")
-    actual_name = str(service.get("name", service.get("metadata", {}).get("name", "")))
-    _expect(actual_name.rsplit("/", 1)[-1] == name, "A different Cloud Run service was returned.")
-    status = _resource_status(service)
-    template = service.get("template")
-    configuration = service.get("template") or service.get("spec", {}).get("template")
-    if not isinstance(configuration, dict):
-        configuration = {}
-    _expect(
-        isinstance(status, dict)
-        and _ready(status.get("conditions"))
-        and isinstance(configuration.get("containers"), list)
-        and len(configuration["containers"]) == 1,
-        "Preview Cloud Run service is not Ready or has unexpected containers.",
-    )
-    image = configuration["containers"][0].get("image")
-    _expect(image == expected_image, "Deployed service image differs from its frozen digest.")
-    url = status.get("url") or service.get("uri")
-    _expect(isinstance(url, str) and url.startswith("https://"), "Preview Cloud Run URL is unavailable.")
-    return url
 
 
 def comment_body(
@@ -799,7 +851,6 @@ class PreviewDeployment:
         )
         self.revalidate_pr()
         parse_testers(os.environ.get("PREVIEW_IAP_TESTERS", ""))
-        database_provisioner_url()
         self.source_engine_image, self.preview_engine_image = self.freeze_and_copy_engine()
         self.revalidate_pr()
         self.frontend_image = self.publish_frontend_image()
@@ -867,16 +918,9 @@ class PreviewDeployment:
             ],
             label="Staging engine service read",
         )
-        service_status = _resource_status(service)
-        revision_name = service_status.get("latestReadyRevisionName")
-        _expect(isinstance(revision_name, str) and revision_name,
-                "Staging engine has no Ready revision.")
-        if not str(revision_name).startswith("projects/"):
-            revision_name = (
-                f"projects/{SOURCE_PROJECT}/locations/{SOURCE_REGION}/revisions/"
-                f"{revision_name}"
-            )
-        revision_id = revision_name.rsplit("/", 1)[-1]
+        revision_id = latest_ready_revision_name(
+            service, "haunted-halls-engine-staging"
+        )
         revision = Commands.json(
             [
                 "gcloud",
@@ -1028,7 +1072,6 @@ class PreviewDeployment:
         versions: dict[str, str],
     ) -> list[str]:
         testers = parse_testers(os.environ.get("PREVIEW_IAP_TESTERS", ""))
-        database_provisioner_url()
         values: dict[str, Any] = {
             "repository_key": "web",
             "pull_request_number": self.number,
@@ -1099,7 +1142,14 @@ class PreviewDeployment:
         plan_path.unlink(missing_ok=True)
 
     def ensure_database(self) -> bool:
-        url = database_provisioner_url()
+        service = Commands.json(
+            [
+                "gcloud", "run", "services", "describe", DB_PROVISIONER_SERVICE,
+                f"--project={SOURCE_PROJECT}", f"--region={SOURCE_REGION}", "--format=json",
+            ],
+            label="Fixed database provisioner service identity read",
+        )
+        url = database_provisioner_url(service)
         token = Commands.run(
             ["gcloud", "auth", "print-identity-token", f"--audiences={url}"],
             label="Database provisioner identity token",
@@ -1372,8 +1422,28 @@ class PreviewDeployment:
             ],
             label="Engine service readiness verification",
         )
-        url = service_image_and_url(frontend, frontend_name, self.frontend_image)
-        service_image_and_url(engine, engine_name, self.preview_engine_image)
+        revision_id = latest_ready_revision_name(frontend, frontend_name)
+        frontend_revision = Commands.json(
+            [
+                "gcloud", "run", "revisions", "describe", revision_id,
+                f"--project={PREVIEW_PROJECT}", f"--region={PREVIEW_REGION}", "--format=json",
+            ],
+            label="Frontend serving revision verification",
+        )
+        _, url = verify_serving_revision(
+            frontend, frontend_revision, frontend_name, self.frontend_image
+        )
+        engine_revision_id = latest_ready_revision_name(engine, engine_name)
+        engine_revision = Commands.json(
+            [
+                "gcloud", "run", "revisions", "describe", engine_revision_id,
+                f"--project={PREVIEW_PROJECT}", f"--region={PREVIEW_REGION}", "--format=json",
+            ],
+            label="Engine serving revision verification",
+        )
+        _, engine_url = verify_serving_revision(
+            engine, engine_revision, engine_name, self.preview_engine_image
+        )
         _expect(
             frontend.get("iapEnabled") is True
             and url.startswith("https://")
@@ -1385,10 +1455,14 @@ class PreviewDeployment:
         verify_unauthenticated_denied(
             f"{url}/", allow_google_redirect=True
         )
-        engine_url = output.get("engine_url")
-        _expect(isinstance(engine_url, str) and engine_url.startswith("https://"),
-                "Preview engine URL is unavailable.")
-        verify_unauthenticated_denied(f"{engine_url}/health", allow_google_redirect=False)
+        output_engine_url = _cloud_run_url(output.get("engine_url"))
+        _expect(
+            output_engine_url == engine_url,
+            "Terraform engine URL differs from the verified serving service URL.",
+        )
+        verify_unauthenticated_denied(
+            f"{engine_url}/health", allow_google_redirect=False
+        )
         _expect(
             type(database_created) is bool and self.database_was_created == database_created,
             "Database create/reuse status is malformed.",
@@ -1438,6 +1512,9 @@ class PreviewDeployment:
                 if isinstance(item, dict)
                 and isinstance(item.get("body"), str)
                 and COMMENT_MARKER in item["body"]
+                and isinstance(item.get("user"), dict)
+                and item["user"].get("login") == "github-actions[bot]"
+                and item["user"].get("type") == "Bot"
             )
             if len(batch) < 100:
                 break
@@ -1490,9 +1567,25 @@ def parse_testers(value: str) -> set[str]:
     return members
 
 
-def database_provisioner_url() -> str:
-    value = os.environ.get("PREVIEW_DB_PROVISIONER_URL", "")
-    parsed = urllib.parse.urlparse(value)
+def database_provisioner_url(service: object) -> str:
+    _expect(
+        isinstance(service, dict)
+        and isinstance(service.get("metadata"), dict),
+        "The fixed preview DB provisioner service metadata is malformed.",
+    )
+    metadata = service["metadata"]
+    labels = metadata.get("labels")
+    _expect(
+        metadata.get("name") == DB_PROVISIONER_SERVICE
+        and isinstance(metadata.get("namespace"), str)
+        and re.fullmatch(r"[0-9]+", metadata["namespace"]) is not None
+        and isinstance(labels, dict)
+        and labels.get("cloud.googleapis.com/location") == SOURCE_REGION,
+        "The described database provisioner identity, project, or region is unexpected.",
+    )
+    status = _resource_status(service)
+    value = status.get("url") or service.get("uri")
+    parsed = urllib.parse.urlparse(value if isinstance(value, str) else "")
     try:
         port = parsed.port
     except ValueError:
@@ -1509,7 +1602,7 @@ def database_provisioner_url() -> str:
         and not parsed.fragment
         and not parsed.username
         and not parsed.password,
-        "The fixed preview DB provisioner URL is missing or invalid.",
+        "The fixed preview DB provisioner returned an invalid HTTPS run.app URL.",
     )
     return value.rstrip("/")
 
