@@ -752,7 +752,89 @@ class OrchestrationTests(unittest.TestCase):
             deployment.update_comment("https://preview.run.app")
 
 
+class EngineCopyTests(unittest.TestCase):
+    staging_metadata = StagingAndTerraformTests.staging_metadata
+
+    def run_copy(self, copied_digest=DIGEST):
+        service, revision = self.staging_metadata()
+        runs = []
+        reads = []
+
+        def fake_json(arguments, *, label, timeout=300):
+            reads.append(arguments)
+            if arguments[:4] == ["gcloud", "run", "services", "describe"]:
+                return service
+            if arguments[:4] == ["gcloud", "run", "revisions", "describe"]:
+                return revision
+            if arguments[:5] == ["gcloud", "artifacts", "docker", "images", "describe"]:
+                return {"image_summary": {"digest": copied_digest}}
+            raise AssertionError(f"unexpected metadata read: {arguments}")
+
+        def fake_run(arguments, *, input_data=None, label, timeout=300):
+            runs.append(arguments)
+            return b""
+
+        deployment = OrchestrationTests().deployment()
+        with patch.object(lifecycle.Commands, "json", side_effect=fake_json), patch.object(
+            lifecycle.Commands, "run", side_effect=fake_run
+        ):
+            result = deployment.freeze_and_copy_engine()
+        return result, runs, reads
+
+    def test_engine_copy_uses_gcrane_with_exact_digest_and_deterministic_tag(self):
+        (source, preview), runs, reads = self.run_copy()
+        destination = (
+            f"{lifecycle.PREVIEW_ENGINE_REPOSITORY}:frozen-{DIGEST.removeprefix('sha256:')}"
+        )
+        self.assertEqual(
+            runs,
+            [
+                ["gcloud", "auth", "configure-docker", "us-east1-docker.pkg.dev", "--quiet"],
+                ["gcrane", "cp", SOURCE_ENGINE, destination],
+            ],
+        )
+        self.assertEqual(source, SOURCE_ENGINE)
+        self.assertEqual(preview, PREVIEW_ENGINE)
+        self.assertEqual(reads[-1][5], destination)
+        flattened = [part for command in runs + reads for part in command]
+        self.assertNotIn("copy", flattened)
+        for part in flattened:
+            self.assertNotIn("latest", part)
+            self.assertNotIn("build", part)
+            self.assertNotIn("haunted-halls-engine-staging:", part)
+
+    def test_engine_copy_digest_mismatch_fails_closed(self):
+        with self.assertRaises(lifecycle.LifecycleError):
+            self.run_copy(copied_digest="sha256:" + "e" * 64)
+        with self.assertRaises(lifecycle.LifecycleError):
+            self.run_copy(copied_digest="latest")
+
+
 class WorkflowBoundaryTests(unittest.TestCase):
+    def test_gcrane_install_is_pinned_and_checksum_verified_in_deploy_job_only(self):
+        workflow = (ROOT.parents[1] / ".github/workflows/preview-deploy.yml").read_text()
+        acceptance, deploy = workflow.split("\n  deploy:\n", 1)
+        self.assertNotIn("gcrane", acceptance)
+        install = deploy.split("- name: Install pinned checksum-verified gcrane\n", 1)[1]
+        install = install.split("\n      - name: ", 1)[0]
+        self.assertIn("GCRANE_VERSION: v0.22.1", install)
+        self.assertIn(
+            "GCRANE_SHA256: 0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0",
+            install,
+        )
+        self.assertIn(
+            "https://github.com/google/go-containerregistry/releases/download/"
+            "${GCRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz",
+            install,
+        )
+        self.assertIn("sha256sum --check --strict", install)
+        self.assertLess(install.index("sha256sum"), install.index("tar -xzf"))
+        self.assertNotIn("latest", install)
+        self.assertNotIn("uses:", install)
+        self.assertLess(
+            deploy.index("Install pinned checksum-verified gcrane"),
+            deploy.index("Authenticate directly with WIF for the Terraform backend"),
+        )
     def test_automatic_deploy_is_limited_to_successful_pr_workflow_runs(self):
         workflow = (ROOT.parents[1] / ".github/workflows/preview-deploy.yml").read_text()
         triggers = workflow.split("on:\n", 1)[1].split("\npermissions:", 1)[0]
@@ -807,7 +889,8 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertNotIn("gcloud run deploy", lifecycle_source)
         self.assertNotIn("gcloud sql", lifecycle_source)
         self.assertNotIn("terraform destroy", lifecycle_source)
-        self.assertIn('"copy"', lifecycle_source)
+        self.assertNotIn('"copy"', lifecycle_source)
+        self.assertIn('"gcrane", "cp"', lifecycle_source)
 
 
 if __name__ == "__main__":

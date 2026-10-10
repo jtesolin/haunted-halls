@@ -1001,15 +1001,13 @@ class PreviewDeployment:
         digest = source_image.rsplit("@", 1)[1]
         destination_tag = f"{PREVIEW_ENGINE_REPOSITORY}:frozen-{digest.removeprefix('sha256:')}"
         Commands.run(
-            [
-                "gcloud",
-                "artifacts",
-                "docker",
-                "images",
-                "copy",
-                source_image,
-                f"--destination={destination_tag}",
-            ],
+            ["gcloud", "auth", "configure-docker", "us-east1-docker.pkg.dev", "--quiet"],
+            label="Artifact Registry authentication configuration",
+        )
+        # gcrane is the documented Artifact Registry repository-to-repository
+        # Docker copy; it copies the exact source manifest by digest.
+        Commands.run(
+            ["gcrane", "cp", source_image, destination_tag],
             label="Immutable staging engine artifact copy",
             timeout=600,
         )
