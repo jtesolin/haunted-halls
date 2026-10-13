@@ -720,6 +720,69 @@ def terraform_plan_diagnostic(output: bytes, targets: set[str]) -> str:
     return "; ".join(dict.fromkeys(fields))
 
 
+def safe_terraform_summary(value: object) -> bool:
+    if not isinstance(value, str) or not value.strip() or len(value) > 200:
+        return False
+    if not re.fullmatch(r"[A-Za-z0-9 .,():_-]+", value):
+        return False
+    return not re.search(
+        r"(?i)(?:https?:|www\.|[a-z]+://|\.(?:json|tf|pem|key|yaml|yml)\b|"
+        r"\b(?:bearer|authorization|jwt|token|password|credentials?|userinfo|"
+        r"auth|authentication|oauth|client secret|private key|service account key|"
+        r"api key|access key)\b|"
+        r"[A-Za-z0-9_-]{32,}|[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})",
+        value,
+    )
+
+
+def terraform_json_plan_diagnostic(stdout: bytes, stderr: bytes, targets: set[str]) -> str:
+    """Read only error UI diagnostics; detail contributes fixed tokens, never prose."""
+    summaries: list[str] = []
+    tokens: list[str] = []
+    for line in stdout.splitlines():
+        try:
+            message = json.loads(line)
+        except (ValueError, UnicodeError, RecursionError):
+            continue
+        if not isinstance(message, dict) or message.get("type") != "diagnostic":
+            continue
+        diagnostic = message.get("diagnostic")
+        if not isinstance(diagnostic, dict):
+            continue
+        severity = diagnostic.get("severity", message.get("@level"))
+        if severity != "error" or message.get("@level", "error") != "error":
+            continue
+        summary = diagnostic.get("summary")
+        if safe_terraform_summary(summary):
+            summaries.append(summary)
+        for field in ("summary", "detail"):
+            value = diagnostic.get(field)
+            if isinstance(value, str):
+                try:
+                    encoded = value.encode()
+                except UnicodeEncodeError:
+                    continue
+                extracted = terraform_plan_diagnostic(encoded, targets)
+                if extracted:
+                    tokens.extend(extracted.split("; "))
+        address = diagnostic.get("address")
+        if isinstance(address, str):
+            base = address.split("[", 1)[0]
+            if base in targets:
+                tokens.append(f"resource {base}")
+    fallback = terraform_plan_diagnostic(stderr, targets)
+    if fallback:
+        tokens.extend(fallback.split("; "))
+    fields: list[str] = []
+    length = 0
+    for field in dict.fromkeys(summaries + tokens):
+        added = len(field) + (2 if fields else 0)
+        if length + added <= 600:
+            fields.append(field)
+            length += added
+    return "; ".join(fields)
+
+
 def run_terraform_plan(arguments: list[str], *, label: str, targets: set[str]) -> bytes:
     """Keep the saved-plan subprocess contract; expose only allowlisted failures."""
     try:
@@ -734,7 +797,7 @@ def run_terraform_plan(arguments: list[str], *, label: str, targets: set[str]) -
     except (OSError, subprocess.TimeoutExpired):
         raise LifecycleError(f"{label} could not be completed.") from None
     if result.returncode != 0:
-        diagnostic = terraform_plan_diagnostic(result.stderr + b"\n" + result.stdout, targets)
+        diagnostic = terraform_json_plan_diagnostic(result.stdout, result.stderr, targets)
         message = f"{label} failed: {diagnostic}" if diagnostic else f"{label} failed."
         raise LifecycleError(message)
     return result.stdout
@@ -1252,6 +1315,7 @@ class PreviewDeployment:
             "plan",
             "-input=false",
             "-no-color",
+            "-json",
             f"-out={plan_path}",
         ]
         plan_args.extend(f"-target={target}" for target in sorted(targets))

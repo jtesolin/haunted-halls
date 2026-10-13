@@ -498,7 +498,7 @@ class ApplyPlanRevalidationTests(unittest.TestCase):
             })
             self.assertEqual(plan.call_args.args[0], [
                 "terraform", f"-chdir={current.terraform_root}", "plan", "-input=false",
-                "-no-color", f"-out={temp}/preview-41-secret-containers.tfplan",
+                "-no-color", "-json", f"-out={temp}/preview-41-secret-containers.tfplan",
                 *(f"-target={target}" for target in sorted(targets)), "-var=x=1",
             ])
 
