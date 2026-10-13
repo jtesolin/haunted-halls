@@ -422,6 +422,7 @@ class ApplyPlanRevalidationTests(unittest.TestCase):
         stack = contextlib.ExitStack()
         stack.enter_context(patch.dict(os.environ, {"RUNNER_TEMP": temp}))
         run_mock = stack.enter_context(patch.object(lifecycle.Commands, "run", side_effect=run))
+        stack.enter_context(patch.object(lifecycle, "run_terraform_plan", side_effect=run))
         stack.enter_context(patch.object(lifecycle.Commands, "json", side_effect=show))
         if unlink_error:
             stack.enter_context(patch.object(Path, "unlink", side_effect=OSError("busy")))
@@ -472,6 +473,34 @@ class ApplyPlanRevalidationTests(unittest.TestCase):
                     self.assertEqual(plan_path.exists(), unlink_error)
                     self.assertIs(current.context, context)
                     self.assertEqual((current.number, current.sha), ("41", SHA))
+
+    def test_plan_failure_propagates_sanitized_diagnostic_without_show_or_apply(self):
+        with tempfile.TemporaryDirectory() as temp:
+            current, _, calls, stack, _ = self.harness(temp, github_pr())
+            message = (
+                "secret-containers Terraform plan failed: PERMISSION_DENIED; "
+                "permission secretmanager.secrets.create"
+            )
+            with stack, patch.object(
+                lifecycle, "run_terraform_plan",
+                side_effect=lifecycle.LifecycleError(message),
+            ) as plan:
+                with self.assertRaises(lifecycle.LifecycleError) as error:
+                    targets = set(lifecycle.TARGETS["containers"])
+                    current.apply_plan(
+                        "secret-containers", ["-var=x=1"], targets, allowed=targets,
+                    )
+            self.assertEqual(str(error.exception), message)
+            self.assertEqual(calls, ["revalidate", "check-backend"])
+            plan.assert_called_once()
+            self.assertEqual(plan.call_args.kwargs, {
+                "label": "secret-containers Terraform plan", "targets": targets,
+            })
+            self.assertEqual(plan.call_args.args[0], [
+                "terraform", f"-chdir={current.terraform_root}", "plan", "-input=false",
+                "-no-color", f"-out={temp}/preview-41-secret-containers.tfplan",
+                *(f"-target={target}" for target in sorted(targets)), "-var=x=1",
+            ])
 
 
 if __name__ == "__main__":
