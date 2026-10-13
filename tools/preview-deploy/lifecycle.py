@@ -758,7 +758,11 @@ def terraform_json_plan_diagnostic(stdout: bytes, stderr: bytes, targets: set[st
         for field in ("summary", "detail"):
             value = diagnostic.get(field)
             if isinstance(value, str):
-                extracted = terraform_plan_diagnostic(value.encode(), targets)
+                try:
+                    encoded = value.encode()
+                except UnicodeEncodeError:
+                    continue
+                extracted = terraform_plan_diagnostic(encoded, targets)
                 if extracted:
                     tokens.extend(extracted.split("; "))
         address = diagnostic.get("address")

@@ -241,6 +241,30 @@ credentials: /tmp/private.json
                     self.plan_failure("", self.ui(summary)), f"{LABEL} failed: {summary}",
                 )
 
+    def test_lone_surrogates_are_ignored_without_echoing_private_content(self):
+        for surrogate in ("\ud800", "\udfff"):
+            for field in ("summary", "detail"):
+                for safe_summary in (None, "Invalid provider configuration"):
+                    diagnostic = {
+                        "severity": "error",
+                        "summary": safe_summary,
+                        field: f"Error: PERMISSION_DENIED private-text {surrogate}",
+                    }
+                    output = json.dumps({
+                        "type": "diagnostic", "@level": "error", "diagnostic": diagnostic,
+                    }).encode()
+                    expected = (
+                        f"{LABEL} failed: {safe_summary}"
+                        if field == "detail" and safe_summary else f"{LABEL} failed."
+                    )
+                    with self.subTest(
+                        surrogate=ascii(surrogate), field=field, summary=safe_summary,
+                    ):
+                        message = self.plan_failure("", output)
+                        self.assertEqual(message, expected)
+                        self.assertNotIn(surrogate, message)
+                        self.assertNotIn("private-text", message)
+
     def test_level_only_errors_supported_but_conflicting_severity_rejected(self):
         for diagnostic, level, expected in (
             ({"summary": "Safe summary"}, "error", f"{LABEL} failed: Safe summary"),
