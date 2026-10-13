@@ -220,6 +220,27 @@ credentials: /tmp/private.json
             f"{LABEL} failed.",
         )
 
+    def test_authentication_and_key_phrases_rejected_case_insensitively(self):
+        for phrase in (
+            "auth", "authentication", "oauth", "client secret", "private key",
+            "service account key", "api key", "access key",
+        ):
+            for form in (phrase, phrase.upper(), phrase.title()):
+                summary = f"Invalid {form} configuration"
+                with self.subTest(summary=summary):
+                    self.assertFalse(lifecycle.safe_terraform_summary(summary))
+                    self.assertEqual(
+                        self.plan_failure("", self.ui(summary)), f"{LABEL} failed.",
+                    )
+
+    def test_generic_provider_and_secret_summaries_remain_allowed(self):
+        for summary in ("Invalid provider configuration", "Error creating Secret"):
+            with self.subTest(summary=summary):
+                self.assertTrue(lifecycle.safe_terraform_summary(summary))
+                self.assertEqual(
+                    self.plan_failure("", self.ui(summary)), f"{LABEL} failed: {summary}",
+                )
+
     def test_level_only_errors_supported_but_conflicting_severity_rejected(self):
         for diagnostic, level, expected in (
             ({"summary": "Safe summary"}, "error", f"{LABEL} failed: Safe summary"),

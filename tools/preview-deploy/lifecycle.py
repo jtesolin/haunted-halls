@@ -727,7 +727,9 @@ def safe_terraform_summary(value: object) -> bool:
         return False
     return not re.search(
         r"(?i)(?:https?:|www\.|[a-z]+://|\.(?:json|tf|pem|key|yaml|yml)\b|"
-        r"\b(?:bearer|authorization|jwt|token|password|credentials?|userinfo)\b|"
+        r"\b(?:bearer|authorization|jwt|token|password|credentials?|userinfo|"
+        r"auth|authentication|oauth|client secret|private key|service account key|"
+        r"api key|access key)\b|"
         r"[A-Za-z0-9_-]{32,}|[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})",
         value,
     )
