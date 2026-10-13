@@ -667,6 +667,79 @@ def comment_body(
     )
 
 
+def terraform_plan_diagnostic(output: bytes, targets: set[str]) -> str:
+    """Extract fixed diagnostic tokens, never echo provider prose or quoted values."""
+    statuses = (
+        "PERMISSION_DENIED", "NOT_FOUND", "FAILED_PRECONDITION", "ALREADY_EXISTS",
+        "INVALID_ARGUMENT", "UNAUTHENTICATED", "RESOURCE_EXHAUSTED", "UNAVAILABLE",
+        "DEADLINE_EXCEEDED", "INTERNAL",
+    )
+    permissions = {
+        f"secretmanager.secrets.{action}"
+        for action in ("create", "get", "list", "update", "getIamPolicy", "setIamPolicy")
+    } | {
+        "resourcemanager.projects.get", "resourcemanager.projects.getIamPolicy",
+        "serviceusage.services.use", "iam.serviceAccounts.getAccessToken",
+        "storage.objects.get", "storage.objects.list", "storage.objects.create",
+    }
+    headlines = {
+        "Invalid provider configuration": "provider configuration error",
+        "Provider configuration not present": "provider configuration error",
+        "Error configuring the provider": "provider configuration error",
+        "Error acquiring the state lock": "state lock error",
+        "Error creating Secret": "secret creation error",
+        "Error retrieving available secret manager secret versions": "secret metadata read error",
+        "Error retrieving IAM policy for secretmanager secret": "secret IAM read error",
+        "Error applying IAM policy for secretmanager secret": "secret IAM write error",
+    }
+    fields: list[str] = []
+    for raw in output.decode("utf-8", errors="replace").splitlines():
+        line = raw.strip().removeprefix("│").strip()
+        resource = re.fullmatch(r'with ([a-z0-9_]+\.[a-z0-9_]+)(?:\[[^\]]*\])?,', line)
+        if resource and resource[1] in targets:
+            fields.append(f"resource {resource[1]}")
+        if not re.match(
+            r"^(?:Error:|googleapi: Error |"
+            + "|".join(f"{status}:" for status in statuses)
+            + r"|Permission ['\"])",
+            line,
+        ):
+            continue
+        for status in statuses:
+            if re.search(rf"\b{status}\b", line):
+                fields.append(status)
+        http = re.search(r"\b(?:googleapi: Error|HTTP(?: status(?: code)?)?) (4[0-9]{2}|5[0-9]{2})\b", line)
+        if http:
+            fields.append(f"HTTP {http[1]}")
+        for permission in sorted(permissions):
+            if re.search(rf"""['"]{re.escape(permission)}['"]""", line):
+                fields.append(f"permission {permission}")
+        for headline, category in headlines.items():
+            if re.match(rf"Error: {re.escape(headline)}(?:$|:)", line):
+                fields.append(category)
+    return "; ".join(dict.fromkeys(fields))
+
+
+def run_terraform_plan(arguments: list[str], *, label: str, targets: set[str]) -> bytes:
+    """Keep the saved-plan subprocess contract; expose only allowlisted failures."""
+    try:
+        result = subprocess.run(
+            arguments,
+            input=None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=900,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise LifecycleError(f"{label} could not be completed.") from None
+    if result.returncode != 0:
+        diagnostic = terraform_plan_diagnostic(result.stderr + b"\n" + result.stdout, targets)
+        message = f"{label} failed: {diagnostic}" if diagnostic else f"{label} failed."
+        raise LifecycleError(message)
+    return result.stdout
+
+
 class Commands:
     """Small subprocess boundary that never echoes cloud output or arguments."""
 
@@ -1184,7 +1257,7 @@ class PreviewDeployment:
         plan_args.extend(f"-target={target}" for target in sorted(targets))
         plan_args.extend(variables)
         try:
-            Commands.run(plan_args, label=f"{name} Terraform plan", timeout=900)
+            run_terraform_plan(plan_args, label=f"{name} Terraform plan", targets=targets)
             plan_json = Commands.json(
                 [
                     "terraform",
