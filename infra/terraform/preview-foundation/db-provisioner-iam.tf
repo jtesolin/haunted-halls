@@ -111,3 +111,31 @@ resource "google_cloud_run_v2_service_iam_member" "deployer_db_provisioner_invok
   role     = "roles/run.invoker"
   member   = "serviceAccount:${google_service_account.deployer.email}"
 }
+
+resource "google_project_iam_custom_role" "db_provisioner_metadata_reader" {
+  provider    = google.existing
+  project     = var.existing_project_id
+  role_id     = "previewDbProvisionerMetadataReader"
+  title       = "Preview database provisioner metadata reader"
+  description = "Read the fixed provisioner service identity before authenticated invocation."
+  permissions = [
+    "run.services.get",
+  ]
+}
+
+resource "google_cloud_run_v2_service_iam_member" "deployer_db_provisioner_metadata_reader" {
+  count    = var.provisioner_image == "" ? 0 : 1
+  provider = google.existing
+  project  = var.existing_project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.db_provisioner[0].name
+  role     = google_project_iam_custom_role.db_provisioner_metadata_reader.name
+  member   = "serviceAccount:${google_service_account.deployer.email}"
+
+  lifecycle {
+    precondition {
+      condition     = var.existing_project_id == "haunted-halls-development" && var.region == "us-east1"
+      error_message = "The provisioner metadata grant must target haunted-halls-development/us-east1."
+    }
+  }
+}
