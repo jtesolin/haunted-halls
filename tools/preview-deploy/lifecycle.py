@@ -1296,7 +1296,7 @@ class PreviewDeployment:
         }
         arguments = []
         for name, value in values.items():
-            encoded = json.dumps(value, separators=(",", ":")) if isinstance(value, (str, list)) else str(value)
+            encoded = json.dumps(value, separators=(",", ":")) if isinstance(value, list) else str(value)
             arguments.append(f"-var={name}={encoded}")
         return arguments
 

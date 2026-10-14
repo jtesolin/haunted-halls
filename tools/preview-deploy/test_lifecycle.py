@@ -515,10 +515,45 @@ class StagingAndTerraformTests(unittest.TestCase):
         }
         with patch.dict("os.environ", environment, clear=False):
             arguments = deployment.tf_arguments(INCARNATION, 8, versions)
-        self.assertIn("-var=nextauth_secret_version=\"12\"", arguments)
-        self.assertIn("-var=internal_engine_service_token_version=\"14\"", arguments)
-        self.assertIn("-var=database_url_secret_version=\"16\"", arguments)
+        self.assertIn("-var=nextauth_secret_version=12", arguments)
+        self.assertIn("-var=internal_engine_service_token_version=14", arguments)
+        self.assertIn("-var=database_url_secret_version=16", arguments)
         self.assertFalse(any("latest" in item for item in arguments))
+
+    def test_terraform_argv_uses_direct_strings_and_json_collection_expression(self):
+        deployment = lifecycle.PreviewDeployment(
+            lifecycle.BuildContext(
+                "56", SHA, 1, 1, 1, "sha256:" + "e" * 64, "artifact", "/tmp/image.tar"
+            ),
+            object(),
+        )
+        deployment.frontend_image = PREVIEW_FRONTEND
+        deployment.preview_engine_image = PREVIEW_ENGINE
+        with patch.dict("os.environ", {
+            "PREVIEW_IAP_TESTERS": "user:tester@example.com",
+        }):
+            arguments = deployment.tf_arguments(
+                INCARNATION, 0, {"nextauth": "12", "internal_token": "14", "database_url": "16"},
+            )
+        primitives = {
+            "repository_key": "web",
+            "pull_request_number": "56",
+            "pr_incarnation": INCARNATION,
+            "secret_generation": "0",
+            "backend_state_prefix": "previews/web-pr-56",
+            "preview_project_number": lifecycle.PREVIEW_PROJECT_NUMBER,
+            "frontend_image": PREVIEW_FRONTEND,
+            "engine_image": PREVIEW_ENGINE,
+            "nextauth_secret_version": "12",
+            "internal_engine_service_token_version": "14",
+            "database_url_secret_version": "16",
+        }
+        self.assertEqual(len(arguments), len(primitives) + 1)
+        for name, value in primitives.items():
+            with self.subTest(name=name):
+                self.assertIn(f"-var={name}={value}", arguments)
+                self.assertNotIn(f"-var={name}={json.dumps(value)}", arguments)
+        self.assertIn('-var=iap_testers=["user:tester@example.com"]', arguments)
 
     def test_generation_reservation_retries_only_absent_attempts_and_advances_complete(self):
         self.assertEqual(lifecycle.select_secret_generation(0, "absent"), 1)
