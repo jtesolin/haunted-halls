@@ -755,6 +755,17 @@ def terraform_json_plan_diagnostic(stdout: bytes, stderr: bytes, targets: set[st
         summary = diagnostic.get("summary")
         if safe_terraform_summary(summary):
             summaries.append(summary)
+        source_range = diagnostic.get("range")
+        if isinstance(source_range, dict) and source_range.get("filename") == "variables.tf":
+            start = source_range.get("start")
+            if isinstance(start, dict):
+                line_number = start.get("line")
+                column = start.get("column", 1)
+                if (
+                    type(line_number) is int and line_number > 0
+                    and type(column) is int and column > 0
+                ):
+                    tokens.append(f"source variables.tf:{line_number}")
         for field in ("summary", "detail"):
             value = diagnostic.get(field)
             if isinstance(value, str):

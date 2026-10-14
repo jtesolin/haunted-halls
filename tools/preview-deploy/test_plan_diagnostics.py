@@ -220,6 +220,82 @@ credentials: /tmp/private.json
             f"{LABEL} failed.",
         )
 
+    def test_variable_source_line_emitted_with_optional_valid_column(self):
+        for start in ({"line": 42}, {"line": 42, "column": 3}):
+            with self.subTest(start=start):
+                self.assertEqual(
+                    self.plan_failure("", self.ui(
+                        "Invalid value for variable",
+                        range={"filename": "variables.tf", "start": start},
+                    )),
+                    f"{LABEL} failed: Invalid value for variable; source variables.tf:42",
+                )
+
+    def test_source_range_rejects_arbitrary_filenames(self):
+        for filename in (
+            "/tmp/private.tf", "../variables.tf",
+            "infra/terraform/preview-pr/variables.tf", "gha-creds-private.json",
+            r"private\variables.tf", "Variables.tf", "", None, 42, [],
+        ):
+            with self.subTest(filename=filename):
+                self.assertEqual(
+                    self.plan_failure("", self.ui(
+                        "Invalid value for variable",
+                        range={"filename": filename, "start": {"line": 42}},
+                    )),
+                    f"{LABEL} failed: Invalid value for variable",
+                )
+
+    def test_malformed_source_range_fails_closed(self):
+        ranges = [None, [], "variables.tf", 42, {}, {"filename": "variables.tf"}]
+        ranges.extend(
+            {"filename": "variables.tf", "start": start}
+            for start in (None, [], 42, "private", {}, {"column": 3})
+        )
+        for value in (None, "42", 0, -1, 1.5, True, False, [], {}):
+            ranges.append({"filename": "variables.tf", "start": {"line": value}})
+            ranges.append({
+                "filename": "variables.tf", "start": {"line": 42, "column": value},
+            })
+        for source_range in ranges:
+            with self.subTest(source_range=source_range):
+                self.assertEqual(
+                    self.plan_failure("", self.ui(None, range=source_range)), f"{LABEL} failed.",
+                )
+
+    def test_source_location_never_emits_detail_snippet_or_values(self):
+        output = self.ui(
+            "Invalid value for variable",
+            range={"filename": "variables.tf", "start": {"line": 42}},
+            detail="private-variable-value /tmp/private.json",
+            snippet={
+                "code": "private-code", "context": "private-context",
+                "values": [{"value": "private-variable-value"}],
+            },
+        )
+        self.assertEqual(
+            self.plan_failure("", output),
+            f"{LABEL} failed: Invalid value for variable; source variables.tf:42",
+        )
+
+    def test_source_metadata_preserves_tokens_deduplication_and_error_gate(self):
+        output = self.ui(
+            "Invalid value for variable",
+            range={"filename": "variables.tf", "start": {"line": 42}},
+            detail="Error: PERMISSION_DENIED\nPermission 'secretmanager.secrets.create' denied",
+        )
+        self.assertEqual(
+            self.plan_failure("", output + b"\n" + output),
+            f"{LABEL} failed: Invalid value for variable; source variables.tf:42; "
+            "PERMISSION_DENIED; permission secretmanager.secrets.create",
+        )
+        message = json.loads(output)
+        message["@level"] = "warn"
+        message["diagnostic"]["severity"] = "warning"
+        self.assertEqual(
+            self.plan_failure("", json.dumps(message).encode()), f"{LABEL} failed.",
+        )
+
     def test_authentication_and_key_phrases_rejected_case_insensitively(self):
         for phrase in (
             "auth", "authentication", "oauth", "client secret", "private key",
