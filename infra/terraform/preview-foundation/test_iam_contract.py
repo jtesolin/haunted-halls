@@ -330,6 +330,60 @@ run "otherwise_valid_alternate_project" {
         self.assertEqual(attribute(block, "condition"),
                          'var.project_id == "haunted-halls-development" && var.region == "us-east1"')
 
+    def test_db_provisioner_metadata_role_has_exactly_one_permission(self):
+        role = self.foundation_resource(
+            "google_project_iam_custom_role", "db_provisioner_metadata_reader"
+        )
+        self.assertEqual(attribute(role, "provider"), "google.existing")
+        self.assertEqual(attribute(role, "project"), "var.existing_project_id")
+        self.assertEqual(attribute(role, "role_id"), '"previewDbProvisionerMetadataReader"')
+        self.assertEqual(permissions(role), {"run.services.get"})
+
+    def test_db_provisioner_metadata_grant_is_exact_service_and_deployer_only(self):
+        grant = self.foundation_resource(
+            "google_cloud_run_v2_service_iam_member", "deployer_db_provisioner_metadata_reader"
+        )
+        service = self.foundation_resource("google_cloud_run_v2_service", "db_provisioner")
+        invoker = self.foundation_resource(
+            "google_cloud_run_v2_service_iam_member", "deployer_db_provisioner_invoker"
+        )
+        for block in (grant, invoker, service):
+            self.assertEqual(attribute(block, "count"), 'var.provisioner_image == "" ? 0 : 1')
+            self.assertEqual(attribute(block, "provider"), "google.existing")
+            self.assertEqual(attribute(block, "project"), "var.existing_project_id")
+            self.assertEqual(attribute(block, "location"), "var.region")
+        for block in (grant, invoker):
+            self.assertEqual(attribute(block, "name"), "google_cloud_run_v2_service.db_provisioner[0].name")
+            self.assertEqual(attribute(block, "member"), DEPLOYER_MEMBER)
+        self.assertEqual(attribute(service.split("  template {", 1)[0], "name"),
+                         '"hh-preview-db-provisioner"')
+        self.assertEqual(attribute(invoker, "role"), '"roles/run.invoker"')
+        self.assertEqual(attribute(grant, "role"),
+                         "google_project_iam_custom_role.db_provisioner_metadata_reader.name")
+        self.assertEqual(attribute(grant, "condition"),
+                         'var.existing_project_id == "haunted-halls-development" && var.region == "us-east1"')
+
+    def test_db_provisioner_metadata_role_has_no_project_level_grant(self):
+        references = []
+        for path in FOUNDATION.glob("*.tf"):
+            source = path.read_text()
+            blocks = re.findall(r'^resource "([^"]+)" "([^"]+)" \{\n(.*?)^\}',
+                                source, re.MULTILINE | re.DOTALL)
+            for kind, name, block in blocks:
+                if "google_project_iam_custom_role.db_provisioner_metadata_reader.name" in block:
+                    references.append((kind, name))
+        self.assertEqual(references, [
+            ("google_cloud_run_v2_service_iam_member", "deployer_db_provisioner_metadata_reader"),
+        ])
+        source = (FOUNDATION / "db-provisioner-iam.tf").read_text()
+        self.assertNotRegex(source, r'roles/run\.(viewer|admin|developer)')
+        role = self.foundation_resource(
+            "google_project_iam_custom_role", "db_provisioner_metadata_reader"
+        )
+        self.assertNotRegex(
+            role, r"run\.(?:revisions\.|services\.(?:list|getIamPolicy|setIamPolicy|update|delete|create))"
+        )
+
     def test_source_grant_is_only_the_enabled_staging_engine_service(self):
         block = resource(APPLICATION / "preview-access-iam.tf",
                          "google_cloud_run_v2_service_iam_member", "preview_staging_engine_metadata")

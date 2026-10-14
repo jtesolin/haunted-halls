@@ -54,6 +54,7 @@ identity. These checks do not prove live authorization.
 | Custom `previewSecretLedgerWriter`: only `storage.objects.get/create` | Fixed private, versioned `hh-preview-458395246135-pr-secret-ledger` bucket | `preview-foundation` | Immutable create-only markers and exact GET; no overwrite, delete, list or Terraform-state access |
 | Custom `previewQuotaConsumer`: only `serviceusage.services.use` | Preview project, unconditional; deployer and preparer | `preview-foundation` | Trusted Google API requests use this quota project; no API enablement or quota administration |
 | Custom `previewStagingEngineMetadataReader`: only `run.services.get`, `run.revisions.get` | Individual `haunted-halls-engine-staging` service, `haunted-halls-development/us-east1`; binding created only when staging services are enabled | Existing application root `infra/terraform` | Named reads of the actual serving revision; no listing, invocation, IAM writes, or runtime mutation |
+| Custom `previewDbProvisionerMetadataReader`: only `run.services.get` | Individual `hh-preview-db-provisioner` service, `haunted-halls-development/us-east1`; preview deployer only; binding created only when the provisioner image is configured | `preview-foundation` | Read the exact service identity/URL before invoking `/provision`; preserves the separate existing `roles/run.invoker` grant; no listing, revision reads, IAM-policy access, or runtime mutation |
 | `roles/artifactregistry.reader` | Existing `haunted-halls` repository, `haunted-halls-development/us-east1` | Existing application root `infra/terraform` | Read the frozen source artifact; no source push, tagging, or delete |
 
 The application-root source grants have preconditions rejecting a different
@@ -61,6 +62,11 @@ project or region. The root already owns the source repository and staging
 service; foundation and per-PR state do not take ownership of those resources.
 There is no new project-level metadata grant, source-registry grant to preview
 runtime identities/service agents, or production/staging mutation permission.
+
+The provisioner metadata-reader declaration is not evidence of live authorization.
+After review and merge, it requires a separately reviewed saved foundation plan
+using the established Secret Manager password-recovery workflow. Do not apply
+foundation Terraform or rotate credentials as part of this code change.
 
 The foundation now declares `sqladmin.googleapis.com` in the preview project
 with `disable_on_destroy = false`, alongside the existing-project API. This
