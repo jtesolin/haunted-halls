@@ -4,6 +4,7 @@ import io
 import json
 import copy
 import sys
+import tempfile
 import unittest
 import zipfile
 from datetime import datetime, timezone
@@ -409,13 +410,20 @@ class StagingAndTerraformTests(unittest.TestCase):
 
         def run(arguments, **kwargs):
             command_calls.append(arguments)
-            if arguments[:3] == ["gcloud", "auth", "print-identity-token"] and arguments[3] == (
-                f"--audiences={canonical_url}"
-            ):
+            if arguments == [
+                "gcloud", "auth", "print-identity-token",
+                f"--impersonate-service-account={lifecycle.DEPLOYER}",
+                f"--audiences={canonical_url}",
+            ]:
+                self.assertEqual(
+                    kwargs["env"]["CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE"],
+                    credential_file.name,
+                )
                 return b"private-test-token"
             raise AssertionError(f"Unexpected command: {arguments}")
 
         def describe(arguments, **kwargs):
+            self.assertNotIn("env", kwargs)
             self.assertEqual(
                 arguments,
                 [
@@ -432,6 +440,8 @@ class StagingAndTerraformTests(unittest.TestCase):
             return service
 
         with (
+            tempfile.NamedTemporaryFile() as credential_file,
+            patch.dict("os.environ", {"GOOGLE_BACKEND_CREDENTIALS": credential_file.name}),
             patch.object(lifecycle.Commands, "run", side_effect=run),
             patch.object(lifecycle.Commands, "json", side_effect=describe),
             patch.object(
@@ -450,11 +460,16 @@ class StagingAndTerraformTests(unittest.TestCase):
         ):
             self.assertTrue(deployment.ensure_database())
         self.assertEqual(
-            command_calls[-1][3],
+            command_calls[-1][4],
             f"--audiences={canonical_url}",
         )
         request = urlopen.call_args.args[0]
         self.assertEqual(request.full_url, f"{canonical_url}/provision")
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(request.get_header("Authorization"), "Bearer private-test-token")
+        self.assertEqual(json.loads(request.data), {
+            "operation": "create", "repository_key": "web", "pull_request_number": 41,
+        })
 
     def test_pr_secret_incarnation_and_generation_survive_updates(self):
         self.assertIsNone(lifecycle.state_secret_identity({"resources": []}, "41"))
