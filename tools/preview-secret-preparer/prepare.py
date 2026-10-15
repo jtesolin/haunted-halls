@@ -15,6 +15,7 @@ from typing import Any
 
 PREVIEW_PROJECT_ID = "hh-preview-458395246135"
 PREVIEW_PROJECT_NUMBER = "1001419903197"
+CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 PREPARER_SERVICE_ACCOUNT = (
     "hh-preview-secret-preparer@hh-preview-458395246135.iam.gserviceaccount.com"
 )
@@ -554,12 +555,13 @@ def _credential_service_account(credentials: Any) -> str:
 
 def _build_runtime() -> tuple[GcsLedger, SecretManagerGateway]:
     import google.auth
+    from google.auth.exceptions import GoogleAuthError
     from google.auth.transport.requests import AuthorizedSession
     from google.cloud import secretmanager, storage
 
     if os.environ.get("GOOGLE_CLOUD_PROJECT") != PREVIEW_PROJECT_ID:
         raise PreparationError("GOOGLE_CLOUD_PROJECT must be the fixed preview project.")
-    credentials, _ = google.auth.default()
+    credentials, _ = google.auth.default(scopes=(CLOUD_PLATFORM_SCOPE,))
     service_account = _credential_service_account(credentials)
     session = AuthorizedSession(credentials)
     try:
@@ -567,7 +569,7 @@ def _build_runtime() -> tuple[GcsLedger, SecretManagerGateway]:
             f"https://cloudresourcemanager.googleapis.com/v3/projects/{PREVIEW_PROJECT_ID}",
             timeout=20,
         )
-    except (TimeoutError, ConnectionError, OSError):
+    except (GoogleAuthError, TimeoutError, ConnectionError, OSError):
         raise PreparationError("Could not verify the preview project identity.") from None
     if response.status_code != 200:
         raise PreparationError("Could not verify the preview project identity.")
