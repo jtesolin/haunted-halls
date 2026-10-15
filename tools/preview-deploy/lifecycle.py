@@ -824,6 +824,7 @@ class Commands:
         input_data: bytes | None = None,
         label: str,
         timeout: int = 300,
+        env: dict[str, str] | None = None,
     ) -> bytes:
         try:
             result = subprocess.run(
@@ -833,6 +834,7 @@ class Commands:
                 stderr=subprocess.PIPE,
                 check=False,
                 timeout=timeout,
+                env=env,
             )
         except (OSError, subprocess.TimeoutExpired):
             raise LifecycleError(f"{label} could not be completed.") from None
@@ -1375,9 +1377,24 @@ class PreviewDeployment:
             label="Fixed database provisioner service identity read",
         )
         url = database_provisioner_url(service)
+        backend_credentials = os.environ.get("GOOGLE_BACKEND_CREDENTIALS", "")
+        credentials_path = Path(backend_credentials)
+        _expect(
+            bool(backend_credentials)
+            and credentials_path.is_absolute()
+            and credentials_path.is_file(),
+            "Database provisioner direct-WIF credential file is unavailable.",
+        )
+        token_environment = os.environ.copy()
+        token_environment["CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE"] = backend_credentials
         token = Commands.run(
-            ["gcloud", "auth", "print-identity-token", f"--audiences={url}"],
+            [
+                "gcloud", "auth", "print-identity-token",
+                f"--impersonate-service-account={DEPLOYER}",
+                f"--audiences={url}",
+            ],
             label="Database provisioner identity token",
+            env=token_environment,
         ).decode("utf-8", errors="strict").strip()
         _expect(bool(token), "Database provisioner identity token is unavailable.")
         request = urllib.request.Request(
