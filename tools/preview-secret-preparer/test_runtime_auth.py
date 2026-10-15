@@ -25,7 +25,10 @@ class RuntimeAuthTests(unittest.TestCase):
         session = Mock()
         session.get.side_effect = request_error
         session.get.return_value = response or SimpleNamespace(
-            status_code=200, json=lambda: {"projectNumber": prepare.PREVIEW_PROJECT_NUMBER},
+            status_code=200, json=lambda: {
+                "name": "projects/1001419903197",
+                "projectId": "hh-preview-458395246135",
+            },
         )
         default = Mock(return_value=(credentials, "ignored-adc-project"))
         authorized = Mock(return_value=session)
@@ -112,18 +115,74 @@ class RuntimeAuthTests(unittest.TestCase):
         secret.assert_not_called()
 
     def test_malformed_project_number_responses_fail_safely(self):
-        for payload in ({}, None, [], {"projectNumber": "not-accepted"}):
+        valid = {
+            "name": "projects/1001419903197",
+            "projectId": "hh-preview-458395246135",
+        }
+        payloads = [
+            {}, None, [], "private-body", 42,
+            {"projectNumber": "1001419903197"},
+            {"projectId": valid["projectId"]}, {"name": valid["name"]},
+            {**valid, "projectId": "wrong-private-project"},
+            {**valid, "projectId": None}, {**valid, "projectId": []},
+        ]
+        payloads.extend(
+            {**valid, "name": name} for name in (
+                "projects/999999999999", "1001419903197", "projects/",
+                "folders/1001419903197", "projects/not-numeric",
+                "projects/1001419903197/extra", None, [], 1001419903197,
+            )
+        )
+        for payload in payloads:
             response = SimpleNamespace(status_code=200, json=lambda: payload)
             stack, _, _, _, storage, secret, _ = self.runtime(response=response)
-            with self.subTest(payload=payload), stack:
+            captured = io.StringIO()
+            with (
+                self.subTest(payload=payload), stack,
+                contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured),
+            ):
                 with self.assertRaises(prepare.PreparationError) as error:
                     prepare._build_runtime()
-                self.assertIn(str(error.exception), (
+                self.assertEqual(str(error.exception),
                     "The preview project identity response was malformed.",
-                    "The active Google Cloud project number is not the accepted preview number.",
-                ))
+                )
+            self.assertEqual(captured.getvalue(), "")
             storage.assert_not_called()
             secret.assert_not_called()
+
+    def test_runtime_validation_uses_response_derived_identifiers_before_clients(self):
+        class ResponseIdentifier(str):
+            pass
+
+        project_id = ResponseIdentifier("hh-preview-458395246135")
+        payload = {"projectId": project_id, "name": "projects/1001419903197"}
+        response = SimpleNamespace(status_code=200, json=lambda: payload)
+        stack, _, _, _, storage, secret, _ = self.runtime(response=response)
+
+        def validate(actual_id, number, service_account):
+            self.assertIs(actual_id, project_id)
+            self.assertEqual(number, payload["name"].removeprefix("projects/"))
+            storage.assert_not_called()
+            secret.assert_not_called()
+            original(actual_id, number, service_account)
+
+        original = prepare.validate_runtime_context
+        with stack, patch.object(prepare, "validate_runtime_context", side_effect=validate):
+            prepare._build_runtime()
+
+    def test_invalid_json_response_is_sanitized(self):
+        response = Mock(status_code=200)
+        response.json.side_effect = ValueError("private-response-body")
+        stack, _, _, _, storage, secret, _ = self.runtime(response=response)
+        with stack:
+            with self.assertRaises(prepare.PreparationError) as error:
+                prepare._build_runtime()
+        self.assertEqual(
+            str(error.exception), "The preview project identity response was malformed.",
+        )
+        self.assertTrue(error.exception.__suppress_context__)
+        storage.assert_not_called()
+        secret.assert_not_called()
 
     def test_wrong_service_account_still_fails_runtime_validation(self):
         stack, _, _, _, storage, secret, _ = self.runtime(
