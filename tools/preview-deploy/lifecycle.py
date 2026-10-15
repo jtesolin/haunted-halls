@@ -362,6 +362,27 @@ def staging_engine_digest(service: object, revision: object) -> str:
     return image
 
 
+def cloud_run_iap_enabled(service: object) -> bool:
+    error = "The frontend Cloud Run service is not IAP-enabled."
+    _expect(isinstance(service, dict), error)
+    values: list[bool] = []
+    if "iapEnabled" in service:
+        _expect(type(service["iapEnabled"]) is bool, error)
+        values.append(service["iapEnabled"])
+    if "metadata" in service:
+        metadata = service["metadata"]
+        _expect(isinstance(metadata, dict), error)
+        if "annotations" in metadata:
+            annotations = metadata["annotations"]
+            _expect(isinstance(annotations, dict), error)
+            if "run.googleapis.com/iap-enabled" in annotations:
+                value = annotations["run.googleapis.com/iap-enabled"]
+                _expect(type(value) is str and value in ("true", "false"), error)
+                values.append(value == "true")
+    _expect(len(set(values)) <= 1, error)
+    return bool(values) and values[0]
+
+
 def _ready(conditions: object) -> bool:
     if not isinstance(conditions, list):
         return False
@@ -1710,11 +1731,14 @@ class PreviewDeployment:
             engine, engine_revision, engine_name, self.preview_engine_image
         )
         _expect(
-            frontend.get("iapEnabled") is True
-            and url.startswith("https://")
+            cloud_run_iap_enabled(frontend) is True,
+            "The frontend Cloud Run service is not IAP-enabled.",
+        )
+        _expect(
+            url.startswith("https://")
             and urllib.parse.urlparse(url).hostname
             == f"{frontend_name}-{PREVIEW_PROJECT_NUMBER}.{PREVIEW_REGION}.run.app",
-            "The frontend IAP URL or direct Cloud Run configuration is unexpected.",
+            "The frontend Cloud Run service URL is unexpected.",
         )
         self.verify_invokers(
             engine_name,

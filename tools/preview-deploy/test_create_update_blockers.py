@@ -180,7 +180,8 @@ class LivePolicyTests(unittest.TestCase):
                 {"database_name": current.database, "repository_key": "web", "pr_number": "41",
                  "frontend_image": current.frontend_image, "engine_image": current.preview_engine_image,
                  "engine_url": engine_url},
-                {"iapEnabled": True}, {}, {}, {},
+                {"metadata": {"annotations": {"run.googleapis.com/iap-enabled": "true"}}},
+                {}, {}, {},
                 policy("roles/run.invoker", {frontend_member} | (
                     {"allUsers"} if drift == "engine" else set()
                 )),
