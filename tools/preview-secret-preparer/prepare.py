@@ -574,10 +574,20 @@ def _build_runtime() -> tuple[GcsLedger, SecretManagerGateway]:
     if response.status_code != 200:
         raise PreparationError("Could not verify the preview project identity.")
     try:
-        project_number = str(response.json()["projectNumber"])
+        payload = response.json()
     except (KeyError, TypeError, ValueError):
         raise PreparationError("The preview project identity response was malformed.") from None
-    validate_runtime_context(PREVIEW_PROJECT_ID, project_number, service_account)
+    if not isinstance(payload, dict):
+        raise PreparationError("The preview project identity response was malformed.")
+    project_id = payload.get("projectId")
+    project_name = payload.get("name")
+    if (
+        project_id != PREVIEW_PROJECT_ID
+        or project_name != f"projects/{PREVIEW_PROJECT_NUMBER}"
+    ):
+        raise PreparationError("The preview project identity response was malformed.")
+    project_number = project_name.removeprefix("projects/")
+    validate_runtime_context(project_id, project_number, service_account)
     return (
         GcsLedger(storage.Client(project=PREVIEW_PROJECT_ID, credentials=credentials).bucket(LEDGER_BUCKET)),
         SecretManagerGateway(
