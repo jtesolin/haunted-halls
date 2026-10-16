@@ -283,6 +283,7 @@ class StagingAndTerraformTests(unittest.TestCase):
             "metadata": {
                 "name": service_name,
                 "namespace": "1001419903197",
+                "annotations": {"run.googleapis.com/iap-enabled": "true"},
                 "labels": {"cloud.googleapis.com/location": "us-east1"},
             },
             "spec": {
