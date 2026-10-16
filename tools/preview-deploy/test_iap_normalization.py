@@ -42,16 +42,22 @@ class IapNormalizationTests(unittest.TestCase):
             with self.subTest(service=service):
                 self.assertIs(lifecycle.cloud_run_iap_enabled(service), False)
 
-    def test_runtime_keeps_exact_hostname_and_distinct_sanitized_errors(self):
+    def test_runtime_uses_verified_terraform_url_not_service_url_alias(self):
         canonical = "https://hh-web-pr-41-frontend-1001419903197.us-east1.run.app"
+        hashed_service_url = "https://service-1234567890-ue.a.run.app"
         engine = "https://hh-web-pr-41-engine-1001419903197.us-east1.run.app"
-        for service, url, error in (
-            (v1("true"), canonical, None),
-            ({"iapEnabled": True}, canonical, None),
-            ({}, canonical, "The frontend Cloud Run service is not IAP-enabled."),
-            (v1("false"), canonical, "The frontend Cloud Run service is not IAP-enabled."),
-            (v1("true"), "https://wrong.us-east1.run.app",
-             "The frontend Cloud Run service URL is unexpected."),
+        for service, service_url, configured_url, error in (
+            (v1("true"), hashed_service_url, canonical, None),
+            ({"iapEnabled": True}, canonical, canonical, None),
+            ({}, hashed_service_url, canonical,
+             "The frontend Cloud Run service is not IAP-enabled."),
+            (v1("false"), hashed_service_url, canonical,
+             "The frontend Cloud Run service is not IAP-enabled."),
+            (v1("true"), hashed_service_url,
+             "https://hh-web-pr-42-frontend-1001419903197.us-east1.run.app",
+             "Terraform frontend URL differs from the deterministic preview URL."),
+            (v1("true"), hashed_service_url, canonical + "/",
+             "Terraform frontend URL differs from the deterministic preview URL."),
         ):
             current = deployment()
             current.frontend_image = "frontend-digest"
@@ -60,24 +66,28 @@ class IapNormalizationTests(unittest.TestCase):
             output = {
                 "database_name": current.database, "repository_key": "web", "pr_number": "41",
                 "frontend_image": current.frontend_image, "engine_image": current.preview_engine_image,
-                "engine_url": engine,
+                "engine_url": engine, "frontend_url": configured_url,
             }
             with (
-                self.subTest(service=service, url=url),
+                self.subTest(service=service, service_url=service_url, configured_url=configured_url),
                 patch.object(lifecycle.Commands, "json", side_effect=[output, service, {}, {}, {}]),
                 patch.object(lifecycle, "latest_ready_revision_name", return_value="revision"),
                 patch.object(lifecycle, "verify_serving_revision",
-                             side_effect=[("frontend-digest", url), ("engine-digest", engine)]),
+                             side_effect=[("frontend-digest", service_url), ("engine-digest", engine)]),
                 patch.object(current, "verify_invokers"),
                 patch.object(current, "verify_testers"),
-                patch.object(lifecycle, "verify_unauthenticated_denied"),
+                patch.object(lifecycle, "verify_unauthenticated_denied") as probe,
             ):
                 if error:
                     with self.assertRaises(lifecycle.LifecycleError) as caught:
                         current.verify_runtime(False)
                     self.assertEqual(str(caught.exception), error)
+                    if "Terraform frontend URL" in error:
+                        self.assertEqual(lifecycle.Commands.json.call_count, 1)
                 else:
                     self.assertEqual(current.verify_runtime(False), canonical)
+                    self.assertEqual(probe.call_args_list[0].args, (canonical + "/",))
+                    self.assertEqual(probe.call_args_list[1].args, (engine + "/health",))
 
 
 if __name__ == "__main__":
