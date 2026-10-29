@@ -383,6 +383,16 @@ def cloud_run_iap_enabled(service: object) -> bool:
     return bool(values) and values[0]
 
 
+def iap_service_identity_matches(value: object, number: str) -> bool:
+    if not isinstance(value, str):
+        return False
+    service = f"hh-web-pr-{number}-frontend"
+    return value == service or value.split("/") == [
+        "projects", PREVIEW_PROJECT, "iap_web", f"cloud_run-{PREVIEW_REGION}",
+        "services", service,
+    ]
+
+
 def _ready(conditions: object) -> bool:
     if not isinstance(conditions, list):
         return False
@@ -1795,8 +1805,9 @@ class PreviewDeployment:
                     _expect(
                         isinstance(attributes, dict)
                         and attributes.get("role") == "roles/iap.httpsResourceAccessor"
-                        and attributes.get("cloud_run_service_name")
-                        == f"hh-web-pr-{self.number}-frontend"
+                        and iap_service_identity_matches(
+                            attributes.get("cloud_run_service_name"), self.number
+                        )
                         and attributes.get("project") == PREVIEW_PROJECT
                         and attributes.get("location") == PREVIEW_REGION
                         and isinstance(member, str),
