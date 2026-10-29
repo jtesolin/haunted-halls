@@ -256,7 +256,10 @@ class LivePolicyTests(unittest.TestCase):
             "mode": "managed", "type": "google_iap_web_cloud_run_service_iam_member",
             "name": "tester", "instances": [{"attributes": {
                 "role": "roles/iap.httpsResourceAccessor", "member": "user:tester@example.com",
-                "cloud_run_service_name": "hh-web-pr-41-frontend",
+                "cloud_run_service_name": (
+                    f"projects/{lifecycle.PREVIEW_PROJECT}/iap_web/"
+                    "cloud_run-us-east1/services/hh-web-pr-41-frontend"
+                ),
                 "project": lifecycle.PREVIEW_PROJECT, "location": lifecycle.PREVIEW_REGION,
             }}],
         }]}
@@ -279,6 +282,60 @@ class LivePolicyTests(unittest.TestCase):
                     "https://iap.googleapis.com/v1/projects/1001419903197"
                     "/iap_web/cloud_run-us-east1/services/hh-web-pr-41-frontend:getIamPolicy"
                 ))
+
+    def test_iap_state_service_identity_accepts_only_exact_short_or_full_forms(self):
+        full = (
+            "projects/hh-preview-458395246135/iap_web/"
+            "cloud_run-us-east1/services/hh-web-pr-56-frontend"
+        )
+        for value in (full, "hh-web-pr-56-frontend"):
+            with self.subTest(value=value):
+                self.assertTrue(lifecycle.iap_service_identity_matches(value, "56"))
+        for value in (
+            None, 1, [], {}, "",
+            full.replace(lifecycle.PREVIEW_PROJECT, "other-project"),
+            full.replace("us-east1", "us-west1"),
+            full.replace("pr-56", "pr-57"),
+            full.replace("cloud_run-us-east1/services", "backendServices"),
+            full.rsplit("/", 1)[0],
+            full + "/extra",
+            full + "/",
+            "/" + full,
+            "hh-web-pr-57-frontend",
+        ):
+            with self.subTest(value=value):
+                self.assertFalse(lifecycle.iap_service_identity_matches(value, "56"))
+
+    def test_iap_state_checks_fail_before_live_policy_request(self):
+        valid = {
+            "role": "roles/iap.httpsResourceAccessor", "member": "user:tester@example.com",
+            "cloud_run_service_name": (
+                f"projects/{lifecycle.PREVIEW_PROJECT}/iap_web/"
+                "cloud_run-us-east1/services/hh-web-pr-41-frontend"
+            ),
+            "project": lifecycle.PREVIEW_PROJECT, "location": lifecycle.PREVIEW_REGION,
+        }
+        for change in (
+            {"role": "roles/viewer"}, {"location": "us-west1"}, {"project": "other-project"},
+            {"member": None}, {"member": "user:foreign@example.com"},
+            {"cloud_run_service_name": "hh-web-pr-42-frontend"},
+            {"cloud_run_service_name": None},
+        ):
+            current = deployment()
+            current.terraform_state = lambda: {"resources": [{
+                "mode": "managed", "type": "google_iap_web_cloud_run_service_iam_member",
+                "name": "tester", "instances": [{"attributes": {**valid, **change}}],
+            }]}
+            with (
+                self.subTest(change=change),
+                patch.dict(os.environ, {"PREVIEW_IAP_TESTERS": "user:tester@example.com"}),
+                patch.object(lifecycle.Commands, "run") as command,
+                patch.object(lifecycle.urllib.request, "urlopen") as request,
+                self.assertRaises(lifecycle.LifecycleError),
+            ):
+                current.verify_testers()
+            command.assert_not_called()
+            request.assert_not_called()
 
     def test_frontend_redirect_only_exact_https_auth_host_and_engine_never_redirects(self):
         for location, permitted in (
