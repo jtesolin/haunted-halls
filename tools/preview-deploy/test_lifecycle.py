@@ -276,7 +276,8 @@ class StagingAndTerraformTests(unittest.TestCase):
 
     def test_preview_verification_checks_the_actual_nested_serving_revision(self):
         service_name = "hh-web-pr-41-frontend"
-        url = f"https://{service_name}-1001419903197.us-east1.run.app"
+        url = "https://service-1234567890-ue.a.run.app"
+        deterministic_url = f"https://{service_name}-1001419903197.us-east1.run.app"
         service = {
             "apiVersion": "serving.knative.dev/v1",
             "kind": "Service",
@@ -321,6 +322,14 @@ class StagingAndTerraformTests(unittest.TestCase):
             ),
             (PREVIEW_FRONTEND, url),
         )
+        deterministic_service = copy.deepcopy(service)
+        deterministic_service["status"]["url"] = deterministic_url
+        self.assertEqual(
+            lifecycle.verify_serving_revision(
+                deterministic_service, revision, service_name, PREVIEW_FRONTEND
+            ),
+            (PREVIEW_FRONTEND, deterministic_url),
+        )
         invalid_cases = []
         old_revision_traffic = copy.deepcopy(service)
         old_revision_traffic["status"]["traffic"][0]["revisionName"] = (
@@ -343,9 +352,22 @@ class StagingAndTerraformTests(unittest.TestCase):
         wrong_image = copy.deepcopy(revision)
         wrong_image["spec"]["containers"][0]["image"] = PREVIEW_ENGINE
         invalid_cases.append((service, wrong_image))
-        invalid_url = copy.deepcopy(service)
-        invalid_url["status"]["url"] = "http://example.com"
-        invalid_cases.append((invalid_url, revision))
+        for invalid_url in (
+            None,
+            "not a URL",
+            "http://service-1234567890-ue.a.run.app",
+            "https://example.com",
+            "https://" + "test-user" + ":" + "test-password" + "@service-1234567890-ue.a.run.app",
+            "https://user:password@service-1234567890-ue.a.run.app",
+            "https://service-1234567890-ue.a.run.app:443",
+            "https://service-1234567890-ue.a.run.app:invalid",
+            "https://service-1234567890-ue.a.run.app/path",
+            "https://service-1234567890-ue.a.run.app?query",
+            "https://service-1234567890-ue.a.run.app#fragment",
+        ):
+            invalid_service_url = copy.deepcopy(service)
+            invalid_service_url["status"]["url"] = invalid_url
+            invalid_cases.append((invalid_service_url, revision))
         for candidate_service, candidate_revision in invalid_cases:
             with self.subTest(
                 service=candidate_service["status"],

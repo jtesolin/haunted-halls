@@ -1685,6 +1685,17 @@ class PreviewDeployment:
             and output.get("pr_number") == self.number,
             "Preview Terraform identity output does not match this PR.",
         )
+        frontend_name = f"hh-web-pr-{self.number}-frontend"
+        expected_frontend_url = (
+            f"https://{frontend_name}-{PREVIEW_PROJECT_NUMBER}.{PREVIEW_REGION}.run.app"
+        )
+        configured_frontend_url = output.get("frontend_url")
+        frontend_url = _cloud_run_url(configured_frontend_url)
+        _expect(
+            configured_frontend_url == expected_frontend_url
+            and frontend_url == expected_frontend_url,
+            "Terraform frontend URL differs from the deterministic preview URL.",
+        )
         expected_frontend = output.get("frontend_image")
         expected_engine = output.get("engine_image")
         _expect(
@@ -1692,7 +1703,6 @@ class PreviewDeployment:
             and expected_engine == self.preview_engine_image,
             "Terraform does not record the exact frontend and frozen engine digests.",
         )
-        frontend_name = f"hh-web-pr-{self.number}-frontend"
         engine_name = f"hh-web-pr-{self.number}-engine"
         frontend = Commands.json(
             [
@@ -1716,7 +1726,7 @@ class PreviewDeployment:
             ],
             label="Frontend serving revision verification",
         )
-        _, url = verify_serving_revision(
+        verify_serving_revision(
             frontend, frontend_revision, frontend_name, self.frontend_image
         )
         engine_revision_id = latest_ready_revision_name(engine, engine_name)
@@ -1734,12 +1744,6 @@ class PreviewDeployment:
             cloud_run_iap_enabled(frontend) is True,
             "The frontend Cloud Run service is not IAP-enabled.",
         )
-        _expect(
-            url.startswith("https://")
-            and urllib.parse.urlparse(url).hostname
-            == f"{frontend_name}-{PREVIEW_PROJECT_NUMBER}.{PREVIEW_REGION}.run.app",
-            "The frontend Cloud Run service URL is unexpected.",
-        )
         self.verify_invokers(
             engine_name,
             {f"serviceAccount:hh-preview-frontend@{PREVIEW_PROJECT}.iam.gserviceaccount.com"},
@@ -1750,7 +1754,7 @@ class PreviewDeployment:
         )
         self.verify_testers()
         verify_unauthenticated_denied(
-            f"{url}/", allow_google_redirect=True
+            f"{frontend_url}/", allow_google_redirect=True
         )
         output_engine_url = _cloud_run_url(output.get("engine_url"))
         _expect(
@@ -1764,7 +1768,7 @@ class PreviewDeployment:
             type(database_created) is bool and self.database_was_created == database_created,
             "Database create/reuse status is malformed.",
         )
-        return url
+        return frontend_url
 
     def verify_invokers(self, service: str, expected: set[str]) -> None:
         policy = Commands.json(
