@@ -92,7 +92,8 @@ jobs:
       contents: read
       actions: write
       id-token: write
-      pull-requests: read
+      # Issue-comment endpoints authorize PR targets via the pull-requests scope.
+      pull-requests: write
       issues: write
     env:
       GH_TOKEN: ${{ github.token }}

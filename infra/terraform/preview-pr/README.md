@@ -347,7 +347,11 @@ The required order is:
    both services Ready, exact digests, database/migration success, IAP
    interception, engine unauthenticated denial, and configured IAP testers.
 7. Revalidate the PR and create or update its one stable-marker
-   `Preview Environment` comment with non-sensitive metadata. A failed
+   `Preview Environment` comment with non-sensitive metadata. Because the
+   issue-comment endpoints authorize PR targets through the pull-requests
+   scope, the deploy job's `GITHUB_TOKEN` needs `pull-requests: write`.
+   GitHub API failures report only the operation, templated endpoint, HTTP
+   status, and a fixed failure category. A failed
    migration or Terraform operation never triggers an automatic destroy.
    Close/merge teardown, DB drop, and ledger retention remain out of scope.
 

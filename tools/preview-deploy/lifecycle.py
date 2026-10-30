@@ -882,23 +882,128 @@ class Commands:
             raise LifecycleError(f"{label} returned invalid metadata.") from None
 
 
+GITHUB_HTTP_STATUS_RE = re.compile(rb"\(HTTP ([1-5][0-9]{2})\)")
+GITHUB_SAFE_SEGMENT_RE = re.compile(r"[a-z][a-z0-9-]{0,31}(?:\.ya?ml)?")
+GITHUB_OPERATIONS = {
+    ("GET", "repos/{repo}/pulls/{id}"): "read-pull-request",
+    ("GET", "repos/{repo}/issues/{id}/comments"): "list-pr-comments",
+    ("POST", "repos/{repo}/issues/{id}/comments"): "create-pr-comment",
+    ("PATCH", "repos/{repo}/issues/comments/{id}"): "update-pr-comment",
+    ("GET", "repos/{repo}/actions/runs/{id}"): "read-workflow-run",
+    ("GET", "repos/{repo}/actions/runs/{id}/artifacts"): "list-run-artifacts",
+    ("GET", "repos/{repo}/actions/artifacts/{id}/zip"): "download-artifact",
+}
+
+
+def github_endpoint_category(endpoint: str) -> str:
+    """Template a GitHub endpoint without query strings, IDs, or untrusted segments."""
+    path = endpoint.split("?", 1)[0].split("#", 1)[0].strip("/")
+    if path.startswith(f"repos/{REPOSITORY}/"):
+        path = "repos/{repo}/" + path.removeprefix(f"repos/{REPOSITORY}/")
+    segments = []
+    for segment in path.split("/")[:8]:
+        if segment == "{repo}" or GITHUB_SAFE_SEGMENT_RE.fullmatch(segment):
+            segments.append(segment)
+        elif segment.isdigit():
+            segments.append("{id}")
+        else:
+            segments.append("{value}")
+    return "/".join(segments) or "{value}"
+
+
+def github_operation(method: str, category: str) -> str:
+    if category.startswith("repos/{repo}/actions/workflows/"):
+        suffix = category.removeprefix("repos/{repo}/actions/workflows/")
+        if "/" not in suffix:
+            return "read-workflow"
+        if suffix.endswith("/dispatches") and method == "POST":
+            return "dispatch-workflow"
+        if suffix.endswith("/runs"):
+            return "list-workflow-runs"
+    if category.startswith("repos/{repo}/contents/") and method == "GET":
+        return "read-file-contents"
+    return GITHUB_OPERATIONS.get((method, category), "github-api-request")
+
+
+def classify_github_failure(status: int | None, stderr: bytes) -> tuple[str, str]:
+    """Map a gh failure to a fixed category and hint; never echo GitHub prose."""
+    lowered = stderr.lower()
+    if status is None:
+        return "transport-failure", "no HTTP response was received from the GitHub API"
+    if status == 401:
+        return "authentication-failed", "the workflow token was rejected or has expired"
+    if status == 429 or (status == 403 and b"rate limit" in lowered):
+        return "rate-limited", "GitHub API rate limit reached; retry the workflow later"
+    if status == 403 and b"resource not accessible by integration" in lowered:
+        return (
+            "permission-denied",
+            "the workflow GITHUB_TOKEN lacks a permission this operation requires",
+        )
+    if status == 403:
+        return "authorization-denied", "GitHub denied the request for this token"
+    if status == 404:
+        return "not-found", "resource is missing or not visible to this token"
+    if status in {409, 422}:
+        return "request-rejected", "GitHub rejected the request as invalid or conflicting"
+    if status >= 500:
+        return "server-error", "transient GitHub service error; retry the workflow later"
+    return "unexpected-http-status", "GitHub returned an unexpected HTTP status"
+
+
+def github_failure_message(
+    method: str, endpoint: str, status: int | None, stderr: bytes
+) -> str:
+    category = github_endpoint_category(endpoint)
+    kind, hint = classify_github_failure(status, stderr)
+    return (
+        "GitHub API request failed: "
+        f"operation={github_operation(method, category)} method={method} "
+        f"endpoint={category} status={status if status is not None else 'unavailable'} "
+        f"category={kind} hint={hint}."
+    )
+
+
 class Github:
     def __init__(self, token: str):
         _expect(bool(token), "GitHub workflow token is unavailable.")
         self.token = token
 
-    def api(self, endpoint: str, method: str = "GET", data: object | None = None) -> Any:
+    @staticmethod
+    def _run(
+        method: str,
+        endpoint: str,
+        *,
+        input_data: bytes | None = None,
+        timeout: int = 120,
+    ) -> bytes:
         arguments = ["gh", "api", "--method", method, endpoint]
+        if input_data is not None:
+            arguments.extend(["--input", "-"])
+        try:
+            result = subprocess.run(
+                arguments,
+                input=input_data,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=timeout,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            raise LifecycleError(
+                github_failure_message(method, endpoint, None, b"")
+            ) from None
+        if result.returncode != 0:
+            stderr = result.stderr if isinstance(result.stderr, bytes) else b""
+            matches = GITHUB_HTTP_STATUS_RE.findall(stderr)
+            status = int(matches[-1]) if matches else None
+            raise LifecycleError(github_failure_message(method, endpoint, status, stderr))
+        return result.stdout
+
+    def api(self, endpoint: str, method: str = "GET", data: object | None = None) -> Any:
         raw_data = None
         if data is not None:
-            arguments.extend(["--input", "-"])
             raw_data = json.dumps(data, separators=(",", ":")).encode()
-        output = Commands.run(
-            arguments,
-            input_data=raw_data,
-            label="GitHub API request",
-            timeout=120,
-        )
+        output = self._run(method, endpoint, input_data=raw_data)
         if method != "GET":
             return output
         try:
@@ -907,13 +1012,9 @@ class Github:
             raise LifecycleError("GitHub API returned invalid metadata.") from None
 
     def artifact_zip(self, artifact_id: int, digest: str) -> bytes:
-        archive = Commands.run(
-            [
-                "gh",
-                "api",
-                f"repos/{REPOSITORY}/actions/artifacts/{artifact_id}/zip",
-            ],
-            label="GitHub artifact download",
+        archive = self._run(
+            "GET",
+            f"repos/{REPOSITORY}/actions/artifacts/{artifact_id}/zip",
             timeout=180,
         )
         _expect(
@@ -1967,7 +2068,7 @@ def verify_unauthenticated_denied(url: str, allow_google_redirect: bool) -> None
             f"destination={destination} assertion={assertion} "
             f"result={'pass' if passed else 'fail'}"
         )
-        print(f"Unauthenticated probe: {summary}")
+        print(f"Unauthenticated probe: {summary}", flush=True)
         if not passed:
             raise LifecycleError(f"Unauthenticated access verification failed: {summary}") from None
 
