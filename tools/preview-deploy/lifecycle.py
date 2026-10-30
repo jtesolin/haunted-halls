@@ -1953,7 +1953,23 @@ def database_provisioner_url(service: object) -> str:
 def verify_unauthenticated_denied(url: str, allow_google_redirect: bool) -> None:
     request = urllib.request.Request(url, method="GET")
     status: int | None = None
-    location = ""
+    location: object = ""
+    destination = "none"
+    resource = "frontend" if allow_google_redirect else "engine"
+    endpoint = "frontend-root" if allow_google_redirect else "engine-health"
+
+    def report(assertion: str, passed: bool) -> None:
+        valid_status = type(status) is int and 100 <= status <= 599
+        summary = (
+            f"resource={resource} endpoint={endpoint} "
+            f"status={status if valid_status else 'unavailable'} "
+            f"redirect={'yes' if valid_status and 300 <= status < 400 else 'no'} "
+            f"destination={destination} assertion={assertion} "
+            f"result={'pass' if passed else 'fail'}"
+        )
+        print(f"Unauthenticated probe: {summary}")
+        if not passed:
+            raise LifecycleError(f"Unauthenticated access verification failed: {summary}") from None
 
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req: Any, fp: Any, code: int, msg: str,
@@ -1964,22 +1980,43 @@ def verify_unauthenticated_denied(url: str, allow_google_redirect: bool) -> None
         opener = urllib.request.build_opener(NoRedirect)
         with opener.open(request, timeout=20) as response:
             status = response.status
-            location = response.headers.get("Location", "")
+            location = response.headers.get("Location", "") if response.headers is not None else ""
     except urllib.error.HTTPError as error:
-        status = error.code
-        location = error.headers.get("Location", "")
+        try:
+            status = error.code
+            location = error.headers.get("Location", "") if error.headers is not None else ""
+        finally:
+            error.close()
     except (urllib.error.URLError, TimeoutError, OSError):
-        raise LifecycleError("Unauthenticated Cloud Run privacy verification failed.") from None
-    allowed = {401, 403}
-    if allow_google_redirect and status == 302:
-        redirect = urllib.parse.urlparse(location)
-        _expect(
-            redirect.scheme == "https" and redirect.hostname == "accounts.google.com"
-            and redirect.netloc == "accounts.google.com",
-            "Unauthenticated frontend redirect is not the Google IAP sign-in flow.",
-        )
+        report("transport-failure", False)
+    if type(status) is not int or not 100 <= status <= 599:
+        report("malformed-response-status", False)
+    if location:
+        destination = "untrusted"
+        if not isinstance(location, str) or any(ord(char) < 32 or ord(char) == 127 for char in location):
+            destination = "malformed"
+        else:
+            try:
+                redirect = urllib.parse.urlparse(location)
+                if (
+                    redirect.scheme == "https"
+                    and redirect.hostname == "accounts.google.com"
+                    and redirect.netloc == "accounts.google.com"
+                ):
+                    destination = "google-accounts"
+            except ValueError:
+                destination = "malformed"
+    if status in {401, 403}:
+        report("http-auth-denial", True)
         return
-    _expect(status in allowed, "Unauthenticated request was not denied by IAP or Cloud Run IAM.")
+    if 300 <= status < 400:
+        if not allow_google_redirect:
+            report("engine-redirect-forbidden", False)
+        if status != 302:
+            report("unexpected-redirect-status", False)
+        report("iap-sign-in-redirect", destination == "google-accounts")
+        return
+    report("unexpected-success" if 200 <= status < 300 else "unexpected-http-status", False)
 
 
 def deploy(args: argparse.Namespace) -> int:
