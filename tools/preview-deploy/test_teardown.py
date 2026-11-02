@@ -118,6 +118,14 @@ def inventory():
     return teardown.validate_state(state(), "56")[1]
 
 
+def empty_state():
+    return {
+        "version": 4, "terraform_version": "1.11.4",
+        "lineage": "e11b7f1a-a835-f476-a526-d4a43ee9d6a9", "serial": 46,
+        "resources": [], "outputs": {},
+    }
+
+
 def plan(items=None):
     items = inventory() if items is None else items
     return {"resource_changes": [{
@@ -204,7 +212,96 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual(teardown.validate_state(partial, "56")[0], INCARNATION)
         partial.pop("outputs")
         self.assertEqual(teardown.validate_state(partial, "56")[0], INCARNATION)
-        self.assertEqual(teardown.validate_state({"resources": []}, "56"), (None, {}))
+        self.assertEqual(teardown.validate_state(empty_state(), "56"), (None, {}))
+
+    def test_empty_state_does_not_require_identity_output_or_positive_serial(self):
+        for outputs in ({}, None):
+            value = empty_state()
+            value["serial"] = 0
+            if outputs is None:
+                value.pop("outputs")
+            with self.subTest(outputs=outputs):
+                self.assertEqual(teardown.validate_state(value, "56"), (None, {}))
+
+    def test_malformed_state_structure_is_rejected(self):
+        for value in (None, [], {}, {"resources": None}, {"resources": {}}):
+            with self.subTest(value=value), self.assertRaises(lifecycle.LifecycleError):
+                teardown.validate_state(value, "56")
+
+    def test_allowed_zero_instance_resource_envelopes_are_valid(self):
+        value = empty_state()
+        value["resources"] = [
+            {"type": kind, "name": name, "mode": "managed", "provider": teardown.PROVIDER,
+             "instances": []}
+            for kind, name in (address.split(".") for address in sorted(teardown.ALLOWED))
+        ]
+        self.assertEqual(teardown.validate_state(value, "56"), (None, {}))
+        partial = state()
+        partial["serial"] = 44
+        partial["resources"] = [
+            resource for resource in partial["resources"]
+            if resource["type"].startswith("google_secret")
+        ] + copy.deepcopy(value["resources"])
+        incarnation, owned = teardown.validate_state(partial, "56")
+        self.assertEqual(incarnation, INCARNATION)
+        self.assertEqual(len(owned), 8)
+
+    def test_zero_instance_resource_envelopes_cannot_hide_malformed_or_foreign_blocks(self):
+        original = {
+            "type": "google_secret_manager_secret", "name": "pr", "mode": "managed",
+            "provider": teardown.PROVIDER, "instances": [],
+        }
+        malformed = [None, [], {}]
+        for key in original:
+            missing = copy.deepcopy(original)
+            missing.pop(key)
+            malformed.append(missing)
+        for key, invalid in (
+            ("type", None), ("type", []), ("type", ""), ("type", "google_storage_bucket"),
+            ("type", "google_secret_manager_secret.pr"),
+            ("name", None), ("name", []), ("name", ""), ("name", "shared"),
+            ("name", 'pr["database_url"]'), ("name", "pr.extra"),
+            ("mode", "data"), ("mode", None),
+            ("provider", 'provider["registry.terraform.io/hashicorp/google"].shared'),
+            ("provider", None), ("module", "module.shared"), ("module", ""),
+            ("module", None), ("module", []), ("instances", None), ("instances", {}),
+        ):
+            malformed.append({**original, key: invalid})
+        for resource in malformed:
+            for nonempty in (False, True):
+                value = state() if nonempty else empty_state()
+                value["resources"].append(resource)
+                with self.subTest(resource=resource, nonempty=nonempty):
+                    with self.assertRaises(lifecycle.LifecycleError):
+                        teardown.validate_state(value, "56")
+
+    def test_empty_and_nonempty_states_require_lineage_and_integer_serial(self):
+        for initial in (empty_state(), state()):
+            for key, invalid in (
+                ("lineage", None), ("lineage", ""), ("lineage", " \t"),
+                ("lineage", 46), ("lineage", []),
+                ("serial", None), ("serial", "46"), ("serial", -1),
+                ("serial", 46.0), ("serial", True), ("serial", False),
+            ):
+                value = copy.deepcopy(initial)
+                value[key] = invalid
+                with self.subTest(empty=not value["resources"], key=key, invalid=invalid):
+                    with self.assertRaisesRegex(lifecycle.LifecycleError, "lineage or serial"):
+                        teardown.validate_state(value, "56")
+            for key in ("lineage", "serial"):
+                value = copy.deepcopy(initial)
+                value.pop(key)
+                with self.subTest(empty=not value["resources"], missing=key):
+                    with self.assertRaisesRegex(lifecycle.LifecycleError, "lineage or serial"):
+                        teardown.validate_state(value, "56")
+
+    def test_empty_inventory_preserves_identity_output_validation(self):
+        value = state()
+        value["resources"] = []
+        self.assertEqual(teardown.validate_state(value, "56"), (INCARNATION, {}))
+        value["outputs"]["preview_identity"]["value"]["database_name"] = "haunted_halls_staging"
+        with self.assertRaises(lifecycle.LifecycleError):
+            teardown.validate_state(value, "56")
 
     def test_sanitized_pr56_slash_ids_and_provider_space_ids_validate_for_all_iam_types(self):
         slash_state = state(iam_separator="/")
@@ -722,10 +819,52 @@ class ExecutionTests(unittest.TestCase):
         iap.assert_called_once_with(True)
 
     def test_already_removed_is_noop_without_database_adoption(self):
-        instance, calls, error = self.run_mocked({"resources": []})
+        value = empty_state()
+        original = copy.deepcopy(value)
+        for attempt in range(2):
+            with self.subTest(attempt=attempt):
+                instance, calls, error = self.run_mocked(value)
+                self.assertIsNone(error)
+                self.assertEqual(calls, ["verify-runtime", "verify-runtime-iam", "tags"])
+                self.assertEqual(instance.status, "No-op: no tracked preview resources")
+                self.assertEqual(value, original)
+
+    def test_incomplete_empty_state_never_reaches_success_or_cleanup(self):
+        for value in (
+            {"resources": []},
+            {**empty_state(), "lineage": ""},
+            {**empty_state(), "serial": True},
+            {**empty_state(), "serial": -1},
+            {"resources": None},
+        ):
+            with self.subTest(value=value):
+                instance, calls, error = self.run_mocked(value)
+                self.assertIsNotNone(error)
+                self.assertEqual(calls, [])
+                self.assertEqual(instance.status, "Cleanup incomplete")
+
+    def test_zero_instance_envelopes_only_allow_owned_resource_noops(self):
+        valid = empty_state()
+        valid["resources"] = [{
+            "type": "google_secret_manager_secret", "name": "pr", "mode": "managed",
+            "provider": teardown.PROVIDER, "instances": [],
+        }]
+        instance, calls, error = self.run_mocked(valid)
         self.assertIsNone(error)
+        self.assertEqual(instance.status, "No-op: no tracked preview resources")
         self.assertEqual(calls, ["verify-runtime", "verify-runtime-iam", "tags"])
-        self.assertIn("No-op", instance.status)
+        for fields in (
+            {"type": "google_storage_bucket", "name": "shared"},
+            {"name": 'pr["foreign"]'},
+            {"module": None},
+        ):
+            value = copy.deepcopy(valid)
+            value["resources"][0].update(fields)
+            with self.subTest(fields=fields):
+                instance, calls, error = self.run_mocked(value)
+                self.assertIsNotNone(error)
+                self.assertEqual(instance.status, "Cleanup incomplete")
+                self.assertEqual(calls, [])
 
     def test_database_owner_failure_reports_dependency_cleanup_partial_state(self):
         instance, calls, error = self.run_mocked(database_error="Database owner mismatch")
@@ -923,24 +1062,52 @@ class ExecutionTests(unittest.TestCase):
             with self.assertRaisesRegex(lifecycle.LifecycleError, "authoritative PR state"):
                 instance.read_state()
 
-    def test_missing_terraform_state_is_detected_on_either_stream_or_empty_success(self):
+    def test_valid_existing_empty_state_is_read_without_manufacturing_identity(self):
         instance = self.make()
-        with patch.object(instance, "check_backend"):
-            for result in (
-                subprocess.CompletedProcess([], 1, b"No state file was found!", b""),
-                subprocess.CompletedProcess([], 1, b"", b"No state file was found!"),
-                subprocess.CompletedProcess([], 0, b"", b""),
+        value = empty_state()
+        with patch.object(instance, "check_backend"), patch.object(
+            teardown.subprocess, "run",
+            return_value=subprocess.CompletedProcess([], 0, json.dumps(value).encode(), b""),
+        ):
+            self.assertEqual(instance.read_state(), value)
+
+    def test_missing_blank_invalid_or_failed_state_reads_never_reach_success(self):
+        instance = self.make()
+        for result in (
+            subprocess.CompletedProcess([], 1, b"No state file was found!", b""),
+            subprocess.CompletedProcess([], 1, b"", b"No state file was found!"),
+            subprocess.CompletedProcess([], 0, b"", b""),
+            subprocess.CompletedProcess([], 0, b" \n\t", b""),
+            subprocess.CompletedProcess([], 0, b"not-json", b""),
+            subprocess.CompletedProcess([], 0, b"\xff", b""),
+            subprocess.CompletedProcess([], 0, b"null", b""),
+            subprocess.CompletedProcess([], 0, b"[]", b""),
+            subprocess.CompletedProcess([], 0, b'{"resources":[]}', b""),
+            subprocess.CompletedProcess([], 1, b"", b"Permission denied (403)"),
+            subprocess.CompletedProcess([], 1, b"No state file was found!", b"PERMISSION_DENIED"),
+            subprocess.CompletedProcess([], 1, b"", b"network unavailable"),
+            subprocess.CompletedProcess([], 2, b"", b"ambiguous failure"),
+            subprocess.CompletedProcess([], 1, json.dumps(empty_state()).encode(), b"failed"),
+        ):
+            with (
+                self.subTest(result=result),
+                patch.object(instance, "revalidate"),
+                patch.object(instance, "check_secret_workflow"),
+                patch.object(instance, "initialize"),
+                patch.object(instance, "check_backend"),
+                patch.object(teardown.subprocess, "run", return_value=result),
+                patch.object(instance, "destroy") as destroy,
+                patch.object(teardown, "request_database") as database,
+                patch.object(instance, "verify_runtime_absent") as runtime,
+                patch.object(instance, "cleanup_tags") as tags,
             ):
-                with patch.object(teardown.subprocess, "run", return_value=result):
-                    self.assertEqual(instance.read_state(), {"resources": []})
-            for result in (
-                subprocess.CompletedProcess([], 1, b"", b"Permission denied (403)"),
-                subprocess.CompletedProcess([], 1, b"No state file was found!", b"PERMISSION_DENIED"),
-                subprocess.CompletedProcess([], 0, b"not-json", b""),
-            ):
-                with patch.object(teardown.subprocess, "run", return_value=result):
-                    with self.assertRaises(lifecycle.LifecycleError):
-                        instance.read_state()
+                with self.assertRaises(lifecycle.LifecycleError):
+                    instance.run()
+                self.assertEqual(instance.status, "Cleanup incomplete")
+                destroy.assert_not_called()
+                database.assert_not_called()
+                runtime.assert_not_called()
+                tags.assert_not_called()
 
     def test_cloud_run_and_iap_policy_reads_reject_remaining_and_api_errors(self):
         instance = self.make()

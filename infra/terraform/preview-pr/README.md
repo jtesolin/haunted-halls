@@ -431,6 +431,11 @@ It has no Actions dispatch permission and never executes the PR image.
    secret generation. IAM entries must identify the exact expected secret,
    service, role and principal; arbitrary/shared resources are rejected.
    Partial inventories are accepted only when identity is still unambiguous.
+   Every resource envelope must name an exact allowed root resource type/name,
+   managed mode and the fixed provider, even when its `instances` array is empty.
+   A module field or indexed/malformed envelope name is rejected. Valid allowed
+   zero-instance resource entries are retained as empty inventory, not as owned
+   instances; any present instances still require all ownership checks.
 3. Generate a saved destroy plan targeting the frontend, engine, migration
    job and their Cloud Run/IAP IAM entries. Terraform includes the targets'
    dependency closure, which can also delete this PR's Secret Manager grants
@@ -516,9 +521,16 @@ not retry based only on its deterministic name. A partial Terraform failure
 preserves its normal backend state; retry the same manual dispatch only when
 the remaining state still proves ownership. Missing identity after an
 out-of-band/partial deletion requires operator inspection, never adoption or
-state removal to bypass checks. A fully empty/missing state produces a
+state removal to bypass checks. A valid existing empty state produces a
 successful **no tracked resources** no-op, not an assertion that untracked
-orphan databases/secrets cannot exist.
+orphan databases/secrets cannot exist. Even an empty inventory must contain
+a nonblank string lineage and a nonnegative integer serial (not a boolean);
+it does not require an incarnation output after successful cleanup. Missing
+or unreadable authoritative state, nonzero Terraform exit codes, empty/blank
+output, invalid JSON and structurally malformed state all fail closed.
+Missing-state diagnostics are never converted into manufactured empty state.
+This intentionally also fails closed for a never-provisioned PR with no state
+object; a successful cleanup/no-op cannot be inferred from absent evidence.
 
 A retry from PR #56's serial-44 partial state (three owned secret containers
 and five secret grants, with the original lineage and identity output) does
