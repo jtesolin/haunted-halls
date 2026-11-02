@@ -443,6 +443,13 @@ It has no Actions dispatch permission and never executes the PR image.
    `roles/run.invoker` and IAP `roles/iap.httpsResourceAccessor` policies. A
    surviving role member or policy API error blocks database deletion and
    success reporting.
+   Cloud Run can return an empty policy containing only a non-empty string
+   `etag`, omitting `bindings`. This exact response shape is accepted as no
+   members, as is an explicit empty `bindings` list. Missing/malformed policies,
+   additional fields in an etag-only response, remaining owned-role members,
+   permission failures and ambiguous API errors still block cleanup. The same
+   parser is used for IAP policies; service/job absence is independently
+   verified before runtime IAM checks.
 4. Drop only `haunted_halls_web_pr_<N>` through the existing fixed trusted
    provisioner using state ownership evidence captured before destroy:
    either the validated `preview_identity` output or the positive-generation
@@ -512,6 +519,17 @@ out-of-band/partial deletion requires operator inspection, never adoption or
 state removal to bypass checks. A fully empty/missing state produces a
 successful **no tracked resources** no-op, not an assertion that untracked
 orphan databases/secrets cannot exist.
+
+A retry from PR #56's serial-44 partial state (three owned secret containers
+and five secret grants, with the original lineage and identity output) does
+not require the deleted runtime resources to remain in state. The runtime
+destroy plan may leave those eight instances unchanged or delete their owned
+dependency closure; creations and foreign changes remain forbidden. Runtime
+absence and IAM checks must still pass before the database request. Ownership
+evidence is captured from the remaining state before either destroy phase,
+then any remaining secrets and PR tags are cleaned up in the normal order.
+Offline tests cover both plan outcomes; a live retry still requires separate
+authorization and fresh preflight checks.
 
 The Actions summary records PR, status, completed steps, timestamp and failures.
 The existing single bot-owned Preview Environment comment is updated rather
