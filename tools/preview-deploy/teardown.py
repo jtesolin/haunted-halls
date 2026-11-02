@@ -261,6 +261,9 @@ def iam_member_id_matches(value: object, resource: str, role: str, member: str) 
 def validate_state(state: object, number: str) -> tuple[str | None, dict[str, dict[str, Any]]]:
     _expect(isinstance(state, dict) and isinstance(state.get("resources"), list),
             "Terraform state is malformed.")
+    _expect(isinstance(state.get("lineage"), str) and state["lineage"].strip()
+            and type(state.get("serial")) is int and state["serial"] >= 0,
+            "Terraform state lineage or serial is missing or invalid.")
     output = identity_output(state, number)
     incarnations = {output["pr_incarnation"]} if output else set()
     inventory: dict[str, dict[str, Any]] = {}
@@ -293,9 +296,6 @@ def validate_state(state: object, number: str) -> tuple[str | None, dict[str, di
         if address.startswith("google_secret_manager_secret.pr[")
     }
     _expect(len(generations) <= 1, "Secret generations disagree; manual cleanup is required.")
-    _expect(isinstance(state.get("lineage"), str) and state["lineage"]
-            and type(state.get("serial")) is int and state["serial"] >= 0,
-            "Terraform state lineage or serial is missing.")
     return incarnation, inventory
 
 
@@ -383,18 +383,14 @@ class PreviewTeardown:
             ["terraform", f"-chdir={TERRAFORM_ROOT}", "state", "pull"],
             capture_output=True, timeout=120, check=False,
         )
-        if result.returncode != 0:
-            diagnostic = result.stdout + result.stderr
-            _expect(b"No state file was found" in diagnostic
-                    and b"403" not in diagnostic and b"PERMISSION_DENIED" not in diagnostic,
-                    "Cannot read authoritative PR state; cleanup refused.")
-            return {"resources": []}
-        if not result.stdout.strip():
-            return {"resources": []}
+        _expect(result.returncode == 0 and result.stdout.strip(),
+                "Cannot read authoritative PR state; cleanup refused.")
         try:
-            return json.loads(result.stdout)
+            state = json.loads(result.stdout)
         except (ValueError, UnicodeError):
             raise LifecycleError("Teardown state is invalid JSON.") from None
+        validate_state(state, self.number)
+        return state
 
     def guard(self) -> None:
         self.revalidate()
@@ -677,8 +673,8 @@ class PreviewTeardown:
             absent_services = self.verify_runtime_absent()
             self.verify_runtime_iam_absent({}, absent_services)
             self.progress = (
-                "No database deletion attempted without state ownership evidence. "
-                "If state was removed out of band, verify orphan databases/secrets manually."
+                "Retained state has no tracked preview resources; no database deletion attempted. "
+                "Untracked orphan resources require separate ownership verification."
             )
             self.cleanup_tags()
             self.status = "No-op: no tracked preview resources"

@@ -516,9 +516,16 @@ not retry based only on its deterministic name. A partial Terraform failure
 preserves its normal backend state; retry the same manual dispatch only when
 the remaining state still proves ownership. Missing identity after an
 out-of-band/partial deletion requires operator inspection, never adoption or
-state removal to bypass checks. A fully empty/missing state produces a
+state removal to bypass checks. A valid existing empty state produces a
 successful **no tracked resources** no-op, not an assertion that untracked
-orphan databases/secrets cannot exist.
+orphan databases/secrets cannot exist. Even an empty inventory must contain
+a nonblank string lineage and a nonnegative integer serial (not a boolean);
+it does not require an incarnation output after successful cleanup. Missing
+or unreadable authoritative state, nonzero Terraform exit codes, empty/blank
+output, invalid JSON and structurally malformed state all fail closed.
+Missing-state diagnostics are never converted into manufactured empty state.
+This intentionally also fails closed for a never-provisioned PR with no state
+object; a successful cleanup/no-op cannot be inferred from absent evidence.
 
 A retry from PR #56's serial-44 partial state (three owned secret containers
 and five secret grants, with the original lineage and identity output) does
