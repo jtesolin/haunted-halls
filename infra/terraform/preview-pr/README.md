@@ -490,6 +490,12 @@ Every destructive step rechecks PR closure and unchanged state. Queued
 deployments still re-query eligibility and refuse closed PRs. If a PR reopens
 while teardown is queued, teardown fails before deletion. A late state,
 incarnation, generation, PR head or closure-time change also fails closed.
+State guards compare full parsed `terraform state pull` snapshots. Only the
+address-keyed `check_results` collection and its nested `objects` collections
+are sorted before hashing: Terraform can emit these in different map iteration
+orders across identical reads. No check statuses, failures, duplicate entries,
+resource attributes, outputs, lineage or serial are discarded. Resource-list
+and resource-attribute list ordering remain significant.
 These are bounded checks, not a transaction spanning GitHub, Terraform and SQL:
 an operator must not bypass the shared workflow lock or reopen during apply.
 No generalized reopening/orphan-scanning mechanism is added.
