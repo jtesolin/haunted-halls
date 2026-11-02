@@ -404,7 +404,10 @@ It has no Actions dispatch permission and never executes the PR image.
    only owned deletes or unchanged no-ops, no creations, updates, replacements
    or foreign resources. Re-query GitHub and compare the entire state,
    including lineage and serial, immediately before applying that saved plan.
-   Verify state removal and absence of the exact Cloud Run service/job names.
+   Verify refreshed state removal, absence of the exact Cloud Run service/job
+   names, and the exact Cloud Run `roles/run.invoker` and IAP
+   `roles/iap.httpsResourceAccessor` policies. A surviving role member or
+   policy API error blocks database deletion and success reporting.
 4. Drop only `haunted_halls_web_pr_<N>` through the existing fixed trusted
    provisioner. Require a validated `preview_identity` output linking PR,
    incarnation, database, project and backend; for partial retries, the

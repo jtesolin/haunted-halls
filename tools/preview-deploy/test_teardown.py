@@ -37,7 +37,7 @@ def closed():
     return pr
 
 
-def state():
+def state(iam_separator="/"):
     number, project, region = "56", teardown.PREVIEW_PROJECT, teardown.PREVIEW_REGION
     labels = {
         "app": "haunted-halls", "environment": "preview", "repository": "web",
@@ -67,7 +67,7 @@ def state():
         role_name = "roles/secretmanager.secretAccessor"
         add("google_secret_manager_secret_iam_member", "runtime", {
             "project": project, "secret_id": secret, "member": member, "role": role_name,
-            "id": f"{secret}/{role_name}/{member}",
+            "id": f"{secret}{iam_separator}{role_name}{iam_separator}{member}",
         }, key)
     for kind, name, suffix in (
         ("google_cloud_run_v2_service", "frontend", "frontend"),
@@ -89,14 +89,14 @@ def state():
         add("google_cloud_run_v2_service_iam_member", key, {
             "project": project, "location": region, "name": full_name,
             "role": "roles/run.invoker", "member": member,
-            "id": f"{full_name}/roles/run.invoker/{member}",
+            "id": f"{full_name}{iam_separator}roles/run.invoker{iam_separator}{member}",
         })
     iap = f"projects/{project}/iap_web/cloud_run-{region}/services/hh-web-pr-{number}-frontend"
     member = "user:tester@example.com"
     add("google_iap_web_cloud_run_service_iam_member", "tester", {
         "project": project, "location": region, "cloud_run_service_name": iap,
         "member": member, "role": "roles/iap.httpsResourceAccessor",
-        "id": f"{iap}/roles/iap.httpsResourceAccessor/{member}",
+        "id": f"{iap}{iam_separator}roles/iap.httpsResourceAccessor{iam_separator}{member}",
     }, member)
     return {
         "lineage": "test-lineage", "serial": 42, "resources": resources,
@@ -203,6 +203,24 @@ class OwnershipTests(unittest.TestCase):
         partial.pop("outputs")
         self.assertEqual(teardown.validate_state(partial, "56")[0], INCARNATION)
         self.assertEqual(teardown.validate_state({"resources": []}, "56"), (None, {}))
+
+    def test_sanitized_pr56_slash_ids_and_provider_space_ids_validate_for_all_iam_types(self):
+        slash_state = state(iam_separator="/")
+        space_state = state(iam_separator=" ")
+        for value in (slash_state, space_state):
+            incarnation, resources = teardown.validate_state(value, "56")
+            self.assertEqual(incarnation, INCARNATION)
+            self.assertEqual(
+                sum("_iam_member." in address for address in resources),
+                8,
+            )
+        slash_ids = {
+            resource["type"]: resource["instances"][0]["attributes"]["id"]
+            for resource in slash_state["resources"] if "_iam_member" in resource["type"]
+        }
+        self.assertIn("/roles/secretmanager.secretAccessor/", slash_ids["google_secret_manager_secret_iam_member"])
+        self.assertIn("/roles/run.invoker/", slash_ids["google_cloud_run_v2_service_iam_member"])
+        self.assertIn("/roles/iap.httpsResourceAccessor/", slash_ids["google_iap_web_cloud_run_service_iam_member"])
 
     def test_foreign_pr_shared_projects_or_unexpected_resources_are_rejected(self):
         for mutate in (
@@ -359,6 +377,7 @@ class ExecutionTests(unittest.TestCase):
             patch.object(instance, "guard"),
             patch.object(instance, "destroy", side_effect=destroy),
             patch.object(instance, "verify_runtime_absent", side_effect=lambda: calls.append("verify-runtime")),
+            patch.object(instance, "verify_runtime_iam_absent", side_effect=lambda *a: calls.append("verify-runtime-iam")),
             patch.object(instance, "verify_secrets_absent", side_effect=lambda x: calls.append("verify-secrets")),
             patch.object(instance, "cleanup_tags", side_effect=lambda: calls.append("tags")),
             patch.object(teardown, "request_database", side_effect=database),
@@ -372,18 +391,21 @@ class ExecutionTests(unittest.TestCase):
     def test_runtime_database_secrets_and_tags_are_removed_in_order(self):
         instance, calls, error = self.run_mocked()
         self.assertIsNone(error)
-        self.assertEqual(calls, ["runtime", "verify-runtime", "database", "secrets", "verify-secrets", "tags"])
+        self.assertEqual(calls, [
+            "runtime", "verify-runtime", "verify-runtime-iam", "database",
+            "secrets", "verify-secrets", "tags",
+        ])
         self.assertEqual(instance.status, "Removed")
 
     def test_already_removed_is_noop_without_database_adoption(self):
         instance, calls, error = self.run_mocked({"resources": []})
         self.assertIsNone(error)
-        self.assertEqual(calls, ["verify-runtime", "tags"])
+        self.assertEqual(calls, ["verify-runtime", "verify-runtime-iam", "tags"])
         self.assertIn("No-op", instance.status)
 
     def test_database_owner_failure_preserves_secrets_and_reports_partial_cleanup(self):
         instance, calls, error = self.run_mocked(database_error="Database owner mismatch")
-        self.assertEqual(calls, ["runtime", "verify-runtime", "database"])
+        self.assertEqual(calls, ["runtime", "verify-runtime", "verify-runtime-iam", "database"])
         self.assertIn("owner mismatch", error)
         self.assertEqual(instance.status, "Cleanup incomplete")
         self.assertIn("database and secret cleanup pending", instance.progress)
@@ -392,7 +414,7 @@ class ExecutionTests(unittest.TestCase):
         instance, calls, error = self.run_mocked(database_result={
             "operation": "drop", "database": "haunted_halls_web_pr_57", "dropped": True,
         })
-        self.assertEqual(calls, ["runtime", "verify-runtime", "database"])
+        self.assertEqual(calls, ["runtime", "verify-runtime", "verify-runtime-iam", "database"])
         self.assertIn("not verified", error)
         self.assertEqual(instance.status, "Cleanup incomplete")
 
@@ -410,7 +432,7 @@ class ExecutionTests(unittest.TestCase):
         value.pop("outputs")
         value["resources"] = [item for item in value["resources"] if item["type"].startswith("google_cloud_run")]
         instance, calls, error = self.run_mocked(value)
-        self.assertEqual(calls, ["runtime", "verify-runtime"])
+        self.assertEqual(calls, ["runtime", "verify-runtime", "verify-runtime-iam"])
         self.assertIn("manual cleanup required", error)
 
     def test_permission_error_is_not_treated_as_missing_secret(self):
@@ -470,6 +492,83 @@ class ExecutionTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(lifecycle.LifecycleError, "authoritative PR state"):
                 instance.read_state()
+
+    def test_missing_terraform_state_is_detected_on_either_stream_or_empty_success(self):
+        instance = self.make()
+        with patch.object(instance, "check_backend"):
+            for result in (
+                subprocess.CompletedProcess([], 1, b"No state file was found!", b""),
+                subprocess.CompletedProcess([], 1, b"", b"No state file was found!"),
+                subprocess.CompletedProcess([], 0, b"", b""),
+            ):
+                with patch.object(teardown.subprocess, "run", return_value=result):
+                    self.assertEqual(instance.read_state(), {"resources": []})
+            for result in (
+                subprocess.CompletedProcess([], 1, b"", b"Permission denied (403)"),
+                subprocess.CompletedProcess([], 1, b"No state file was found!", b"PERMISSION_DENIED"),
+                subprocess.CompletedProcess([], 0, b"not-json", b""),
+            ):
+                with patch.object(teardown.subprocess, "run", return_value=result):
+                    with self.assertRaises(lifecycle.LifecycleError):
+                        instance.read_state()
+
+    def test_cloud_run_and_iap_policy_reads_reject_remaining_and_api_errors(self):
+        instance = self.make()
+        engine = "hh-web-pr-56-engine"
+        owned = {
+            "bindings": [{"role": "roles/run.invoker", "members": [
+                "serviceAccount:hh-preview-frontend@hh-preview-458395246135.iam.gserviceaccount.com",
+            ]}],
+        }
+        with patch.object(teardown.subprocess, "run", return_value=subprocess.CompletedProcess(
+            [], 0, json.dumps(owned).encode(), b"",
+        )):
+            with self.assertRaisesRegex(lifecycle.LifecycleError, "binding remains"):
+                instance.verify_cloud_run_iam_absent(engine, parent_absent=True)
+        missing_service = subprocess.CompletedProcess(
+            [], 1, b"", f"NOT_FOUND: resource {engine}".encode(),
+        )
+        with patch.object(teardown.subprocess, "run", return_value=missing_service):
+            with self.assertRaisesRegex(lifecycle.LifecycleError, "policy could not be verified"):
+                instance.verify_cloud_run_iam_absent(engine, parent_absent=False)
+            instance.verify_cloud_run_iam_absent(engine, parent_absent=True)
+        with patch.object(teardown.subprocess, "run", return_value=subprocess.CompletedProcess(
+            [], 1, b"", b"PERMISSION_DENIED",
+        )):
+            with self.assertRaisesRegex(lifecycle.LifecycleError, "policy could not be verified"):
+                instance.verify_cloud_run_iam_absent(engine, parent_absent=True)
+
+        with (
+            patch.object(teardown.Commands, "run", return_value=b"access-token"),
+            patch.object(teardown.urllib.request, "urlopen", return_value=io.BytesIO(b'{"bindings":[]}')),
+        ):
+            instance.verify_iap_iam_absent(parent_absent=True)
+        with (
+            patch.object(teardown.Commands, "run", return_value=b"access-token"),
+            patch.object(teardown.urllib.request, "urlopen", return_value=io.BytesIO(json.dumps({
+                "bindings": [{"role": "roles/iap.httpsResourceAccessor",
+                              "members": ["user:tester@example.com"]}],
+            }).encode())),
+        ):
+            with self.assertRaisesRegex(lifecycle.LifecycleError, "IAP tester binding remains"):
+                instance.verify_iap_iam_absent(parent_absent=True)
+        not_found = lifecycle.urllib.error.HTTPError(
+            "https://iap.googleapis.com/fixed", 404, "not found", {}, io.BytesIO(),
+        )
+        with (
+            patch.object(teardown.Commands, "run", return_value=b"access-token"),
+            patch.object(teardown.urllib.request, "urlopen", side_effect=not_found),
+        ):
+            instance.verify_iap_iam_absent(parent_absent=True)
+        not_found = lifecycle.urllib.error.HTTPError(
+            "https://iap.googleapis.com/fixed", 404, "not found", {}, io.BytesIO(),
+        )
+        with (
+            patch.object(teardown.Commands, "run", return_value=b"access-token"),
+            patch.object(teardown.urllib.request, "urlopen", side_effect=not_found),
+        ):
+            with self.assertRaisesRegex(lifecycle.LifecycleError, "policy API failed"):
+                instance.verify_iap_iam_absent(parent_absent=False)
 
     def test_terraform_apply_failure_does_not_claim_success(self):
         instance = self.make()

@@ -11,6 +11,8 @@ import re
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -38,6 +40,11 @@ RUNTIME = {
 }
 ALLOWED = RUNTIME | {
     "google_secret_manager_secret.pr", "google_secret_manager_secret_iam_member.runtime",
+}
+ALLOWED_IAM_ADDRESSES = {
+    "google_cloud_run_v2_service_iam_member.engine_frontend",
+    "google_cloud_run_v2_service_iam_member.frontend_iap",
+    "google_iap_web_cloud_run_service_iam_member.tester",
 }
 ROLES = {"nextauth": "nextauth", "internal_token": "internal-token", "database_url": "database-url"}
 GRANTS = {
@@ -160,8 +167,12 @@ def validate_resource(address: str, values: object, number: str, incarnation: st
                 == f"serviceAccount:hh-preview-{runtime}@{PREVIEW_PROJECT}.iam.gserviceaccount.com"
                 and not values.get("condition"),
                 "Secret IAM grant does not belong to this preview.")
-        _expect(values.get("id") == f"{values['secret_id']}/{values['role']}/{values['member']}",
-                "Secret IAM resource ID is incorrect.")
+        _expect(
+            iam_member_id_matches(
+                values.get("id"), values["secret_id"], values["role"], values["member"]
+            ),
+            "Secret IAM resource ID is incorrect.",
+        )
     else:
         suffix = {
             "google_cloud_run_v2_service.frontend": "frontend",
@@ -184,10 +195,15 @@ def validate_resource(address: str, values: object, number: str, incarnation: st
                     and values.get("role") == "roles/iap.httpsResourceAccessor"
                     and not values.get("condition"),
                     "IAP binding is not confined to this preview.")
-            _expect(values.get("id") == (
-                f"projects/{PREVIEW_PROJECT}/iap_web/cloud_run-{PREVIEW_REGION}/services/"
-                f"{name}/roles/iap.httpsResourceAccessor/{member}"
-            ), "IAP resource ID is incorrect.")
+            _expect(
+                iam_member_id_matches(
+                    values.get("id"),
+                    f"projects/{PREVIEW_PROJECT}/iap_web/cloud_run-{PREVIEW_REGION}/services/{name}",
+                    values["role"],
+                    member,
+                ),
+                "IAP resource ID is incorrect.",
+            )
         else:
             _expect(address == base and values.get("name") in {
                 name, f"projects/{PREVIEW_PROJECT}/locations/{PREVIEW_REGION}/services/{name}",
@@ -202,10 +218,15 @@ def validate_resource(address: str, values: object, number: str, incarnation: st
                 _expect(values.get("role") == "roles/run.invoker"
                         and values.get("member") == member and not values.get("condition"),
                         "Cloud Run IAM binding is incorrect.")
-                _expect(values.get("id") == (
-                    f"projects/{PREVIEW_PROJECT}/locations/{PREVIEW_REGION}/services/"
-                    f"{name}/roles/run.invoker/{member}"
-                ), "Cloud Run IAM resource ID is incorrect.")
+                _expect(
+                    iam_member_id_matches(
+                        values.get("id"),
+                        f"projects/{PREVIEW_PROJECT}/locations/{PREVIEW_REGION}/services/{name}",
+                        values["role"],
+                        member,
+                    ),
+                    "Cloud Run IAM resource ID is incorrect.",
+                )
             else:
                 kind = "jobs" if suffix == "migrate" else "services"
                 _expect(values.get("id") == f"projects/{PREVIEW_PROJECT}/locations/{PREVIEW_REGION}/{kind}/{name}",
@@ -226,6 +247,13 @@ def validate_resource(address: str, values: object, number: str, incarnation: st
             _expect(isinstance(labels.get("secret_generation"), str)
                     and STATE_GENERATION_RE.fullmatch(labels["secret_generation"]),
                     "Secret generation is invalid.")
+
+
+def iam_member_id_matches(value: object, resource: str, role: str, member: str) -> bool:
+    return isinstance(value, str) and value in (
+        f"{resource} {role} {member}",
+        f"{resource}/{role}/{member}",
+    )
 
 
 def validate_state(state: object, number: str) -> tuple[str | None, dict[str, dict[str, Any]]]:
@@ -347,9 +375,12 @@ class PreviewTeardown:
             capture_output=True, timeout=120, check=False,
         )
         if result.returncode != 0:
-            _expect(b"No state file was found" in result.stderr
-                    and b"403" not in result.stderr and b"PERMISSION_DENIED" not in result.stderr,
+            diagnostic = result.stdout + result.stderr
+            _expect(b"No state file was found" in diagnostic
+                    and b"403" not in diagnostic and b"PERMISSION_DENIED" not in diagnostic,
                     "Cannot read authoritative PR state; cleanup refused.")
+            return {"resources": []}
+        if not result.stdout.strip():
             return {"resources": []}
         try:
             return json.loads(result.stdout)
@@ -450,7 +481,8 @@ class PreviewTeardown:
         _expect(not any(address.split("[", 1)[0] in allowed for address in remaining),
                 "Terraform still tracks resources after destroy; retry or clean up manually.")
 
-    def verify_runtime_absent(self) -> None:
+    def verify_runtime_absent(self) -> set[str]:
+        present: set[str] = set()
         for kind, suffixes in (("services", ("frontend", "engine")), ("jobs", ("migrate",))):
             names = {f"hh-web-pr-{self.number}-{suffix}" for suffix in suffixes}
             values = Commands.json([
@@ -462,8 +494,117 @@ class PreviewTeardown:
                 _expect(isinstance(item, dict), "Cloud Run inventory is malformed.")
                 name = item.get("metadata", {}).get("name") or item.get("name")
                 _expect(isinstance(name, str), "Cloud Run identity is missing.")
-                _expect(name.rsplit("/", 1)[-1] not in names,
-                        "A PR runtime resource remains; database deletion is unsafe.")
+                if name.rsplit("/", 1)[-1] in names:
+                    present.add(name.rsplit("/", 1)[-1])
+        _expect(not present, "A PR runtime resource remains; database deletion is unsafe.")
+        return {f"hh-web-pr-{self.number}-frontend", f"hh-web-pr-{self.number}-engine"}
+
+    @staticmethod
+    def policy_members(policy: object, role: str) -> set[str]:
+        _expect(isinstance(policy, dict) and isinstance(policy.get("bindings"), list),
+                "Resource IAM policy is malformed or unavailable.")
+        members: set[str] = set()
+        for binding in policy["bindings"]:
+            _expect(isinstance(binding, dict)
+                    and isinstance(binding.get("role"), str)
+                    and isinstance(binding.get("members", []), list),
+                    "Resource IAM policy contains a malformed binding.")
+            if binding["role"] == role:
+                _expect(
+                    all(isinstance(member, str) for member in binding.get("members", []))
+                    and not binding.get("condition"),
+                    "Resource IAM policy contains a conditional or malformed owned binding.",
+                )
+                members.update(binding.get("members", []))
+        return members
+
+    def verify_cloud_run_iam_absent(self, service: str, parent_absent: bool) -> None:
+        result = subprocess.run(
+            [
+                "gcloud", "run", "services", "get-iam-policy", service,
+                f"--project={PREVIEW_PROJECT}", f"--region={PREVIEW_REGION}", "--format=json",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120,
+            check=False,
+        )
+        if result.returncode != 0:
+            diagnostic = result.stdout + result.stderr
+            _expect(
+                parent_absent
+                and (b"NOT_FOUND" in diagnostic or b"not found" in diagnostic.lower())
+                and service.encode() in diagnostic
+                and b"PERMISSION_DENIED" not in diagnostic and b"403" not in diagnostic,
+                "Cloud Run IAM policy could not be verified; database deletion is blocked.",
+            )
+            return
+        try:
+            policy = json.loads(result.stdout)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise LifecycleError("Cloud Run IAM policy returned invalid metadata.") from None
+        remaining = self.policy_members(policy, "roles/run.invoker")
+        _expect(not remaining, "An owned Cloud Run invoker binding remains; database deletion is blocked.")
+
+    def verify_iap_iam_absent(self, parent_absent: bool) -> None:
+        token = Commands.run(
+            ["gcloud", "auth", "print-access-token"],
+            label="IAP teardown policy access token",
+        ).decode("utf-8", errors="strict").strip()
+        _expect(bool(token), "IAP teardown policy access token is unavailable.")
+        resource = (
+            f"https://iap.googleapis.com/v1/projects/{PREVIEW_PROJECT_NUMBER}"
+            f"/iap_web/cloud_run-{PREVIEW_REGION}/services/"
+            f"hh-web-pr-{self.number}-frontend"
+        )
+        request = urllib.request.Request(
+            resource + ":getIamPolicy?options.requestedPolicyVersion=3",
+            data=json.dumps({"options": {"requestedPolicyVersion": 3}}).encode(),
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        del token
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                policy = json.load(response)
+        except urllib.error.HTTPError as error:
+            try:
+                _expect(
+                    error.code == 404 and parent_absent,
+                    "IAP policy API failed; database deletion is blocked.",
+                )
+                return
+            finally:
+                error.close()
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+            raise LifecycleError("IAP policy could not be verified; database deletion is blocked.") from None
+        remaining = self.policy_members(policy, "roles/iap.httpsResourceAccessor")
+        _expect(not remaining,
+                "An owned IAP tester binding remains; database deletion is blocked.")
+
+    def verify_runtime_iam_absent(
+        self, inventory: dict[str, dict[str, Any]], absent_services: set[str],
+    ) -> None:
+        names = {
+            f"hh-web-pr-{self.number}-engine",
+            f"hh-web-pr-{self.number}-frontend",
+        }
+        _expect(names <= absent_services,
+                "Runtime parent absence was not verified before checking its IAM policy.")
+        expected_addresses = {
+            address for address in inventory if "_iam_member." in address
+        }
+        _expect(expected_addresses <= ALLOWED_IAM_ADDRESSES,
+                "Runtime state contains an unexpected IAM address.")
+        self.verify_cloud_run_iam_absent(
+            f"hh-web-pr-{self.number}-engine",
+            f"hh-web-pr-{self.number}-engine" in absent_services,
+        )
+        self.verify_cloud_run_iam_absent(
+            f"hh-web-pr-{self.number}-frontend",
+            f"hh-web-pr-{self.number}-frontend" in absent_services,
+        )
+        self.verify_iap_iam_absent(f"hh-web-pr-{self.number}-frontend" in absent_services)
 
     def verify_secrets_absent(self, secrets: list[str]) -> None:
         for secret in secrets:
@@ -512,7 +653,8 @@ class PreviewTeardown:
         self.state = self.read_state()
         incarnation, inventory = validate_state(self.state, self.number)
         if not inventory and incarnation is None:
-            self.verify_runtime_absent()
+            absent_services = self.verify_runtime_absent()
+            self.verify_runtime_iam_absent({}, absent_services)
             self.progress = (
                 "No database deletion attempted without state ownership evidence. "
                 "If state was removed out of band, verify orphan databases/secrets manually."
@@ -537,7 +679,8 @@ class PreviewTeardown:
         secrets = [f"hh-web-pr-{self.number}-i-{incarnation}-{suffix}"
                    for suffix in ROLES.values()]
         self.destroy(runtime_only=True)
-        self.verify_runtime_absent()
+        absent_services = self.verify_runtime_absent()
+        self.verify_runtime_iam_absent(inventory, absent_services)
         self.progress = "Runtime removed and verified; database and secret cleanup pending."
         _expect(database_owned,
                 "Database ownership evidence is incomplete. Database and remaining secrets were left intact; manual cleanup required.")
