@@ -404,6 +404,73 @@ class ExecutionTests(unittest.TestCase):
             )
             self.assertEqual(run_plan.call_args.kwargs["targets"], teardown.ALLOWED)
 
+    def test_runtime_destroy_accepts_partial_state_with_only_secret_resources_remaining(self):
+        instance = self.make()
+        original = state()
+        instance.state = original
+        runtime_inventory = {
+            address: attributes for address, attributes in inventory().items()
+            if address.split("[", 1)[0] in teardown.RUNTIME
+        }
+        runtime_plan = plan(runtime_inventory)
+        remaining_state = copy.deepcopy(original)
+        remaining_state["serial"] = original["serial"] + 1
+        remaining_state["resources"] = [
+            resource for resource in remaining_state["resources"]
+            if resource["type"] in {
+                "google_secret_manager_secret",
+                "google_secret_manager_secret_iam_member",
+            }
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            instance.directory = Path(directory)
+            with (
+                patch.object(instance, "guard"),
+                patch.object(instance, "read_state", return_value=remaining_state),
+                patch.object(teardown, "run_terraform_plan"),
+                patch.object(teardown.Commands, "json", return_value=runtime_plan),
+                patch.object(teardown.Commands, "run"),
+            ):
+                instance.destroy(runtime_only=True)
+        _, remaining = teardown.validate_state(instance.state, "56")
+        self.assertTrue(remaining)
+        self.assertTrue(all(
+            address.split("[", 1)[0] not in teardown.RUNTIME
+            for address in remaining
+        ))
+
+    def test_final_destroy_rejects_expected_secrets_that_remain_after_apply(self):
+        instance = self.make()
+        original = state()
+        remaining_state = copy.deepcopy(original)
+        remaining_state["serial"] = original["serial"] + 1
+        remaining_state["resources"] = [
+            resource for resource in remaining_state["resources"]
+            if resource["type"] in {
+                "google_secret_manager_secret",
+                "google_secret_manager_secret_iam_member",
+            }
+        ]
+        secret_inventory = {
+            address: attributes for address, attributes in inventory().items()
+            if address.split("[", 1)[0] in {
+                "google_secret_manager_secret.pr",
+                "google_secret_manager_secret_iam_member.runtime",
+            }
+        }
+        instance.state = remaining_state
+        with tempfile.TemporaryDirectory() as directory:
+            instance.directory = Path(directory)
+            with (
+                patch.object(instance, "guard"),
+                patch.object(instance, "read_state", return_value=remaining_state),
+                patch.object(teardown, "run_terraform_plan"),
+                patch.object(teardown.Commands, "json", return_value=plan(secret_inventory)),
+                patch.object(teardown.Commands, "run"),
+            ):
+                with self.assertRaisesRegex(lifecycle.LifecycleError, "cleanup phase"):
+                    instance.destroy(runtime_only=False)
+
     def test_new_incarnation_after_apply_cannot_be_used_for_database_deletion(self):
         instance = self.make()
         instance.state = state()
@@ -817,17 +884,39 @@ class ReportingAndWorkflowTests(unittest.TestCase):
         self.assertEqual(body.count(teardown.COMMENT_MARKER), 1)
 
     def test_workflow_uses_same_lock_trusted_source_and_existing_wif_only(self):
-        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/preview-deploy.yml").read_text()
+        root = Path(__file__).resolve().parents[2] / ".github/workflows"
+        workflow = (root / "preview-deploy.yml").read_text()
         job = workflow.split("\n  teardown:\n", 1)[1]
+        executor = (root / "preview-teardown-executor.yml").read_text()
         self.assertIn("pull_request_target:\n    branches: [main]\n    types: [closed]", workflow)
         self.assertIn("group: frontend-preview-pr-${{ github.event.pull_request.number || inputs.pull_request_number }}", job)
         self.assertIn("cancel-in-progress: false", job)
-        self.assertIn("ref: ${{ github.sha }}", job)
+        self.assertIn("uses: ./.github/workflows/preview-teardown-executor.yml", job)
+        self.assertIn("ref: ${{ github.sha }}", executor)
         self.assertNotIn("pull_request.head", job)
-        self.assertLess(job.index("Validate closed PR before cloud authentication"), job.index("uses: google-github-actions/auth"))
-        self.assertIn("service_account: ${{ env.DEPLOY_SERVICE_ACCOUNT }}", job)
+        self.assertLess(
+            executor.index("Validate closed PR before cloud authentication"),
+            executor.index("uses: google-github-actions/auth"),
+        )
+        self.assertIn("service_account: ${{ env.DEPLOY_SERVICE_ACCOUNT }}", executor)
         self.assertNotIn("actions: write", job)
-        self.assertNotIn("continue-on-error", job)
+        self.assertNotIn("continue-on-error", executor)
+
+    def test_teardown_and_secret_preparation_share_inner_lock_under_outer_per_pr_lock(self):
+        root = Path(__file__).resolve().parents[2] / ".github/workflows"
+        deployment = (root / "preview-deploy.yml").read_text()
+        teardown_job = deployment.split("\n  teardown:\n", 1)[1]
+        secret_preparation = (root / "preview-secret-prepare.yml").read_text()
+        executor = (root / "preview-teardown-executor.yml").read_text()
+
+        outer_lock = "frontend-preview-pr-${{ github.event.pull_request.number || inputs.pull_request_number }}"
+        inner_lock = "preview-secret-preparation-${{ inputs.pull_request_number }}"
+        self.assertIn(outer_lock, teardown_job)
+        self.assertIn("group: frontend-preview-pr-${{ github.event.workflow_run.pull_requests[0].number || github.run_id }}", deployment)
+        self.assertIn("group: preview-secret-preparation-${{ inputs.pull_request_number }}", secret_preparation)
+        self.assertIn(inner_lock, executor)
+        self.assertNotEqual(outer_lock, inner_lock)
+        self.assertIn("with:\n      pull_request_number: ${{ github.event.pull_request.number || inputs.pull_request_number }}", teardown_job)
 
 
 if __name__ == "__main__":

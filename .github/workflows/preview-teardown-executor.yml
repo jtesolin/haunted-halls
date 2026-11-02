@@ -1,0 +1,107 @@
+name: Preview Teardown Executor
+
+on:
+  workflow_call:
+    inputs:
+      pull_request_number:
+        description: Closed frontend PR number
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+  pull-requests: write
+  issues: write
+
+env:
+  GCP_PROJECT: hh-preview-458395246135
+  WIF_PROVIDER: projects/1001419903197/locations/global/workloadIdentityPools/hh-preview-github/providers/github-preview
+  DEPLOY_SERVICE_ACCOUNT: hh-preview-deployer@hh-preview-458395246135.iam.gserviceaccount.com
+
+jobs:
+  teardown:
+    name: Execute ownership-verified preview teardown
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: preview-secret-preparation-${{ inputs.pull_request_number }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Require trusted teardown workflow context
+        env:
+          INPUT_PR_NUMBER: ${{ inputs.pull_request_number }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_WORKFLOW_REF" = "jtesolin/haunted-halls/.github/workflows/preview-deploy.yml@refs/heads/main"
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_REPOSITORY" = "jtesolin/haunted-halls"
+          test "$GITHUB_EVENT_NAME" = "pull_request_target" || test "$GITHUB_EVENT_NAME" = "workflow_dispatch"
+          test "$INPUT_PR_NUMBER" = "$(jq -r '.pull_request.number // .inputs.pull_request_number' "$GITHUB_EVENT_PATH")"
+
+      - name: Check out only the trusted main revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify trusted source
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Validate closed PR before cloud authentication
+        run: >-
+          python tools/preview-deploy/teardown.py prepare
+          --event "$GITHUB_EVENT_PATH"
+          --context "$RUNNER_TEMP/teardown-context.json"
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.11.4
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Authenticate directly with WIF for teardown state
+        id: teardown-backend-auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          create_credentials_file: true
+          export_environment_variables: false
+
+      - name: Authenticate as the existing preview deployer
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT }}
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOY_SERVICE_ACCOUNT }}
+          export_environment_variables: true
+
+      - name: Remove only ownership-verified preview resources
+        id: cleanup
+        env:
+          CLOUDSDK_CORE_PROJECT: ${{ env.GCP_PROJECT }}
+          GOOGLE_BACKEND_CREDENTIALS: ${{ steps.teardown-backend-auth.outputs.credentials_file_path }}
+        run: >-
+          python tools/preview-deploy/teardown.py run
+          --context "$RUNNER_TEMP/teardown-context.json"
+
+      - name: Report incomplete cleanup
+        if: ${{ failure() }}
+        run: |
+          cat <<'SUMMARY' | tee -a "$GITHUB_STEP_SUMMARY"
+          ## Preview teardown failed
+          Cleanup is not confirmed complete. Review the failed step and any partial-cleanup report above.
+          Correct the ownership, authentication, or API failure and retry trusted manual teardown for the same closed PR.
+          Leave ambiguous resources intact. Do not remove state or bypass ownership checks.
+          SUMMARY

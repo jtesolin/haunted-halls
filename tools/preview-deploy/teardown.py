@@ -482,8 +482,10 @@ class PreviewTeardown:
                 and type(self.state.get("serial")) is int and self.state["serial"] >= serial
                 and next_incarnation in {None, incarnation},
                 "State lineage or incarnation changed after apply; stop for manual review.")
-        _expect(not any(address.split("[", 1)[0] in allowed for address in remaining),
-                "Terraform still tracks resources after destroy; retry or clean up manually.")
+        expected_remaining = set() if not runtime_only else ALLOWED - RUNTIME
+        remaining_bases = {address.split("[", 1)[0] for address in remaining}
+        _expect(not remaining_bases.intersection(allowed - expected_remaining),
+                "Terraform still tracks resources for this cleanup phase; retry or clean up manually.")
 
     def verify_runtime_absent(self) -> set[str]:
         present: set[str] = set()

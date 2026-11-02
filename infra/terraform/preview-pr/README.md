@@ -117,6 +117,13 @@ It accepts only the frontend repository key, canonical PR number, a
 32-character lowercase-hex PR incarnation, and a positive generation number.
 The tool derives all three Secret Manager container names itself; it accepts no
 project, secret path, database, SQL endpoint, command, or payload override.
+Secret writes use the per-PR `preview-secret-preparation-<N>` Actions
+concurrency group. Deployment and teardown retain the outer
+`frontend-preview-pr-<N>` group while waiting for the secret-preparation group;
+the teardown reusable executor acquires these groups in that same order.
+Thus teardown cannot overlap either a deployment or a standalone/manual secret
+preparation, without making the deployment wait on a lock held by its child
+workflow.
 
 Before authentication, the privileged job installs its complete Python 3.12
 Linux x86_64 runtime dependency closure from the committed, reviewed
@@ -389,11 +396,13 @@ It has no Actions dispatch permission and never executes the PR image.
 
 ### Ownership checks and removal order
 
-1. Share deployment's `frontend-preview-pr-<N>` concurrency group with
-   `cancel-in-progress: false`. Recheck the PR's closure identity; refuse
-   active secret preparation for this PR. Initialize only the fixed backend,
-   prefix, impersonation identity and default workspace in a fresh private
-   `TF_DATA_DIR`.
+1. Hold deployment's `frontend-preview-pr-<N>` concurrency group with
+   `cancel-in-progress: false`, then call the reusable teardown executor,
+   which shares the secret preparer's `preview-secret-preparation-<N>` group.
+   Both workflows acquire the outer per-PR group before the inner preparation
+   group. Recheck the PR's closure identity; refuse active secret preparation
+   for this PR. Initialize only the fixed backend, prefix, impersonation
+   identity and default workspace in a fresh private `TF_DATA_DIR`.
 2. Validate every state resource against the exact per-PR resource address,
    provider, project, region, resource ID, ownership labels, incarnation and
    secret generation. IAM entries must identify the exact expected secret,
