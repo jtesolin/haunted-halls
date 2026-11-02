@@ -380,6 +380,29 @@ Manual dispatch uses `operation=teardown` and `pull_request_number=<N>` on
 remains `acceptance` (the existing non-destructive prerequisite checks).
 Historical closure events are not replayed; do not reopen PR #56.
 
+The local reusable executor reference selects the caller's exact commit.
+Under `workflow_call`, GitHub retains the caller's `github` context, event
+payload and workflow ref: the executor therefore checks `preview-deploy.yml`
+on `main` and the original `pull_request_target` or `workflow_dispatch` event,
+not an event named `workflow_call`. It also checks the passed PR number against
+that payload before checkout or authentication. No WIF trust change is needed.
+
+The preparer's workflow-level `preview-secret-preparation-<N>` lock spans
+every step, including all version writes. The executor's job-level lock uses
+the identical repository-wide key and spans both destroy phases, database
+deletion and verification. Deployment's Terraform secret-container and
+generation-label writes are covered by the outer PR lock shared with teardown.
+Queued runs and reruns acquire that same key; neither
+run ID nor attempt changes it. `cancel-in-progress: false` preserves an active
+holder. GitHub may replace a pending run; this is mutual exclusion, not a
+guarantee that every queued request executes. Retry canceled cleanup manually.
+Deployment and teardown hold the outer `frontend-preview-pr-<N>` lock while
+waiting for the inner lock; the preparer never acquires the outer lock, and the
+executor never reacquires it, so there is no lock cycle. The activity API check
+remains conservative: queued preparation can cause teardown to fail safely
+and release both locks; retry after preparation finishes or rejects the closed
+PR. A queued/retried preparer revalidates the open PR before writing.
+
 No new WIF refs or cloud identities are required. The job reuses the
 accepted direct-WIF/backend and preview-deployer/provider credential split.
 One additive custom role in
@@ -585,8 +608,17 @@ make tf-preview-secret-preparer-test
 python3 -m unittest discover -s tools/preview-deploy -p 'test_*.py'
 make preview-acceptance-test
 actionlint .github/workflows/preview-deploy.yml
+actionlint .github/workflows/preview-teardown-executor.yml .github/workflows/preview-secret-prepare.yml
 git diff --check
 ```
+
+The dependency-graph regression uses only the local provider mirror at
+`infra/terraform/preview-pr/.terraform/providers`, with no registry fallback.
+If Terraform is absent, it explicitly skips. An absent/empty provider cache
+also skips, with the prerequisite command. A cache missing the locked version/current platform
+fails with an actionable diagnostic, without fetching a provider. To populate
+it, explicitly run `terraform -chdir=infra/terraform/preview-pr init -backend=false`
+before the offline suite (CI already does this in its validation step).
 
 Offline tests cover identity/name derivation, reservation/replay/concurrency
 failure, ambiguous writes without retry, payload-free ledger/output shapes,

@@ -289,12 +289,16 @@ class OwnershipTests(unittest.TestCase):
 
 
 class TerraformDependencyGraphTests(unittest.TestCase):
-    def test_runtime_target_closure_includes_secret_iam_and_containers(self):
-        terraform = shutil.which("terraform")
-        if terraform is None:
-            self.skipTest("Terraform is required to inspect the configured dependency graph.")
-
-        source = Path(__file__).resolve().parents[2] / "infra/terraform/preview-pr"
+    def dependency_graph(self, terraform, source):
+        provider_cache = source / ".terraform" / "providers"
+        if not any(path.is_file() for path in provider_cache.glob(
+            "registry.terraform.io/hashicorp/google/*/*/terraform-provider-google*"
+        )):
+            self.skipTest(
+                "Offline graph test requires cached Google provider binaries; "
+                "run terraform -chdir=infra/terraform/preview-pr init -backend=false "
+                "explicitly before running this test."
+            )
         with tempfile.TemporaryDirectory(prefix="preview-destroy-graph-") as directory:
             root = Path(directory)
             for path in source.glob("*.tf"):
@@ -310,11 +314,16 @@ class TerraformDependencyGraphTests(unittest.TestCase):
             environment = os.environ.copy()
             environment["TF_DATA_DIR"] = str(root / ".terraform-data")
             environment["TF_IN_AUTOMATION"] = "1"
-            provider_cache = source / ".terraform" / "providers"
-            if not provider_cache.is_dir():
-                provider_cache = root / ".provider-cache"
-                provider_cache.mkdir()
-            environment["TF_PLUGIN_CACHE_DIR"] = str(provider_cache)
+            configuration = root / "offline.tfrc"
+            configuration.write_text(
+                "provider_installation {\n  filesystem_mirror {\n"
+                f"    path = {json.dumps(str(provider_cache))}\n"
+                "  }\n}\n",
+                encoding="utf-8",
+            )
+            environment["TF_CLI_CONFIG_FILE"] = str(configuration)
+            environment["CHECKPOINT_DISABLE"] = "1"
+            environment.pop("TF_PLUGIN_CACHE_DIR", None)
             for credential in (
                 "GOOGLE_APPLICATION_CREDENTIALS",
                 "GOOGLE_BACKEND_CREDENTIALS",
@@ -327,16 +336,65 @@ class TerraformDependencyGraphTests(unittest.TestCase):
                 cwd=root, env=environment, capture_output=True, text=True, timeout=300,
                 check=False,
             )
-            self.assertEqual(initialized.returncode, 0, initialized.stdout + initialized.stderr)
+            self.assertEqual(
+                initialized.returncode, 0,
+                "Offline provider initialization failed. Populate the locked provider for this "
+                "platform with terraform -chdir=infra/terraform/preview-pr init -backend=false "
+                "before retrying; registry fallback is disabled.\n"
+                + initialized.stdout + initialized.stderr,
+            )
             result = subprocess.run(
                 [terraform, "graph", "-type=plan"],
                 cwd=root, env=environment, capture_output=True, text=True, timeout=120,
                 check=False,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return result.stdout
+
+    def test_missing_or_empty_provider_cache_skips_without_starting_terraform(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(subprocess, "run") as run:
+            source = Path(directory)
+            for empty_cache in (False, True):
+                if empty_cache:
+                    (source / ".terraform/providers").mkdir(parents=True)
+                with self.subTest(empty_cache=empty_cache), self.assertRaisesRegex(
+                    unittest.SkipTest, "init -backend=false",
+                ):
+                    self.dependency_graph("terraform", source)
+            run.assert_not_called()
+
+    def test_incomplete_cache_fails_offline_with_actionable_prerequisite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            provider = source / ".terraform/providers/registry.terraform.io/hashicorp/google/0.0.0/other_platform"
+            provider.mkdir(parents=True)
+            (provider / "terraform-provider-google").touch()
+            (source / ".terraform.lock.hcl").touch()
+
+            def initialize(command, **kwargs):
+                configuration = Path(kwargs["env"]["TF_CLI_CONFIG_FILE"]).read_text()
+                self.assertIn("filesystem_mirror", configuration)
+                self.assertIn(json.dumps(str(source / ".terraform/providers")), configuration)
+                self.assertNotIn("direct", configuration)
+                self.assertNotIn("TF_PLUGIN_CACHE_DIR", kwargs["env"])
+                self.assertEqual(kwargs["env"]["CHECKPOINT_DISABLE"], "1")
+                self.assertIn("-lockfile=readonly", command)
+                return subprocess.CompletedProcess(command, 1, "", "Provider unavailable in local mirror")
+
+            with patch.object(subprocess, "run", side_effect=initialize) as run:
+                with self.assertRaisesRegex(AssertionError, "registry fallback is disabled"):
+                    self.dependency_graph("terraform", source)
+            self.assertEqual(run.call_count, 1)
+
+    def test_runtime_target_closure_includes_secret_iam_and_containers(self):
+        terraform = shutil.which("terraform")
+        if terraform is None:
+            self.skipTest("Terraform is required to inspect the configured dependency graph.")
+        source = Path(__file__).resolve().parents[2] / "infra/terraform/preview-pr"
+        graph = self.dependency_graph(terraform, source)
 
         edges: dict[str, set[str]] = {}
-        for line in result.stdout.splitlines():
+        for line in graph.splitlines():
             match = re.fullmatch(r'\s*"(\[root\] [^"]+)" -> "(\[root\] [^"]+)"', line)
             if match is None:
                 continue
@@ -917,6 +975,51 @@ class ReportingAndWorkflowTests(unittest.TestCase):
         self.assertIn(inner_lock, executor)
         self.assertNotEqual(outer_lock, inner_lock)
         self.assertIn("with:\n      pull_request_number: ${{ github.event.pull_request.number || inputs.pull_request_number }}", teardown_job)
+
+        self.assertIn(f"\nconcurrency:\n  group: {inner_lock}\n  cancel-in-progress: false\n", secret_preparation)
+        executor_job = executor.split("\njobs:\n", 1)[1]
+        self.assertIn(f"\n    concurrency:\n      group: {inner_lock}\n      cancel-in-progress: false\n", executor_job)
+        self.assertEqual(re.findall(r"^  ([a-z_-]+):$", executor_job, re.M), ["teardown"])
+        self.assertEqual(
+            re.findall(r"^  ([a-z_-]+):$", secret_preparation.split("\njobs:\n", 1)[1], re.M),
+            ["prepare"],
+        )
+        self.assertNotIn("frontend-preview-pr-", secret_preparation)
+        self.assertNotIn("frontend-preview-pr-", executor)
+        self.assertIn("python tools/preview-secret-preparer/prepare.py", secret_preparation)
+        self.assertIn("python tools/preview-deploy/teardown.py run", executor_job)
+
+    def test_reusable_executor_trust_gate_uses_original_caller_context(self):
+        if shutil.which("jq") is None:
+            self.skipTest("jq is required to execute the workflow trust gate.")
+        workflow = (Path(__file__).resolve().parents[2]
+                    / ".github/workflows/preview-teardown-executor.yml").read_text()
+        self.assertIn("on:\n  workflow_call:\n", workflow)
+        script = workflow.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0]
+        script = "\n".join(line.removeprefix("          ") for line in script.splitlines())
+        with tempfile.TemporaryDirectory() as directory:
+            event = Path(directory) / "event.json"
+            for name, payload in (
+                ("pull_request_target", {"pull_request": {"number": 56}}),
+                ("workflow_dispatch", {"inputs": {"operation": "teardown", "pull_request_number": "56"}}),
+            ):
+                event.write_text(json.dumps(payload))
+                for override in (
+                    {},
+                    {"INPUT_PR_NUMBER": "57"},
+                    {"GITHUB_EVENT_NAME": "workflow_call"},
+                    {"GITHUB_REF": "refs/heads/untrusted"},
+                    {"GITHUB_REPOSITORY": "someone/other"},
+                    {"GITHUB_WORKFLOW_REF": f"{teardown.REPOSITORY}/.github/workflows/preview-teardown-executor.yml@refs/heads/main"},
+                ):
+                    with self.subTest(event=name, override=override):
+                        result = subprocess.run(
+                            ["bash", "-c", script],
+                            env={**os.environ, **ENV, "GITHUB_EVENT_NAME": name,
+                                 "INPUT_PR_NUMBER": "56", "GITHUB_EVENT_PATH": str(event), **override},
+                            capture_output=True, text=True, timeout=10, check=False,
+                        )
+                        self.assertEqual(result.returncode == 0, not override, result.stderr)
 
 
 if __name__ == "__main__":
