@@ -288,6 +288,100 @@ class OwnershipTests(unittest.TestCase):
             teardown.validate_destroy_plan(plan(), "56", INCARNATION, inventory(), teardown.RUNTIME)
 
 
+class StateDigestTests(unittest.TestCase):
+    def snapshot(self):
+        value = state()
+        value["check_results"] = [
+            {"object_kind": "var", "config_addr": "var.pull_request_number", "status": "pass",
+             "objects": [{"object_addr": "var.pull_request_number", "status": "pass"}]},
+            {"object_kind": "resource", "config_addr": "google_secret_manager_secret.pr",
+             "status": "pass", "objects": [
+                 {"object_addr": 'google_secret_manager_secret.pr["nextauth"]', "status": "pass"},
+                 {"object_addr": 'google_secret_manager_secret.pr["database_url"]', "status": "pass"},
+             ]},
+        ]
+        return value
+
+    def test_check_result_and_object_order_does_not_change_digest_or_mutate_snapshot(self):
+        original = self.snapshot()
+        reordered = copy.deepcopy(original)
+        reordered["check_results"][1]["objects"].reverse()
+        reordered["check_results"].reverse()
+        before = copy.deepcopy(reordered)
+        self.assertNotEqual(original, reordered)
+        self.assertEqual(teardown.state_digest(original), teardown.state_digest(reordered))
+        self.assertEqual(reordered, before)
+
+    def test_guard_accepts_only_order_changes_and_rejects_all_semantic_changes(self):
+        original = self.snapshot()
+        instance = teardown.PreviewTeardown(CONTEXT, Mock())
+        instance.state = original
+        reordered = copy.deepcopy(original)
+        reordered["check_results"].reverse()
+        with patch.object(instance, "revalidate"), patch.object(instance, "read_state", return_value=reordered):
+            instance.guard()
+        for mutate in (
+            lambda s: s.update(serial=43),
+            lambda s: s.update(lineage="other-lineage"),
+            lambda s: s["outputs"]["preview_identity"]["value"].update(pr_incarnation="e" * 32),
+            lambda s: s["resources"][0]["instances"][0]["attributes"].update(id="foreign"),
+            lambda s: s["resources"][0]["instances"][0]["attributes"]["labels"].update(secret_generation="8"),
+            lambda s: s["resources"].pop(),
+            lambda s: s["resources"].reverse(),
+            lambda s: s["check_results"][0].update(status="fail"),
+            lambda s: s["check_results"][0]["objects"][0].update(status="fail"),
+            lambda s: s["check_results"][0]["objects"][0].update(object_addr="var.other"),
+            lambda s: s["check_results"][0]["objects"][0].update(failure_messages=["failed"]),
+            lambda s: s["check_results"].pop(),
+            lambda s: s["check_results"].append(copy.deepcopy(s["check_results"][0])),
+            lambda s: s["check_results"][1]["objects"].pop(),
+            lambda s: s.pop("check_results"),
+        ):
+            changed = copy.deepcopy(original)
+            mutate(changed)
+            with (
+                self.subTest(mutate=mutate),
+                patch.object(instance, "revalidate"),
+                patch.object(instance, "read_state", return_value=changed),
+                self.assertRaisesRegex(lifecycle.LifecycleError, "Terraform state changed"),
+            ):
+                instance.guard()
+
+    def test_real_terraform_local_state_pulls_have_stable_digest(self):
+        terraform = shutil.which("terraform")
+        if terraform is None:
+            self.skipTest("Terraform is required for the local state serialization regression.")
+        value = {
+            "version": 4, "terraform_version": "1.11.4",
+            "serial": 42, "lineage": "test-lineage", "outputs": {}, "resources": [],
+            "check_results": [
+                {"object_kind": "var", "config_addr": f"var.input_{n}", "status": "pass",
+                 "objects": [{"object_addr": f"var.input_{n}", "status": "pass"}]}
+                for n in range(13)
+            ],
+        }
+        with tempfile.TemporaryDirectory(prefix="teardown-state-pull-") as directory:
+            path = Path(directory) / "terraform.tfstate"
+            original = json.dumps(value).encode()
+            path.write_bytes(original)
+            environment = {
+                key: value for key, value in os.environ.items()
+                if not key.startswith(("TF_", "GOOGLE_", "CLOUDSDK_"))
+            }
+            environment["CHECKPOINT_DISABLE"] = "1"
+            snapshots = []
+            for _ in range(5):
+                result = subprocess.run(
+                    [terraform, f"-chdir={directory}", "state", "pull"],
+                    env=environment, capture_output=True, timeout=30, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr.decode())
+                snapshots.append(json.loads(result.stdout))
+            self.assertEqual(len({teardown.state_digest(s) for s in snapshots}), 1)
+            self.assertTrue(all(s["serial"] == 42 and s["lineage"] == "test-lineage" for s in snapshots))
+            self.assertEqual(path.read_bytes(), original)
+
+
 class TerraformDependencyGraphTests(unittest.TestCase):
     def dependency_graph(self, terraform, source):
         provider_cache = source / ".terraform" / "providers"

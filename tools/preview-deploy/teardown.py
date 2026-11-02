@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -327,7 +328,14 @@ def validate_destroy_plan(
 
 
 def state_digest(state: object) -> str:
-    return hashlib.sha256(json.dumps(state, sort_keys=True).encode()).hexdigest()
+    snapshot = copy.deepcopy(state)
+    if isinstance(snapshot, dict) and isinstance(snapshot.get("check_results"), list):
+        # Terraform serializes these address-keyed collections in map iteration order.
+        for result in snapshot["check_results"]:
+            if isinstance(result, dict) and isinstance(result.get("objects"), list):
+                result["objects"].sort(key=lambda value: json.dumps(value, sort_keys=True))
+        snapshot["check_results"].sort(key=lambda value: json.dumps(value, sort_keys=True))
+    return hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest()
 
 
 class PreviewTeardown:
