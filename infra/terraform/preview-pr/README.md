@@ -451,6 +451,15 @@ It has no Actions dispatch permission and never executes the PR image.
    same PR number. Verify the provisioner's exact service URL, project number,
    region, service identity, runtime account and SQL configuration, then
    recheck PR and state immediately before the request. The provisioner
+   URL must be exactly the project-number origin
+   `https://hh-preview-db-provisioner-458395246135.us-east1.run.app` or the
+   verified legacy origin
+   `https://hh-preview-db-provisioner-lt5viwug5a-ue.a.run.app` (an optional
+   trailing slash is normalized). No wildcard legacy hashes, custom hosts,
+   ports, credentials, paths, query strings or fragments are accepted, and
+   provisioner requests never follow redirects. A changed legacy hostname
+   requires explicit verification and a reviewed code change.
+   The provisioner
    independently enforces the exact deterministic database name and shared
    `haunted_halls_preview_app` owner; an absent DB is a no-op.
    **The shared instance is

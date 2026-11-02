@@ -5,7 +5,9 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
 from test_lifecycle import lifecycle, SHA
@@ -35,6 +37,100 @@ class ProvisionerTokenTests(unittest.TestCase):
             },
         }
 
+    def test_only_exact_project_number_and_verified_legacy_origins_are_accepted(self):
+        for origin in (
+            self.service()["status"]["url"],
+            "https://hh-preview-db-provisioner-lt5viwug5a-ue.a.run.app",
+        ):
+            for suffix in ("", "/"):
+                with self.subTest(origin=origin, suffix=suffix):
+                    service = self.service()
+                    service["status"]["url"] = origin + suffix
+                    self.assertEqual(lifecycle.database_provisioner_url(service), origin)
+            for mutate in (
+                lambda s: s["metadata"].update(name="other-service"),
+                lambda s: s["metadata"].update(namespace="123456789012"),
+                lambda s: s["metadata"]["labels"].update({"cloud.googleapis.com/location": "us-west1"}),
+            ):
+                service = self.service()
+                service["status"]["url"] = origin
+                mutate(service)
+                with self.subTest(origin=origin, mutate=mutate), self.assertRaises(lifecycle.LifecycleError):
+                    lifecycle.database_provisioner_url(service)
+            for invalid in (
+                origin.replace("https:", "http:"),
+                origin + ".attacker.example",
+                origin + ":443",
+                origin + ":invalid",
+                origin + "/provision",
+                origin + "/;params",
+                origin + "?query=value",
+                origin + "#fragment",
+                origin.replace("https://", "https://user:password@"),
+                "\n" + origin,
+                origin.replace("https://", "https://\t"),
+            ):
+                service = self.service()
+                service["status"]["url"] = invalid
+                with self.subTest(url=invalid), self.assertRaises(lifecycle.LifecycleError):
+                    lifecycle.database_provisioner_url(service)
+        for invalid in (
+            None, 123, [], {}, "", "https://[malformed",
+            "https://attacker.example",
+            "https://other-service-lt5viwug5a-ue.a.run.app",
+            "https://hh-preview-db-provisioner-aaaaaaaaaa-ue.a.run.app",
+            "https://hh-preview-db-provisioner-lt5viwug5a-uw.a.run.app",
+            "https://hh-preview-db-provisioner-123456789012.us-east1.run.app",
+            "https://hh-preview-db-provisioner-458395246135.us-west1.run.app",
+        ):
+            service = self.service()
+            service["status"]["url"] = invalid
+            with self.subTest(url=invalid), self.assertRaises(lifecycle.LifecycleError):
+                lifecycle.database_provisioner_url(service)
+
+    def test_real_provisioner_transport_refuses_redirects_without_forwarding_token(self):
+        received = []
+        status = 302
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                received.append(self.path)
+                self.send_response(status)
+                self.send_header("Location", "/untrusted")
+                self.end_headers()
+
+            def do_GET(self):
+                received.append(self.path)
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            with (
+                tempfile.NamedTemporaryFile() as credentials,
+                patch.dict(os.environ, {"GOOGLE_BACKEND_CREDENTIALS": credentials.name}),
+                patch.object(lifecycle.Commands, "json", return_value=self.service()),
+                patch.object(lifecycle.Commands, "run", return_value=b"test-token"),
+                patch.object(lifecycle, "database_provisioner_url",
+                             return_value=f"http://127.0.0.1:{server.server_port}"),
+            ):
+                for status in (301, 302, 303, 307, 308):
+                    received.clear()
+                    with self.subTest(status=status), self.assertRaisesRegex(
+                        lifecycle.LifecycleError, "provisioner failed",
+                    ):
+                        lifecycle.request_database("56", "create")
+                    self.assertEqual(received, ["/provision"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
     def test_invalid_credential_paths_fail_before_token_or_request_without_leaking(self):
         with tempfile.TemporaryDirectory() as directory:
             for value in (None, "", "relative-private.json", directory + "/missing.json", directory):
@@ -44,7 +140,7 @@ class ProvisionerTokenTests(unittest.TestCase):
                     patch.dict(os.environ, environment, clear=True),
                     patch.object(lifecycle.Commands, "json", return_value=self.service()),
                     patch.object(lifecycle.Commands, "run") as run,
-                    patch.object(lifecycle.urllib.request, "urlopen") as urlopen,
+                    patch.object(lifecycle.urllib.request.OpenerDirector, "open") as urlopen,
                 ):
                     with self.assertRaises(lifecycle.LifecycleError) as error:
                         self.deployment().ensure_database()
@@ -82,7 +178,7 @@ class ProvisionerTokenTests(unittest.TestCase):
                     patch.dict(os.environ, {"GOOGLE_BACKEND_CREDENTIALS": credentials.name}),
                     patch.object(lifecycle.Commands, "json", return_value=service),
                     patch.object(lifecycle.Commands, "run") as run,
-                    patch.object(lifecycle.urllib.request, "urlopen") as urlopen,
+                    patch.object(lifecycle.urllib.request.OpenerDirector, "open") as urlopen,
                 ):
                     with self.assertRaises(lifecycle.LifecycleError):
                         lifecycle.request_database("56", "drop")
@@ -107,7 +203,7 @@ class ProvisionerTokenTests(unittest.TestCase):
                 patch.object(Path, "read_text", side_effect=AssertionError("must not read")),
                 patch.object(Path, "read_bytes", side_effect=AssertionError("must not read")),
                 patch("builtins.open", side_effect=AssertionError("must not read")),
-                patch.object(lifecycle.urllib.request, "urlopen", return_value=io.BytesIO(
+                patch.object(lifecycle.urllib.request.OpenerDirector, "open", return_value=io.BytesIO(
                     json.dumps({
                         "database": "haunted_halls_web_pr_41", "operation": "create", "created": False,
                     }).encode(),
@@ -137,7 +233,7 @@ class ProvisionerTokenTests(unittest.TestCase):
             patch.object(lifecycle.subprocess, "run", return_value=subprocess.CompletedProcess(
                 [], 1, b"private-token", b"private credential contents and stderr",
             )),
-            patch.object(lifecycle.urllib.request, "urlopen") as urlopen,
+            patch.object(lifecycle.urllib.request.OpenerDirector, "open") as urlopen,
         ):
             with self.assertRaises(lifecycle.LifecycleError) as error:
                 self.deployment().ensure_database()

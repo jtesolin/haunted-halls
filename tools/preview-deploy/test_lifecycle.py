@@ -486,8 +486,8 @@ class StagingAndTerraformTests(unittest.TestCase):
             patch.object(lifecycle.Commands, "run", side_effect=run),
             patch.object(lifecycle.Commands, "json", side_effect=describe),
             patch.object(
-                lifecycle.urllib.request,
-                "urlopen",
+                lifecycle.urllib.request.OpenerDirector,
+                "open",
                 return_value=io.BytesIO(
                     json.dumps(
                         {

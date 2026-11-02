@@ -43,6 +43,8 @@ SOURCE_PROJECT = "haunted-halls-development"
 SOURCE_PROJECT_NUMBER = "458395246135"
 SOURCE_REGION = "us-east1"
 DB_PROVISIONER_SERVICE = "hh-preview-db-provisioner"
+# Verified legacy hostname for this fixed service in the source project/region.
+DB_PROVISIONER_LEGACY_HOST = "hh-preview-db-provisioner-lt5viwug5a-ue.a.run.app"
 SOURCE_ENGINE_REPOSITORY = (
     "us-east1-docker.pkg.dev/haunted-halls-development/haunted-halls/engine"
 )
@@ -73,6 +75,12 @@ class LifecycleError(Exception):
 
 class NoDeployment(LifecycleError):
     """The PR is no longer eligible or a successful build is stale."""
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str,
+                         headers: Any, new_url: str) -> None:
+        return None
 
 
 @dataclass(frozen=True)
@@ -2032,8 +2040,12 @@ def request_database(
     if before_request is not None:
         before_request()
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
+        opener = urllib.request.build_opener(NoRedirect)
+        with opener.open(request, timeout=60) as response:
             return json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        error.close()
+        raise LifecycleError("The fixed preview database provisioner failed.") from None
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
         raise LifecycleError("The fixed preview database provisioner failed.") from None
 
@@ -2055,22 +2067,13 @@ def database_provisioner_url(service: object) -> str:
     )
     status = _resource_status(service)
     value = status.get("url") or service.get("uri")
-    parsed = urllib.parse.urlparse(value if isinstance(value, str) else "")
-    try:
-        port = parsed.port
-    except ValueError:
-        port = -1
+    origins = {
+        f"https://{DB_PROVISIONER_SERVICE}-{SOURCE_PROJECT_NUMBER}.{SOURCE_REGION}.run.app",
+        f"https://{DB_PROVISIONER_LEGACY_HOST}",
+    }
     _expect(
-        parsed.scheme == "https"
-        and parsed.hostname
-        == f"{DB_PROVISIONER_SERVICE}-{SOURCE_PROJECT_NUMBER}.{SOURCE_REGION}.run.app"
-        and port is None
-        and parsed.path in {"", "/"}
-        and not parsed.params
-        and not parsed.query
-        and not parsed.fragment
-        and not parsed.username
-        and not parsed.password,
+        isinstance(value, str)
+        and value in origins | {origin + "/" for origin in origins},
         "The fixed preview DB provisioner returned an invalid HTTPS run.app URL.",
     )
     return value.rstrip("/")
@@ -2096,11 +2099,6 @@ def verify_unauthenticated_denied(url: str, allow_google_redirect: bool) -> None
         print(f"Unauthenticated probe: {summary}", flush=True)
         if not passed:
             raise LifecycleError(f"Unauthenticated access verification failed: {summary}") from None
-
-    class NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, req: Any, fp: Any, code: int, msg: str,
-                             headers: Any, new_url: str) -> None:
-            return None
 
     try:
         opener = urllib.request.build_opener(NoRedirect)

@@ -862,7 +862,7 @@ class ProvisionerTests(unittest.TestCase):
             patch.dict(os.environ, {"GOOGLE_BACKEND_CREDENTIALS": credentials.name}),
             patch.object(lifecycle.Commands, "json", return_value=self.service()),
             patch.object(lifecycle.Commands, "run", return_value=b"private-token"),
-            patch.object(lifecycle.urllib.request, "urlopen", return_value=io.BytesIO(json.dumps(response).encode())) as post,
+            patch.object(lifecycle.urllib.request.OpenerDirector, "open", return_value=io.BytesIO(json.dumps(response).encode())) as post,
         ):
             self.assertEqual(lifecycle.request_database("56", "drop", guard), response)
         guard.assert_called_once()
@@ -872,10 +872,44 @@ class ProvisionerTests(unittest.TestCase):
     def test_wrong_sql_target_never_sends_drop(self):
         service = self.service()
         service["spec"]["template"]["spec"]["containers"][0]["env"][0]["value"] = "/cloudsql/production"
-        with patch.object(lifecycle.Commands, "json", return_value=service), patch.object(lifecycle.urllib.request, "urlopen") as post:
+        with patch.object(lifecycle.Commands, "json", return_value=service), patch.object(lifecycle.urllib.request.OpenerDirector, "open") as post:
             with self.assertRaisesRegex(lifecycle.LifecycleError, "manual cleanup"):
                 lifecycle.request_database("56", "drop")
             post.assert_not_called()
+
+    def test_legacy_provisioner_drop_preserves_runtime_and_sql_identity_checks(self):
+        origin = "https://hh-preview-db-provisioner-lt5viwug5a-ue.a.run.app"
+        response = {"operation": "drop", "database": "haunted_halls_web_pr_56", "dropped": False}
+        service = self.service()
+        service["status"]["url"] = origin
+        with (
+            tempfile.NamedTemporaryFile() as credentials,
+            patch.dict(os.environ, {"GOOGLE_BACKEND_CREDENTIALS": credentials.name}),
+            patch.object(lifecycle.Commands, "json", return_value=service),
+            patch.object(lifecycle.Commands, "run", return_value=b"test-token") as token,
+            patch.object(lifecycle.urllib.request.OpenerDirector, "open",
+                         return_value=io.BytesIO(json.dumps(response).encode())) as post,
+        ):
+            self.assertEqual(lifecycle.request_database("56", "drop"), response)
+            self.assertIn(f"--audiences={origin}", token.call_args.args[0])
+            self.assertEqual(post.call_args.args[0].full_url, origin + "/provision")
+            for mutate in (
+                lambda s: s.update(serviceAccountName="untrusted@example.com"),
+                lambda s: s["containers"][0]["env"][0].update(value="/cloudsql/other"),
+                lambda s: s["containers"][0]["env"][2].update(value="haunted_halls_staging"),
+                lambda s: s["containers"][0]["env"][3].update(value="other_user"),
+            ):
+                altered = copy.deepcopy(service)
+                mutate(altered["spec"]["template"]["spec"])
+                with patch.object(lifecycle.Commands, "json", return_value=altered):
+                    token.reset_mock()
+                    post.reset_mock()
+                    with self.subTest(mutate=mutate), self.assertRaisesRegex(
+                        lifecycle.LifecycleError, "Database target is unverified",
+                    ):
+                        lifecycle.request_database("56", "drop")
+                    token.assert_not_called()
+                    post.assert_not_called()
 
     def test_late_guard_failure_never_posts_and_gcp_failure_is_sanitized(self):
         with (
@@ -883,7 +917,7 @@ class ProvisionerTests(unittest.TestCase):
             patch.dict(os.environ, {"GOOGLE_BACKEND_CREDENTIALS": credentials.name}),
             patch.object(lifecycle.Commands, "json", return_value=self.service()),
             patch.object(lifecycle.Commands, "run", return_value=b"private-token"),
-            patch.object(lifecycle.urllib.request, "urlopen") as post,
+            patch.object(lifecycle.urllib.request.OpenerDirector, "open") as post,
         ):
             with self.assertRaisesRegex(lifecycle.LifecycleError, "reopened"):
                 lifecycle.request_database("56", "drop", Mock(side_effect=lifecycle.LifecycleError("reopened")))
