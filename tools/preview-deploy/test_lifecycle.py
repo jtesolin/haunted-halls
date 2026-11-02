@@ -385,12 +385,15 @@ class StagingAndTerraformTests(unittest.TestCase):
             "apiVersion": "serving.knative.dev/v1",
             "kind": "Service",
             "metadata": {
-                "name": "hh-preview-db-provisioner",
-                "namespace": "123456789012",
-                "labels": {"cloud.googleapis.com/location": "us-east1"},
+                "name": lifecycle.DB_PROVISIONER_SERVICE,
+                "namespace": lifecycle.SOURCE_PROJECT_NUMBER,
+                "labels": {"cloud.googleapis.com/location": lifecycle.SOURCE_REGION},
             },
             "status": {
-                "url": "https://hh-preview-db-provisioner-123456789012.us-east1.run.app"
+                "url": (
+                    f"https://{lifecycle.DB_PROVISIONER_SERVICE}-"
+                    f"{lifecycle.SOURCE_PROJECT_NUMBER}.{lifecycle.SOURCE_REGION}.run.app"
+                )
             },
         }
         canonical_url = service["status"]["url"]
@@ -400,12 +403,24 @@ class StagingAndTerraformTests(unittest.TestCase):
         )
         for mutate in (
             lambda item: item["metadata"].update(name="attacker-service"),
-            lambda item: item["metadata"].update(namespace="not-a-project-number"),
+            lambda item: item["metadata"].update(namespace="123456789012"),
             lambda item: item["metadata"]["labels"].update(
                 {"cloud.googleapis.com/location": "us-west1"}
             ),
             lambda item: item["status"].update(url="https://attacker.example.com"),
             lambda item: item["status"].update(url="http://unsafe.run.app"),
+            lambda item: item["status"].update(
+                url=f"https://other-service-{lifecycle.SOURCE_PROJECT_NUMBER}."
+                f"{lifecycle.SOURCE_REGION}.run.app"
+            ),
+            lambda item: item["status"].update(
+                url=f"https://{lifecycle.DB_PROVISIONER_SERVICE}-123456789012."
+                f"{lifecycle.SOURCE_REGION}.run.app"
+            ),
+            lambda item: item["status"].update(
+                url=f"https://{lifecycle.DB_PROVISIONER_SERVICE}-"
+                f"{lifecycle.SOURCE_PROJECT_NUMBER}.us-west1.run.app"
+            ),
         ):
             invalid = copy.deepcopy(service)
             mutate(invalid)
@@ -420,12 +435,15 @@ class StagingAndTerraformTests(unittest.TestCase):
         deployment.database = "haunted_halls_web_pr_41"
         service = {
             "metadata": {
-                "name": "hh-preview-db-provisioner",
-                "namespace": "123456789012",
-                "labels": {"cloud.googleapis.com/location": "us-east1"},
+                "name": lifecycle.DB_PROVISIONER_SERVICE,
+                "namespace": lifecycle.SOURCE_PROJECT_NUMBER,
+                "labels": {"cloud.googleapis.com/location": lifecycle.SOURCE_REGION},
             },
             "status": {
-                "url": "https://hh-preview-db-provisioner-123456789012.us-east1.run.app"
+                "url": (
+                    f"https://{lifecycle.DB_PROVISIONER_SERVICE}-"
+                    f"{lifecycle.SOURCE_PROJECT_NUMBER}.{lifecycle.SOURCE_REGION}.run.app"
+                )
             },
         }
         canonical_url = service["status"]["url"]

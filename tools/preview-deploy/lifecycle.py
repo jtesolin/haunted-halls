@@ -19,6 +19,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +40,7 @@ PREVIEW_PROJECT = "hh-preview-458395246135"
 PREVIEW_PROJECT_NUMBER = "1001419903197"
 PREVIEW_REGION = "us-east1"
 SOURCE_PROJECT = "haunted-halls-development"
+SOURCE_PROJECT_NUMBER = "458395246135"
 SOURCE_REGION = "us-east1"
 DB_PROVISIONER_SERVICE = "hh-preview-db-provisioner"
 SOURCE_ENGINE_REPOSITORY = (
@@ -1501,56 +1503,7 @@ class PreviewDeployment:
                 pass
 
     def ensure_database(self) -> bool:
-        service = Commands.json(
-            [
-                "gcloud", "run", "services", "describe", DB_PROVISIONER_SERVICE,
-                f"--project={SOURCE_PROJECT}", f"--region={SOURCE_REGION}", "--format=json",
-            ],
-            label="Fixed database provisioner service identity read",
-        )
-        url = database_provisioner_url(service)
-        backend_credentials = os.environ.get("GOOGLE_BACKEND_CREDENTIALS", "")
-        credentials_path = Path(backend_credentials)
-        _expect(
-            bool(backend_credentials)
-            and credentials_path.is_absolute()
-            and credentials_path.is_file(),
-            "Database provisioner direct-WIF credential file is unavailable.",
-        )
-        token_environment = os.environ.copy()
-        token_environment["CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE"] = backend_credentials
-        token = Commands.run(
-            [
-                "gcloud", "auth", "print-identity-token",
-                f"--impersonate-service-account={DEPLOYER}",
-                f"--audiences={url}",
-            ],
-            label="Database provisioner identity token",
-            env=token_environment,
-        ).decode("utf-8", errors="strict").strip()
-        _expect(bool(token), "Database provisioner identity token is unavailable.")
-        request = urllib.request.Request(
-            f"{url}/provision",
-            data=json.dumps(
-                {
-                    "operation": "create",
-                    "repository_key": "web",
-                    "pull_request_number": int(self.number),
-                }
-            ).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        del token
-        try:
-            with urllib.request.urlopen(request, timeout=60) as response:
-                payload = json.loads(response.read())
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
-            raise LifecycleError("The fixed preview database provisioner failed.") from None
-        return validate_database_result(payload, self.database)
+        return validate_database_result(request_database(self.number, "create"), self.database)
 
     def prepare_secret_generation(
         self, incarnation: str, current_generation: int
@@ -1944,26 +1897,7 @@ class PreviewDeployment:
         )
 
     def update_comment(self, url: str) -> None:
-        comments: list[dict[str, Any]] = []
-        page = 1
-        while True:
-            batch = self.github.api(
-                f"repos/{REPOSITORY}/issues/{self.number}/comments?per_page=100&page={page}"
-            )
-            _expect(isinstance(batch, list), "PR comment metadata is malformed.")
-            comments.extend(
-                item for item in batch
-                if isinstance(item, dict)
-                and isinstance(item.get("body"), str)
-                and COMMENT_MARKER in item["body"]
-                and isinstance(item.get("user"), dict)
-                and item["user"].get("login") == "github-actions[bot]"
-                and item["user"].get("type") == "Bot"
-            )
-            if len(batch) < 100:
-                break
-            page += 1
-        _expect(len(comments) <= 1, "Multiple Preview Environment comments already exist.")
+        comments = preview_comments(self.github, self.number)
         body = comment_body(
             self.number,
             self.sha,
@@ -1986,6 +1920,30 @@ class PreviewDeployment:
                 method="POST",
                 data={"body": body},
             )
+
+
+def preview_comments(github: Github, number: str) -> list[dict[str, Any]]:
+    comments: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        batch = github.api(
+            f"repos/{REPOSITORY}/issues/{number}/comments?per_page=100&page={page}"
+        )
+        _expect(isinstance(batch, list), "PR comment metadata is malformed.")
+        comments.extend(
+            item for item in batch
+            if isinstance(item, dict)
+            and isinstance(item.get("body"), str)
+            and COMMENT_MARKER in item["body"]
+            and isinstance(item.get("user"), dict)
+            and item["user"].get("login") == "github-actions[bot]"
+            and item["user"].get("type") == "Bot"
+        )
+        if len(batch) < 100:
+            break
+        page += 1
+    _expect(len(comments) <= 1, "Multiple Preview Environment comments already exist.")
+    return comments
 
 
 def _artifact_digest(metadata: object) -> str:
@@ -2011,6 +1969,75 @@ def parse_testers(value: str) -> set[str]:
     return members
 
 
+def request_database(
+    number: str, operation: str, before_request: Callable[[], None] | None = None,
+) -> object:
+    derive_database_name(number)
+    _expect(operation in {"create", "drop"}, "Database operation is invalid.")
+    service = Commands.json(
+        [
+            "gcloud", "run", "services", "describe", DB_PROVISIONER_SERVICE,
+            f"--project={SOURCE_PROJECT}", f"--region={SOURCE_REGION}", "--format=json",
+        ],
+        label="Fixed database provisioner service identity read",
+    )
+    url = database_provisioner_url(service)
+    if operation == "drop":
+        spec = service.get("spec", {}).get("template", {}).get("spec", {})
+        containers = spec.get("containers", [])
+        connection = f"{SOURCE_PROJECT}:{SOURCE_REGION}:haunted-halls-postgres"
+        _expect(
+            spec.get("serviceAccountName")
+            == f"hh-preview-db-provisioner@{SOURCE_PROJECT}.iam.gserviceaccount.com"
+            and len(containers) == 1
+            and {
+                item.get("name"): item.get("value")
+                for item in containers[0].get("env", [])
+                if isinstance(item, dict) and item.get("name") != "DB_PASSWORD"
+            } == {
+                "DB_HOST": f"/cloudsql/{connection}", "DB_PORT": "5432",
+                "DB_NAME": "postgres", "DB_USER": "haunted_halls_preview_provisioner",
+            },
+            "Database target is unverified; leave the database intact for manual cleanup.",
+        )
+    backend_credentials = os.environ.get("GOOGLE_BACKEND_CREDENTIALS", "")
+    credentials_path = Path(backend_credentials)
+    _expect(
+        bool(backend_credentials)
+        and credentials_path.is_absolute()
+        and credentials_path.is_file(),
+        "Database provisioner direct-WIF credential file is unavailable.",
+    )
+    token_environment = os.environ.copy()
+    token_environment["CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE"] = backend_credentials
+    token = Commands.run(
+        [
+            "gcloud", "auth", "print-identity-token",
+            f"--impersonate-service-account={DEPLOYER}", f"--audiences={url}",
+        ],
+        label="Database provisioner identity token",
+        env=token_environment,
+    ).decode("utf-8", errors="strict").strip()
+    _expect(bool(token), "Database provisioner identity token is unavailable.")
+    request = urllib.request.Request(
+        f"{url}/provision",
+        data=json.dumps({
+            "operation": operation, "repository_key": "web",
+            "pull_request_number": int(number),
+        }).encode("utf-8"),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    del token
+    if before_request is not None:
+        before_request()
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return json.loads(response.read())
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        raise LifecycleError("The fixed preview database provisioner failed.") from None
+
+
 def database_provisioner_url(service: object) -> str:
     _expect(
         isinstance(service, dict)
@@ -2021,8 +2048,7 @@ def database_provisioner_url(service: object) -> str:
     labels = metadata.get("labels")
     _expect(
         metadata.get("name") == DB_PROVISIONER_SERVICE
-        and isinstance(metadata.get("namespace"), str)
-        and re.fullmatch(r"[0-9]+", metadata["namespace"]) is not None
+        and metadata.get("namespace") == SOURCE_PROJECT_NUMBER
         and isinstance(labels, dict)
         and labels.get("cloud.googleapis.com/location") == SOURCE_REGION,
         "The described database provisioner identity, project, or region is unexpected.",
@@ -2036,9 +2062,8 @@ def database_provisioner_url(service: object) -> str:
         port = -1
     _expect(
         parsed.scheme == "https"
-        and parsed.hostname is not None
-        and parsed.hostname.endswith(".run.app")
-        and parsed.hostname.count(".") >= 2
+        and parsed.hostname
+        == f"{DB_PROVISIONER_SERVICE}-{SOURCE_PROJECT_NUMBER}.{SOURCE_REGION}.run.app"
         and port is None
         and parsed.path in {"", "/"}
         and not parsed.params

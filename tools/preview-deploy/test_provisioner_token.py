@@ -24,11 +24,14 @@ class ProvisionerTokenTests(unittest.TestCase):
         return {
             "metadata": {
                 "name": "hh-preview-db-provisioner",
-                "namespace": "123456789012",
-                "labels": {"cloud.googleapis.com/location": "us-east1"},
+                "namespace": lifecycle.SOURCE_PROJECT_NUMBER,
+                "labels": {"cloud.googleapis.com/location": lifecycle.SOURCE_REGION},
             },
             "status": {
-                "url": "https://hh-preview-db-provisioner-123456789012.us-east1.run.app",
+                "url": (
+                    f"https://{lifecycle.DB_PROVISIONER_SERVICE}-"
+                    f"{lifecycle.SOURCE_PROJECT_NUMBER}.{lifecycle.SOURCE_REGION}.run.app"
+                ),
             },
         }
 
@@ -49,6 +52,40 @@ class ProvisionerTokenTests(unittest.TestCase):
                         str(error.exception),
                         "Database provisioner direct-WIF credential file is unavailable.",
                     )
+                    run.assert_not_called()
+                    urlopen.assert_not_called()
+
+    def test_database_drop_rejects_mismatched_provisioner_url_before_token_or_request(self):
+        invalid_services = []
+        for namespace, host in (
+            (
+                "123456789012",
+                "hh-preview-db-provisioner-123456789012.us-east1.run.app",
+            ),
+            (
+                lifecycle.SOURCE_PROJECT_NUMBER,
+                "other-service-458395246135.us-east1.run.app",
+            ),
+            (
+                lifecycle.SOURCE_PROJECT_NUMBER,
+                "hh-preview-db-provisioner-458395246135.us-west1.run.app",
+            ),
+        ):
+            service = self.service()
+            service["metadata"]["namespace"] = namespace
+            service["status"]["url"] = f"https://{host}"
+            invalid_services.append(service)
+
+        with tempfile.NamedTemporaryFile() as credentials:
+            for service in invalid_services:
+                with (
+                    patch.dict(os.environ, {"GOOGLE_BACKEND_CREDENTIALS": credentials.name}),
+                    patch.object(lifecycle.Commands, "json", return_value=service),
+                    patch.object(lifecycle.Commands, "run") as run,
+                    patch.object(lifecycle.urllib.request, "urlopen") as urlopen,
+                ):
+                    with self.assertRaises(lifecycle.LifecycleError):
+                        lifecycle.request_database("56", "drop")
                     run.assert_not_called()
                     urlopen.assert_not_called()
 
