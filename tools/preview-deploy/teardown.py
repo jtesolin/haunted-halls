@@ -515,10 +515,16 @@ class PreviewTeardown:
 
     @staticmethod
     def policy_members(policy: object, role: str) -> set[str]:
-        _expect(isinstance(policy, dict) and isinstance(policy.get("bindings"), list),
+        _expect(isinstance(policy, dict),
+                "Resource IAM policy is malformed or unavailable.")
+        bindings = policy.get("bindings")
+        # Cloud Run omits the repeated bindings field for an empty, etag-only policy.
+        if set(policy) == {"etag"} and isinstance(policy["etag"], str) and policy["etag"]:
+            bindings = []
+        _expect(isinstance(bindings, list),
                 "Resource IAM policy is malformed or unavailable.")
         members: set[str] = set()
-        for binding in policy["bindings"]:
+        for binding in bindings:
             _expect(isinstance(binding, dict)
                     and isinstance(binding.get("role"), str)
                     and isinstance(binding.get("members", []), list),

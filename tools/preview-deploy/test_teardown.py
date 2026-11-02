@@ -751,6 +751,112 @@ class ExecutionTests(unittest.TestCase):
         self.assertIn("database", calls)
         self.assertEqual(instance.status, "Removed")
 
+    def test_serial44_retry_validates_reduced_plans_and_preserves_cleanup_order(self):
+        for dependency_cleanup in (False, True):
+            with self.subTest(dependency_cleanup=dependency_cleanup):
+                instance = self.make()
+                partial = state()
+                partial["serial"] = 44
+                partial["resources"] = [
+                    item for item in partial["resources"]
+                    if item["type"].startswith("google_secret")
+                ]
+                incarnation, remaining = teardown.validate_state(partial, "56")
+                self.assertEqual(len(remaining), 8)
+                self.assertEqual(incarnation, INCARNATION)
+                current = copy.deepcopy(partial)
+                calls = []
+                saved_plans = []
+
+                def saved_plan(*args, **kwargs):
+                    runtime = any(arg.startswith("-target=") for arg in args[0])
+                    calls.append("runtime-plan" if runtime else "secret-plan")
+                    expected = teardown.validate_state(current, "56")[1]
+                    result = plan(expected)
+                    if runtime and not dependency_cleanup:
+                        for item in result["resource_changes"]:
+                            item["change"].update(
+                                actions=["no-op"], after=item["change"]["before"],
+                            )
+                    saved_plans.append(result)
+
+                def apply(command, **kwargs):
+                    self.assertEqual(command[2], "apply")
+                    calls.append("apply")
+                    if dependency_cleanup or calls.count("apply") == 2:
+                        current["resources"] = []
+                        current["serial"] += 1
+                    return b""
+
+                def database(number, operation, guard):
+                    calls.append("database")
+                    self.assertEqual((number, operation), ("56", "drop"))
+                    self.assertIn("verify-iam", calls)
+                    guard()
+                    return {"operation": "drop", "database": "haunted_halls_web_pr_56",
+                            "dropped": True}
+
+                with tempfile.TemporaryDirectory() as directory:
+                    instance.directory = Path(directory)
+                    with (
+                        patch.dict(os.environ, ENV),
+                        patch.object(instance, "initialize"),
+                        patch.object(instance, "check_secret_workflow"),
+                        patch.object(instance, "read_state",
+                                     side_effect=lambda: copy.deepcopy(current)),
+                        patch.object(teardown, "run_terraform_plan", side_effect=saved_plan) as planning,
+                        patch.object(teardown.Commands, "json",
+                                     side_effect=lambda *a, **k: saved_plans.pop(0)),
+                        patch.object(teardown.Commands, "run", side_effect=apply),
+                        patch.object(instance, "verify_runtime_absent", return_value={
+                            "hh-web-pr-56-engine", "hh-web-pr-56-frontend",
+                        }),
+                        patch.object(instance, "verify_cloud_run_iam_absent",
+                                     side_effect=lambda *a: calls.append("verify-iam")),
+                        patch.object(instance, "verify_iap_iam_absent"),
+                        patch.object(teardown, "request_database", side_effect=database),
+                        patch.object(instance, "verify_secrets_absent",
+                                     side_effect=lambda *a: calls.append("verify-secrets")),
+                        patch.object(instance, "cleanup_tags",
+                                     side_effect=lambda: calls.append("tags")),
+                    ):
+                        instance.run()
+                self.assertEqual(instance.status, "Removed")
+                self.assertEqual(teardown.validate_state(instance.state, "56")[1], {})
+                self.assertLess(calls.index("apply"), calls.index("database"))
+                self.assertLess(calls.index("database"), calls.index("verify-secrets"))
+                self.assertEqual(calls[-1], "tags")
+                self.assertEqual(planning.call_count, 1 if dependency_cleanup else 2)
+
+    def test_partial_retry_rejects_foreign_inventory_and_genuine_state_changes(self):
+        partial = state()
+        partial["serial"] = 44
+        partial["resources"] = [
+            item for item in partial["resources"]
+            if item["type"].startswith("google_secret")
+        ]
+        foreign = copy.deepcopy(partial)
+        foreign["resources"][0]["instances"][0]["attributes"]["project"] = "production"
+        _, calls, error = self.run_mocked(foreign)
+        self.assertIn("Unexpected Terraform address or project", error)
+        self.assertEqual(calls, [])
+        instance = self.make()
+        instance.state = partial
+        for mutate in (
+            lambda value: value.update(serial=45),
+            lambda value: value.update(lineage="foreign-lineage"),
+            lambda value: value["resources"][0]["instances"][0]["attributes"].update(id="foreign"),
+        ):
+            changed = copy.deepcopy(partial)
+            mutate(changed)
+            with (
+                self.subTest(mutate=mutate),
+                patch.dict(os.environ, ENV),
+                patch.object(instance, "read_state", return_value=changed),
+                self.assertRaisesRegex(lifecycle.LifecycleError, "Terraform state changed"),
+            ):
+                instance.guard()
+
     def test_missing_database_evidence_removes_only_runtime_and_requires_manual_cleanup(self):
         value = state()
         value.pop("outputs")
@@ -840,6 +946,7 @@ class ExecutionTests(unittest.TestCase):
         instance = self.make()
         engine = "hh-web-pr-56-engine"
         owned = {
+            "etag": "BwZfURixDfo=",
             "bindings": [{"role": "roles/run.invoker", "members": [
                 "serviceAccount:hh-preview-frontend@hh-preview-458395246135.iam.gserviceaccount.com",
             ]}],
@@ -893,6 +1000,87 @@ class ExecutionTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(lifecycle.LifecycleError, "policy API failed"):
                 instance.verify_iap_iam_absent(parent_absent=False)
+
+    def test_etag_only_policy_is_empty_for_cloud_run_and_iap(self):
+        instance = self.make()
+        policy = {"etag": "BwZfURixDfo="}
+        self.assertEqual(instance.policy_members(policy, "roles/run.invoker"), set())
+        with patch.object(teardown.subprocess, "run", return_value=subprocess.CompletedProcess(
+            [], 0, json.dumps(policy).encode(), b"",
+        )):
+            instance.verify_cloud_run_iam_absent("hh-web-pr-56-engine", parent_absent=True)
+        with (
+            patch.object(teardown.Commands, "run", return_value=b"access-token"),
+            patch.object(teardown.urllib.request, "urlopen",
+                         return_value=io.BytesIO(json.dumps(policy).encode())),
+        ):
+            instance.verify_iap_iam_absent(parent_absent=True)
+
+    def test_policy_parser_rejects_malformed_or_unexpected_empty_responses(self):
+        for policy in (
+            None, [], {}, {"etag": ""}, {"etag": 123}, {"etag": None},
+            {"etag": "BwZfURixDfo=", "error": {"code": 403}},
+            {"etag": "BwZfURixDfo=", "unexpected": []},
+            {"etag": "BwZfURixDfo=", "bindings": None},
+            {"bindings": {}}, {"bindings": [None]},
+            {"bindings": [{"role": "roles/run.invoker", "members": "not-a-list"}]},
+            {"bindings": [{"role": "roles/run.invoker", "members": [123]}]},
+            {"bindings": [{"role": "roles/run.invoker", "members": ["allUsers"],
+                           "condition": {"expression": "true"}}]},
+        ):
+            with self.subTest(policy=policy), self.assertRaises(lifecycle.LifecycleError):
+                teardown.PreviewTeardown.policy_members(policy, "roles/run.invoker")
+
+    def test_cloud_run_empty_policy_does_not_mask_errors_or_bad_json(self):
+        instance = self.make()
+        engine = "hh-web-pr-56-engine"
+        for result in (
+            subprocess.CompletedProcess([], 0, b"not-json", b""),
+            subprocess.CompletedProcess([], 0, b'{"error":{"code":403}}', b""),
+            subprocess.CompletedProcess([], 1, b'{"etag":"BwZfURixDfo="}', b"PERMISSION_DENIED"),
+            subprocess.CompletedProcess([], 1, b"", f"NOT_FOUND {engine} 403".encode()),
+            subprocess.CompletedProcess([], 1, b"", b"NOT_FOUND hh-web-pr-57-engine"),
+            subprocess.CompletedProcess([], 1, b"", b"connection unavailable"),
+        ):
+            with (
+                self.subTest(result=result),
+                patch.object(teardown.subprocess, "run", return_value=result),
+                self.assertRaises(lifecycle.LifecycleError),
+            ):
+                instance.verify_cloud_run_iam_absent(engine, parent_absent=True)
+
+    def test_runtime_iam_requires_verified_parent_absence_even_with_partial_inventory(self):
+        instance = self.make()
+        remaining = {address: values for address, values in inventory().items()
+                     if address.split("[", 1)[0] not in teardown.RUNTIME}
+        for absent in (set(), {"hh-web-pr-56-engine"}):
+            with (
+                patch.object(instance, "verify_cloud_run_iam_absent") as cloud_run,
+                patch.object(instance, "verify_iap_iam_absent") as iap,
+                self.assertRaisesRegex(lifecycle.LifecycleError, "parent absence"),
+            ):
+                instance.verify_runtime_iam_absent(remaining, absent)
+            cloud_run.assert_not_called()
+            iap.assert_not_called()
+
+    def test_iap_policy_read_does_not_treat_authorization_or_transport_errors_as_absent(self):
+        instance = self.make()
+        for error in (
+            lifecycle.urllib.error.HTTPError(
+                "https://iap.googleapis.com/fixed", 403, "permission denied", {}, io.BytesIO(),
+            ),
+            lifecycle.urllib.error.HTTPError(
+                "https://iap.googleapis.com/fixed", 500, "unavailable", {}, io.BytesIO(),
+            ),
+            lifecycle.urllib.error.URLError("connection unavailable"),
+        ):
+            with (
+                self.subTest(error=error),
+                patch.object(teardown.Commands, "run", return_value=b"access-token"),
+                patch.object(teardown.urllib.request, "urlopen", side_effect=error),
+                self.assertRaises(lifecycle.LifecycleError),
+            ):
+                instance.verify_iap_iam_absent(parent_absent=True)
 
     def test_terraform_apply_failure_does_not_claim_success(self):
         instance = self.make()
