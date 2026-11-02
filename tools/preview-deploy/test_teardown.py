@@ -228,6 +228,53 @@ class OwnershipTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(lifecycle.LifecycleError):
                 teardown.validate_state(value, "56")
 
+    def test_allowed_zero_instance_resource_envelopes_are_valid(self):
+        value = empty_state()
+        value["resources"] = [
+            {"type": kind, "name": name, "mode": "managed", "provider": teardown.PROVIDER,
+             "instances": []}
+            for kind, name in (address.split(".") for address in sorted(teardown.ALLOWED))
+        ]
+        self.assertEqual(teardown.validate_state(value, "56"), (None, {}))
+        partial = state()
+        partial["serial"] = 44
+        partial["resources"] = [
+            resource for resource in partial["resources"]
+            if resource["type"].startswith("google_secret")
+        ] + copy.deepcopy(value["resources"])
+        incarnation, owned = teardown.validate_state(partial, "56")
+        self.assertEqual(incarnation, INCARNATION)
+        self.assertEqual(len(owned), 8)
+
+    def test_zero_instance_resource_envelopes_cannot_hide_malformed_or_foreign_blocks(self):
+        original = {
+            "type": "google_secret_manager_secret", "name": "pr", "mode": "managed",
+            "provider": teardown.PROVIDER, "instances": [],
+        }
+        malformed = [None, [], {}]
+        for key in original:
+            missing = copy.deepcopy(original)
+            missing.pop(key)
+            malformed.append(missing)
+        for key, invalid in (
+            ("type", None), ("type", []), ("type", ""), ("type", "google_storage_bucket"),
+            ("type", "google_secret_manager_secret.pr"),
+            ("name", None), ("name", []), ("name", ""), ("name", "shared"),
+            ("name", 'pr["database_url"]'), ("name", "pr.extra"),
+            ("mode", "data"), ("mode", None),
+            ("provider", 'provider["registry.terraform.io/hashicorp/google"].shared'),
+            ("provider", None), ("module", "module.shared"), ("module", ""),
+            ("module", None), ("module", []), ("instances", None), ("instances", {}),
+        ):
+            malformed.append({**original, key: invalid})
+        for resource in malformed:
+            for nonempty in (False, True):
+                value = state() if nonempty else empty_state()
+                value["resources"].append(resource)
+                with self.subTest(resource=resource, nonempty=nonempty):
+                    with self.assertRaises(lifecycle.LifecycleError):
+                        teardown.validate_state(value, "56")
+
     def test_empty_and_nonempty_states_require_lineage_and_integer_serial(self):
         for initial in (empty_state(), state()):
             for key, invalid in (
@@ -795,6 +842,29 @@ class ExecutionTests(unittest.TestCase):
                 self.assertIsNotNone(error)
                 self.assertEqual(calls, [])
                 self.assertEqual(instance.status, "Cleanup incomplete")
+
+    def test_zero_instance_envelopes_only_allow_owned_resource_noops(self):
+        valid = empty_state()
+        valid["resources"] = [{
+            "type": "google_secret_manager_secret", "name": "pr", "mode": "managed",
+            "provider": teardown.PROVIDER, "instances": [],
+        }]
+        instance, calls, error = self.run_mocked(valid)
+        self.assertIsNone(error)
+        self.assertEqual(instance.status, "No-op: no tracked preview resources")
+        self.assertEqual(calls, ["verify-runtime", "verify-runtime-iam", "tags"])
+        for fields in (
+            {"type": "google_storage_bucket", "name": "shared"},
+            {"name": 'pr["foreign"]'},
+            {"module": None},
+        ):
+            value = copy.deepcopy(valid)
+            value["resources"][0].update(fields)
+            with self.subTest(fields=fields):
+                instance, calls, error = self.run_mocked(value)
+                self.assertIsNotNone(error)
+                self.assertEqual(instance.status, "Cleanup incomplete")
+                self.assertEqual(calls, [])
 
     def test_database_owner_failure_reports_dependency_cleanup_partial_state(self):
         instance, calls, error = self.run_mocked(database_error="Database owner mismatch")

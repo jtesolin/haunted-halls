@@ -431,6 +431,11 @@ It has no Actions dispatch permission and never executes the PR image.
    secret generation. IAM entries must identify the exact expected secret,
    service, role and principal; arbitrary/shared resources are rejected.
    Partial inventories are accepted only when identity is still unambiguous.
+   Every resource envelope must name an exact allowed root resource type/name,
+   managed mode and the fixed provider, even when its `instances` array is empty.
+   A module field or indexed/malformed envelope name is rejected. Valid allowed
+   zero-instance resource entries are retained as empty inventory, not as owned
+   instances; any present instances still require all ownership checks.
 3. Generate a saved destroy plan targeting the frontend, engine, migration
    job and their Cloud Run/IAP IAM entries. Terraform includes the targets'
    dependency closure, which can also delete this PR's Secret Manager grants

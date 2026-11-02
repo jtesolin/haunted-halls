@@ -269,7 +269,11 @@ def validate_state(state: object, number: str) -> tuple[str | None, dict[str, di
     inventory: dict[str, dict[str, Any]] = {}
     for resource in state["resources"]:
         _expect(isinstance(resource, dict) and resource.get("mode") == "managed"
-                and not resource.get("module") and resource.get("provider") == PROVIDER
+                and "module" not in resource and resource.get("provider") == PROVIDER
+                and isinstance(resource.get("type"), str)
+                and isinstance(resource.get("name"), str)
+                and (resource["type"], resource["name"])
+                in {tuple(address.split(".")) for address in ALLOWED}
                 and isinstance(resource.get("instances"), list),
                 "Unexpected state module, data source, provider, or resource.")
         for instance in resource["instances"]:
