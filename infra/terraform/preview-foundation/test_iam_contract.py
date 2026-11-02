@@ -119,6 +119,17 @@ run "otherwise_valid_alternate_project" {
             "iap.webServices.getIamPolicy", "iap.webServices.setIamPolicy",
         })
 
+    def test_preview_tag_cleanup_adds_only_tag_delete_on_the_preview_repository(self):
+        source = FOUNDATION / "artifact-registry.tf"
+        role = resource(source, "google_project_iam_custom_role", "preview_tag_cleanup")
+        self.assertEqual(permissions(role), {"artifactregistry.tags.delete"})
+        grant = resource(source, "google_artifact_registry_repository_iam_member", "deployer_tag_cleanup")
+        self.assertEqual(attribute(grant, "project"), "var.preview_project_id")
+        self.assertEqual(attribute(grant, "repository"), "google_artifact_registry_repository.preview.name")
+        self.assertEqual(attribute(grant, "location"), "google_artifact_registry_repository.preview.location")
+        self.assertEqual(attribute(grant, "role"), "google_project_iam_custom_role.preview_tag_cleanup.name")
+        self.assertEqual(attribute(grant, "member"), DEPLOYER_MEMBER)
+
     def test_iap_grant_uses_documented_service_type_and_modified_roles(self):
         block = self.foundation_resource("google_project_iam_member", "deployer_iap_tester_policy")
         self.assertEqual(attribute(block, "project"), "var.preview_project_id")

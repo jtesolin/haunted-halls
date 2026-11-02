@@ -4,8 +4,9 @@ This is a **separate Terraform root**, not a module in the foundation or the
 production/staging root. The trusted default-branch workflow now uses it for
 frontend PR preview creation and updates. The lifecycle creates/reuses the
 database, prepares a new secret generation, migrates before service rollout,
-verifies the deployed digests/privacy, and maintains one PR comment. Close/merge
-teardown remains intentionally deferred. 41A's merged server-only IAP
+verifies the deployed digests/privacy, and maintains one PR comment. Trusted
+close/merge teardown and explicit closed-PR reconciliation use the same
+ownership-checked cleanup path described below. 41A's merged server-only IAP
 authentication is consumed unchanged.
 
 ## Ownership and fixed boundary
@@ -353,7 +354,180 @@ The required order is:
    GitHub API failures report only the operation, templated endpoint, HTTP
    status, and a fixed failure category. A failed
    migration or Terraform operation never triggers an automatic destroy.
-   Close/merge teardown, DB drop, and ledger retention remain out of scope.
+
+## Closed-PR teardown and reconciliation
+
+The existing [`preview-deploy.yml`](../../../.github/workflows/preview-deploy.yml)
+uses `pull_request_target: closed` against `main` for both closure and merge.
+This privileged event is intentional: it runs the base repository's reviewed
+workflow, **not PR code**. The job requires the exact existing workflow ref,
+repository and `refs/heads/main`, checks out only `github.sha` with credentials
+not persisted, and verifies the checkout. Before WIF authentication,
+[`teardown.py`](../../../tools/preview-deploy/teardown.py) re-queries the fixed
+repository's PR API and requires the exact PR number, base repository, base
+branch, current closed state, head SHA and closure timestamp. A stale closure
+event is refused; manual reconciliation takes a fresh snapshot.
+
+Manual dispatch uses `operation=teardown` and `pull_request_number=<N>` on
+`main`. It invokes exactly the same cleanup checks. The default manual operation
+remains `acceptance` (the existing non-destructive prerequisite checks).
+Historical closure events are not replayed; do not reopen PR #56.
+
+No new WIF refs or cloud identities are required. The job reuses the
+accepted direct-WIF/backend and preview-deployer/provider credential split.
+One additive custom role in
+[`artifact-registry.tf`](../preview-foundation/artifact-registry.tf) grants only
+`artifactregistry.tags.delete` to the existing deployer on the preview artifact
+repository. The existing Artifact Registry Writer role lacks that permission.
+There is no image-version, package or repository deletion authority. A trusted
+foundation operator must reconcile this same PR's two declarative resources
+before live acceptance; this implementation does not apply the grant.
+Its GitHub token has `contents: read`, `actions: read`, `id-token: write`,
+`pull-requests: write` and `issues: write`; Actions reads check for active secret
+preparation, and write permissions only update the existing bot-owned comment.
+It has no Actions dispatch permission and never executes the PR image.
+
+### Ownership checks and removal order
+
+1. Share deployment's `frontend-preview-pr-<N>` concurrency group with
+   `cancel-in-progress: false`. Recheck the PR's closure identity; refuse
+   active secret preparation for this PR. Initialize only the fixed backend,
+   prefix, impersonation identity and default workspace in a fresh private
+   `TF_DATA_DIR`.
+2. Validate every state resource against the exact per-PR resource address,
+   provider, project, region, resource ID, ownership labels, incarnation and
+   secret generation. IAM entries must identify the exact expected secret,
+   service, role and principal; arbitrary/shared resources are rejected.
+   Partial inventories are accepted only when identity is still unambiguous.
+3. Generate a saved **runtime-only destroy plan** for the frontend, engine,
+   migration job and their Cloud Run/IAP IAM entries. Validate every change:
+   only owned deletes or unchanged no-ops, no creations, updates, replacements
+   or foreign resources. Re-query GitHub and compare the entire state,
+   including lineage and serial, immediately before applying that saved plan.
+   Verify state removal and absence of the exact Cloud Run service/job names.
+4. Drop only `haunted_halls_web_pr_<N>` through the existing fixed trusted
+   provisioner. Require a validated `preview_identity` output linking PR,
+   incarnation, database, project and backend; for partial retries, the
+   validated positive-generation PR database-URL container plus its expected
+   engine/migration IAM grant also supplies evidence. The trusted preparer
+   always derives that container's database URL from this same PR number.
+   Verify the provisioner's service identity, runtime account and SQL
+   configuration, then recheck PR and state immediately before the request.
+   The provisioner independently enforces the exact deterministic database
+   name and shared `haunted_halls_preview_app` owner; an absent DB is a no-op.
+   **The shared instance is
+   `haunted-halls-development:us-east1:haunted-halls-postgres`, not an instance
+   in the preview project.** No SQL admin authority is given to the deployer.
+5. Only after a verified database response, generate/validate/apply a second
+   saved destroy plan for the remaining PR secret IAM grants and all three
+   incarnation-qualified secret containers. Deleting each parent also removes
+   its preparer-owned versions; no version payload is read. Verify empty
+   resource state and `NOT_FOUND` for the exact secret IDs (permission and
+   network errors are not absence).
+6. Remove only frontend Artifact Registry tags matching this PR's exact
+   `pr-<N>-<40-hex-SHA>-run-<ID>-attempt-<N>` pattern. Image manifests are not
+   deleted directly: the existing 30-day untagged cleanup policy handles them.
+   Shared frozen engine tags/digests and other PR tags are preserved.
+
+**Always preserved:** shared Cloud SQL instance/users, staging/production DBs,
+all service accounts, project IAM/APIs/IAP settings, WIF, OAuth/shared preview
+credentials and OpenAI secret, Artifact Registry repository, other previews,
+foundation state, secret-preparation ledger and its immutable generation
+records. The now-empty per-PR backend state object and GCS historical versions
+are retained for audit rather than explicitly deleted. This is a deliberate
+retention exception to issue #41's original state-removal wording; no new
+journal or ownership registry is introduced.
+
+### Failure, retries and bounded limitations
+
+Every destructive step rechecks PR closure and unchanged state. Queued
+deployments still re-query eligibility and refuse closed PRs. If a PR reopens
+while teardown is queued, teardown fails before deletion. A late state,
+incarnation, generation, PR head or closure-time change also fails closed.
+These are bounded checks, not a transaction spanning GitHub, Terraform and SQL:
+an operator must not bypass the shared workflow lock or reopen during apply.
+No generalized reopening/orphan-scanning mechanism is added.
+
+Ownership failure leaves the ambiguous resource intact and fails the job with
+an actionable manual-cleanup requirement. A database failure leaves secrets
+and their state available; runtime may already be gone. A partial Terraform
+failure preserves its normal backend state; retry the same manual dispatch
+when the remaining state still proves ownership. Missing identity after an
+out-of-band/partial deletion requires operator inspection, never adoption or
+state removal to bypass checks. A fully empty/missing state produces a
+successful **no tracked resources** no-op, not an assertion that untracked
+orphan databases/secrets cannot exist.
+
+The Actions summary records PR, status, completed steps, timestamp and failures.
+The existing single bot-owned Preview Environment comment is updated rather
+than duplicated, including partial failure status. Comment-write failure
+produces a visible warning without changing completed infrastructure cleanup
+into a failure or starting it again. No secrets or infrastructure IDs are
+added to teardown reports.
+
+### Controlled PR #56 acceptance (only after merge and human approval)
+
+No live teardown is run during implementation. PR #56's existing state and
+the successful reviewed-main deployment
+[41106782384](https://github.com/jtesolin/haunted-halls/actions/runs/41106782384)
+provide existing evidence, not permission to delete solely by name.
+
+1. Confirm this implementation is merged and Actions CI is green. Using the
+   existing trusted foundation backend/operator credentials and normal inputs,
+   plan the same PR's tag-cleanup grant:
+
+   ```bash
+   terraform -chdir=infra/terraform/preview-foundation plan \
+     -target=google_project_iam_custom_role.preview_tag_cleanup \
+     -target=google_artifact_registry_repository_iam_member.deployer_tag_cleanup \
+     -out=/tmp/preview-tag-cleanup.tfplan
+   terraform -chdir=infra/terraform/preview-foundation show /tmp/preview-tag-cleanup.tfplan
+   ```
+
+   Require **only** the new tag-delete custom role and its preview-repository
+   membership to be added, with no staging/production or other foundation
+   changes. Stop on any other planned change. After human approval, the
+   foundation operator applies only that reviewed saved plan:
+
+   ```bash
+   terraform -chdir=infra/terraform/preview-foundation apply /tmp/preview-tag-cleanup.tfplan
+   ```
+
+   No such plan/apply is executed during implementation. Confirm PR #56 is still
+   closed, and no deployment/secret-preparation job for it is active:
+
+   ```bash
+   gh pr view 56 --repo jtesolin/haunted-halls --json state,closedAt,headRefOid
+   gh run view 41106782384 --repo jtesolin/haunted-halls
+   ```
+
+2. Read/record (without changing) its `previews/web-pr-56/default.tfstate`,
+   `preview_identity`, exact resource IDs and incarnation-qualified secret
+   IDs in `hh-preview-458395246135-per-pr-tf-state`. Capture a read-only
+   baseline of other previews and staging/production. The implementation
+   validated PR #56's 14 state resource instances read-only; it did not drop
+   the database or apply either destroy plan.
+3. With explicit human approval, dispatch **once on main**, not a PR ref:
+
+   ```bash
+   gh workflow run preview-deploy.yml --repo jtesolin/haunted-halls --ref main \
+     -f operation=teardown -f pull_request_number=56
+   gh run list --repo jtesolin/haunted-halls --workflow preview-deploy.yml --limit 5
+   gh run watch <teardown-run-id> --repo jtesolin/haunted-halls --exit-status
+   ```
+
+4. Require the summary and existing comment to say **Removed**. Independently
+   verify `hh-web-pr-56-frontend`, `hh-web-pr-56-engine`,
+   `hh-web-pr-56-migrate`, the three recorded owned secrets and PR-56 frontend
+   tags are absent. An authorized SQL operator can read
+   `gcloud sql databases list --project=haunted-halls-development --instance=haunted-halls-postgres`
+   to confirm `haunted_halls_web_pr_56` is absent, while staging/production
+   DBs, the instance and the captured other-preview baseline are unchanged.
+   Verify the per-PR state has no resources; retain its audit history and ledger.
+5. Repeat the same dispatch to verify a successful no-tracked-resources no-op.
+   Any failure is a stop/review signal: inspect retained state and completed
+   steps; retry only when identity is clear. Do not reopen #56, manually drop
+   a database on name alone, or delete backend/ledger records.
 
 ## Accepted IAM boundaries
 
@@ -379,7 +553,9 @@ See [the prerequisite scope/acceptance guide](../preview-foundation/prerequisite
 for operator ordering, backend/provider credential routing, the accepted
 permission boundaries, and the proposed preparer IAM. Issue #41 remains open
 for the original prerequisite acceptance details and existing permission
-boundaries. A separate teardown change completes the lifecycle.
+boundaries. Destructive acceptance of the teardown above remains an explicitly
+approved post-merge operation; implementation and offline tests do not claim
+live teardown acceptance.
 
 ## Offline validation
 
@@ -389,6 +565,9 @@ make tf-validate
 make tf-preview-db-test
 make tf-preview-pr-test
 make tf-preview-secret-preparer-test
+python3 -m unittest discover -s tools/preview-deploy -p 'test_*.py'
+make preview-acceptance-test
+actionlint .github/workflows/preview-deploy.yml
 git diff --check
 ```
 
@@ -399,3 +578,8 @@ fixed bootstrap targets. Terraform provider-mocked plans verify secret
 ownership and exact Cloud Run/job version references. Tests perform no ADC
 requests, live backend initialization, secret reads/writes, SQL operations or
 Terraform apply. CI runs the checks credential-free.
+Teardown tests additionally cover closed/merged PRs, legacy #56 dispatch,
+open/reopened rejection, state/backend/incarnation/generation mismatches,
+unexpected destroy actions and shared-resource IDs, provisioner target/owner
+checks, missing resources, partial retries/failures, tag isolation, and
+idempotent comment reporting.
