@@ -399,34 +399,36 @@ It has no Actions dispatch permission and never executes the PR image.
    secret generation. IAM entries must identify the exact expected secret,
    service, role and principal; arbitrary/shared resources are rejected.
    Partial inventories are accepted only when identity is still unambiguous.
-3. Generate a saved **runtime-only destroy plan** for the frontend, engine,
-   migration job and their Cloud Run/IAP IAM entries. Validate every change:
-   only owned deletes or unchanged no-ops, no creations, updates, replacements
-   or foreign resources. Re-query GitHub and compare the entire state,
-   including lineage and serial, immediately before applying that saved plan.
-   Verify refreshed state removal, absence of the exact Cloud Run service/job
-   names, and the exact Cloud Run `roles/run.invoker` and IAP
-   `roles/iap.httpsResourceAccessor` policies. A surviving role member or
-   policy API error blocks database deletion and success reporting.
+3. Generate a saved destroy plan targeting the frontend, engine, migration
+   job and their Cloud Run/IAP IAM entries. Terraform includes the targets'
+   dependency closure, which can also delete this PR's Secret Manager grants
+   and secret containers. Validate every planned change against the complete
+   per-PR inventory: only owned deletes or unchanged no-ops, no creations,
+   updates, replacements or foreign resources. Re-query GitHub and compare
+   the entire state, including lineage and serial, immediately before
+   applying that saved plan. Verify refreshed state removal, absence of the
+   exact Cloud Run service/job names, and the exact Cloud Run
+   `roles/run.invoker` and IAP `roles/iap.httpsResourceAccessor` policies. A
+   surviving role member or policy API error blocks database deletion and
+   success reporting.
 4. Drop only `haunted_halls_web_pr_<N>` through the existing fixed trusted
-   provisioner. Require a validated `preview_identity` output linking PR,
-   incarnation, database, project and backend; for partial retries, the
-   validated positive-generation PR database-URL container plus its expected
-   engine/migration IAM grant also supplies evidence. The trusted preparer
-   always derives that container's database URL from this same PR number.
-   Verify the provisioner's service identity, runtime account and SQL
-   configuration, then recheck PR and state immediately before the request.
-   The provisioner independently enforces the exact deterministic database
-   name and shared `haunted_halls_preview_app` owner; an absent DB is a no-op.
+   provisioner using state ownership evidence captured before destroy:
+   either the validated `preview_identity` output or the positive-generation
+   PR database-URL container plus its expected engine/migration IAM grant.
+   The trusted preparer always derives that container's database URL from this
+   same PR number. Verify the provisioner's exact service URL, project number,
+   region, service identity, runtime account and SQL configuration, then
+   recheck PR and state immediately before the request. The provisioner
+   independently enforces the exact deterministic database name and shared
+   `haunted_halls_preview_app` owner; an absent DB is a no-op.
    **The shared instance is
    `haunted-halls-development:us-east1:haunted-halls-postgres`, not an instance
    in the preview project.** No SQL admin authority is given to the deployer.
-5. Only after a verified database response, generate/validate/apply a second
-   saved destroy plan for the remaining PR secret IAM grants and all three
-   incarnation-qualified secret containers. Deleting each parent also removes
-   its preparer-owned versions; no version payload is read. Verify empty
-   resource state and `NOT_FOUND` for the exact secret IDs (permission and
-   network errors are not absence).
+5. After a verified database response, destroy any remaining Terraform-owned
+   resources, if present. Deleting each secret parent also removes its
+   preparer-owned versions; no version payload is read. Verify empty resource
+   state and `NOT_FOUND` for the exact secret IDs (permission and network
+   errors are not absence).
 6. Remove only frontend Artifact Registry tags matching this PR's exact
    `pr-<N>-<40-hex-SHA>-run-<ID>-attempt-<N>` pattern. Image manifests are not
    deleted directly: the existing 30-day untagged cleanup policy handles them.
@@ -452,10 +454,13 @@ an operator must not bypass the shared workflow lock or reopen during apply.
 No generalized reopening/orphan-scanning mechanism is added.
 
 Ownership failure leaves the ambiguous resource intact and fails the job with
-an actionable manual-cleanup requirement. A database failure leaves secrets
-and their state available; runtime may already be gone. A partial Terraform
-failure preserves its normal backend state; retry the same manual dispatch
-when the remaining state still proves ownership. Missing identity after an
+an actionable manual-cleanup requirement. The targeted Terraform phase may
+remove secret grants and containers with the runtime dependency closure before
+the database request. If that request fails after state ownership evidence is
+gone, the database remains intact and requires manual cleanup; teardown will
+not retry based only on its deterministic name. A partial Terraform failure
+preserves its normal backend state; retry the same manual dispatch only when
+the remaining state still proves ownership. Missing identity after an
 out-of-band/partial deletion requires operator inspection, never adoption or
 state removal to bypass checks. A fully empty/missing state produces a
 successful **no tracked resources** no-op, not an assertion that untracked

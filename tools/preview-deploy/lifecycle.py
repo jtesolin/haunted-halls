@@ -40,6 +40,7 @@ PREVIEW_PROJECT = "hh-preview-458395246135"
 PREVIEW_PROJECT_NUMBER = "1001419903197"
 PREVIEW_REGION = "us-east1"
 SOURCE_PROJECT = "haunted-halls-development"
+SOURCE_PROJECT_NUMBER = "458395246135"
 SOURCE_REGION = "us-east1"
 DB_PROVISIONER_SERVICE = "hh-preview-db-provisioner"
 SOURCE_ENGINE_REPOSITORY = (
@@ -2047,8 +2048,7 @@ def database_provisioner_url(service: object) -> str:
     labels = metadata.get("labels")
     _expect(
         metadata.get("name") == DB_PROVISIONER_SERVICE
-        and isinstance(metadata.get("namespace"), str)
-        and re.fullmatch(r"[0-9]+", metadata["namespace"]) is not None
+        and metadata.get("namespace") == SOURCE_PROJECT_NUMBER
         and isinstance(labels, dict)
         and labels.get("cloud.googleapis.com/location") == SOURCE_REGION,
         "The described database provisioner identity, project, or region is unexpected.",
@@ -2062,9 +2062,8 @@ def database_provisioner_url(service: object) -> str:
         port = -1
     _expect(
         parsed.scheme == "https"
-        and parsed.hostname is not None
-        and parsed.hostname.endswith(".run.app")
-        and parsed.hostname.count(".") >= 2
+        and parsed.hostname
+        == f"{DB_PROVISIONER_SERVICE}-{SOURCE_PROJECT_NUMBER}.{SOURCE_REGION}.run.app"
         and port is None
         and parsed.path in {"", "/"}
         and not parsed.params

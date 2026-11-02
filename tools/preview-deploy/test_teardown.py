@@ -5,6 +5,8 @@ import importlib.util
 import io
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -280,6 +282,79 @@ class OwnershipTests(unittest.TestCase):
                 change["change"].update(actions=["no-op"], after=copy.deepcopy(change["change"]["before"]))
         teardown.validate_destroy_plan(value, "56", INCARNATION, inventory(), teardown.RUNTIME)
 
+    def test_runtime_destroy_plan_accepts_only_owned_dependency_closure(self):
+        teardown.validate_destroy_plan(plan(), "56", INCARNATION, inventory(), teardown.ALLOWED)
+        with self.assertRaises(lifecycle.LifecycleError):
+            teardown.validate_destroy_plan(plan(), "56", INCARNATION, inventory(), teardown.RUNTIME)
+
+
+class TerraformDependencyGraphTests(unittest.TestCase):
+    def test_runtime_target_closure_includes_secret_iam_and_containers(self):
+        terraform = shutil.which("terraform")
+        if terraform is None:
+            self.skipTest("Terraform is required to inspect the configured dependency graph.")
+
+        source = Path(__file__).resolve().parents[2] / "infra/terraform/preview-pr"
+        with tempfile.TemporaryDirectory(prefix="preview-destroy-graph-") as directory:
+            root = Path(directory)
+            for path in source.glob("*.tf"):
+                contents = path.read_text(encoding="utf-8")
+                if path.name == "versions.tf":
+                    contents, replacements = re.subn(
+                        r'\n  backend "gcs" \{.*?\n  \}\n', "\n", contents, count=1, flags=re.S,
+                    )
+                    self.assertEqual(replacements, 1, "Expected only the configured GCS backend.")
+                (root / path.name).write_text(contents, encoding="utf-8")
+            shutil.copyfile(source / ".terraform.lock.hcl", root / ".terraform.lock.hcl")
+
+            environment = os.environ.copy()
+            environment["TF_DATA_DIR"] = str(root / ".terraform-data")
+            environment["TF_IN_AUTOMATION"] = "1"
+            provider_cache = source / ".terraform" / "providers"
+            if not provider_cache.is_dir():
+                provider_cache = root / ".provider-cache"
+                provider_cache.mkdir()
+            environment["TF_PLUGIN_CACHE_DIR"] = str(provider_cache)
+            for credential in (
+                "GOOGLE_APPLICATION_CREDENTIALS",
+                "GOOGLE_BACKEND_CREDENTIALS",
+                "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE",
+            ):
+                environment.pop(credential, None)
+
+            initialized = subprocess.run(
+                [terraform, "init", "-input=false", "-lockfile=readonly"],
+                cwd=root, env=environment, capture_output=True, text=True, timeout=300,
+                check=False,
+            )
+            self.assertEqual(initialized.returncode, 0, initialized.stdout + initialized.stderr)
+            result = subprocess.run(
+                [terraform, "graph", "-type=plan"],
+                cwd=root, env=environment, capture_output=True, text=True, timeout=120,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        edges: dict[str, set[str]] = {}
+        for line in result.stdout.splitlines():
+            match = re.fullmatch(r'\s*"(\[root\] [^"]+)" -> "(\[root\] [^"]+)"', line)
+            if match is None:
+                continue
+            source_node, dependency_node = (
+                node.removeprefix("[root] ").split(" (", 1)[0]
+                for node in match.groups()
+            )
+            edges.setdefault(source_node, set()).add(dependency_node)
+
+        closure = set(teardown.RUNTIME)
+        pending = list(closure)
+        while pending:
+            for dependency in edges.get(pending.pop(), set()) & teardown.ALLOWED:
+                if dependency not in closure:
+                    closure.add(dependency)
+                    pending.append(dependency)
+        self.assertEqual(closure, teardown.ALLOWED)
+
 
 class ExecutionTests(unittest.TestCase):
     def make(self):
@@ -303,8 +378,6 @@ class ExecutionTests(unittest.TestCase):
     def test_saved_plan_is_validated_and_state_rechecked_immediately_before_apply(self):
         instance = self.make()
         instance.state = state()
-        runtime = {key: value for key, value in inventory().items()
-                   if key.split("[", 1)[0] in teardown.RUNTIME}
         calls = []
         with tempfile.TemporaryDirectory() as directory:
             instance.directory = Path(directory)
@@ -313,14 +386,23 @@ class ExecutionTests(unittest.TestCase):
                 patch.object(instance, "read_state", return_value={
                     "resources": [], "lineage": "test-lineage", "serial": 43,
                 }),
-                patch.object(teardown, "run_terraform_plan", side_effect=lambda *a, **k: calls.append("plan")),
-                patch.object(teardown.Commands, "json", return_value=plan(runtime)),
+                patch.object(
+                    teardown, "run_terraform_plan",
+                    side_effect=lambda *a, **k: calls.append("plan"),
+                ) as run_plan,
+                patch.object(teardown.Commands, "json", return_value=plan()),
                 patch.object(teardown.Commands, "run", side_effect=lambda *a, **k: calls.append(a[0])),
             ):
                 instance.destroy(runtime_only=True)
             self.assertEqual(calls[:3], ["guard", "plan", "guard"])
             self.assertEqual(calls[3][2], "apply")
             self.assertEqual(calls[3][-1], f"{directory}/destroy.tfplan")
+            arguments = run_plan.call_args.args[0]
+            self.assertEqual(
+                [argument for argument in arguments if argument.startswith("-target=")],
+                [f"-target={target}" for target in sorted(teardown.RUNTIME)],
+            )
+            self.assertEqual(run_plan.call_args.kwargs["targets"], teardown.ALLOWED)
 
     def test_new_incarnation_after_apply_cannot_be_used_for_database_deletion(self):
         instance = self.make()
@@ -397,18 +479,41 @@ class ExecutionTests(unittest.TestCase):
         ])
         self.assertEqual(instance.status, "Removed")
 
+    def test_runtime_iam_check_accepts_real_indexed_pr_state(self):
+        instance = self.make()
+        owned = inventory()
+        self.assertTrue(any(
+            address.startswith("google_secret_manager_secret_iam_member.runtime[")
+            for address in owned
+        ))
+        self.assertTrue(any(
+            address.startswith("google_iap_web_cloud_run_service_iam_member.tester[")
+            for address in owned
+        ))
+        absent = {
+            "hh-web-pr-56-frontend",
+            "hh-web-pr-56-engine",
+        }
+        with (
+            patch.object(instance, "verify_cloud_run_iam_absent") as cloud_run,
+            patch.object(instance, "verify_iap_iam_absent") as iap,
+        ):
+            instance.verify_runtime_iam_absent(owned, absent)
+        self.assertEqual(cloud_run.call_count, 2)
+        iap.assert_called_once_with(True)
+
     def test_already_removed_is_noop_without_database_adoption(self):
         instance, calls, error = self.run_mocked({"resources": []})
         self.assertIsNone(error)
         self.assertEqual(calls, ["verify-runtime", "verify-runtime-iam", "tags"])
         self.assertIn("No-op", instance.status)
 
-    def test_database_owner_failure_preserves_secrets_and_reports_partial_cleanup(self):
+    def test_database_owner_failure_reports_dependency_cleanup_partial_state(self):
         instance, calls, error = self.run_mocked(database_error="Database owner mismatch")
         self.assertEqual(calls, ["runtime", "verify-runtime", "verify-runtime-iam", "database"])
         self.assertIn("owner mismatch", error)
         self.assertEqual(instance.status, "Cleanup incomplete")
-        self.assertIn("database and secret cleanup pending", instance.progress)
+        self.assertIn("database cleanup pending", instance.progress)
 
     def test_foreign_database_response_does_not_allow_secret_cleanup(self):
         instance, calls, error = self.run_mocked(database_result={

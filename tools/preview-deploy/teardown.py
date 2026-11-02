@@ -46,6 +46,7 @@ ALLOWED_IAM_ADDRESSES = {
     "google_cloud_run_v2_service_iam_member.frontend_iap",
     "google_iap_web_cloud_run_service_iam_member.tester",
 }
+SECRET_IAM_ADDRESS = "google_secret_manager_secret_iam_member.runtime"
 ROLES = {"nextauth": "nextauth", "internal_token": "internal-token", "database_url": "database-url"}
 GRANTS = {
     "frontend_nextauth": ("nextauth", "frontend"),
@@ -440,7 +441,9 @@ class PreviewTeardown:
             return
         _expect(incarnation is not None, "No authoritative incarnation.")
         lineage, serial = self.state["lineage"], self.state["serial"]
-        allowed = RUNTIME if runtime_only else ALLOWED
+        # Terraform target selection includes dependencies, which here include
+        # the PR's Secret Manager grants and secret containers.
+        allowed = ALLOWED
         if not any(address.split("[", 1)[0] in allowed for address in inventory):
             return
         plan = self.directory / "destroy.tfplan"
@@ -461,7 +464,8 @@ class PreviewTeardown:
             validate_destroy_plan(contents, self.number, incarnation, inventory, allowed)
             self.guard()
             self.progress = (
-                "Runtime cleanup started; completion unverified. Database and secrets retained."
+                "Runtime cleanup started; completion unverified. The Terraform dependency "
+                "closure may remove owned secrets; database retained."
                 if runtime_only else
                 "Runtime and database cleanup verified; secret cleanup started, completion unverified."
             )
@@ -591,10 +595,11 @@ class PreviewTeardown:
         }
         _expect(names <= absent_services,
                 "Runtime parent absence was not verified before checking its IAM policy.")
-        expected_addresses = {
-            address for address in inventory if "_iam_member." in address
+        iam_bases = {
+            address.split("[", 1)[0]
+            for address in inventory if "_iam_member." in address
         }
-        _expect(expected_addresses <= ALLOWED_IAM_ADDRESSES,
+        _expect(iam_bases <= ALLOWED_IAM_ADDRESSES | {SECRET_IAM_ADDRESS},
                 "Runtime state contains an unexpected IAM address.")
         self.verify_cloud_run_iam_absent(
             f"hh-web-pr-{self.number}-engine",
@@ -681,16 +686,20 @@ class PreviewTeardown:
         self.destroy(runtime_only=True)
         absent_services = self.verify_runtime_absent()
         self.verify_runtime_iam_absent(inventory, absent_services)
-        self.progress = "Runtime removed and verified; database and secret cleanup pending."
+        self.progress = (
+            "Runtime removed and verified; Terraform dependency cleanup may have removed "
+            "owned secrets; database cleanup pending."
+        )
         _expect(database_owned,
-                "Database ownership evidence is incomplete. Database and remaining secrets were left intact; manual cleanup required.")
+                "Database ownership evidence is incomplete. The database was left intact; "
+                "Terraform dependency cleanup may have removed owned secrets; manual cleanup required.")
         self.guard()
         result = request_database(self.number, "drop", self.guard)
         _expect(isinstance(result, dict)
                 and result.get("database") == derive_database_name(self.number)
                 and result.get("operation") == "drop" and type(result.get("dropped")) is bool,
                 "Database deletion was not verified; inspect the provisioner and retry.")
-        self.progress = "Runtime and database removed (or already absent); secrets pending."
+        self.progress = "Runtime and database removed (or already absent); verifying owned secret cleanup."
         self.destroy(runtime_only=False)
         self.verify_secrets_absent(secrets)
         self.progress = "Runtime, database and secrets removed; frontend tag cleanup pending."
