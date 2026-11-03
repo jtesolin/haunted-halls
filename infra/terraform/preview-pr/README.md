@@ -443,10 +443,55 @@ the current teardown policy paths accept their responses. The
 original failure's resource/body was not retained; current results cannot prove
 which historical response failed. Diagnostic execution itself requires approval.
 
-After the evidence is reviewed, remove the `iam-diagnostic` dispatch option/job,
-helper, its focused tests and this subsection in one cleanup PR. Retain the
-explicit `acceptance` operation guard and the separately saved diagnostic
-evidence. Do not retain this mode as a general-purpose cloud diagnostic surface.
+### Operator runbook and retention policy
+
+Keep this diagnostic available during the initial operational period of preview
+teardown so a recurrence of the PR #76 IAM-policy failure can be investigated.
+It is **PR #76-specific**, not a general diagnostic for arbitrary PRs: the
+workflow input guard, concurrency group, Cloud Run service names, IAP resource,
+and helper allowlist all target PR #76. Running it for another PR is rejected;
+a PASS for PR #76 says nothing about a different preview.
+
+For a future teardown failure:
+
+1. Record the failing workflow URL, job, timestamp, PR number, and last
+   completed teardown step. Do not automatically retry or infer cleanup from a
+   successful workflow step.
+2. Inspect the existing Preview Environment comment and authoritative per-PR
+   Terraform state **read-only**. Check lineage, serial, managed resources,
+   ownership, and whether the PR is still closed. Capture current runtime,
+   database, secret, IAM, and tag inventory before proposing changes.
+3. If the affected PR is **76** and the suspected blocker is the Cloud Run/IAP
+   IAM-policy verifier, verify that no conflicting deployment/teardown is active,
+   then request approval for one diagnostic dispatch using the command above.
+   Review the Actions job summary and its sanitized JSON report. A nonzero
+   diagnostic exit may be expected evidence of FAIL/INCONCLUSIVE.
+4. Interpret **PASS** as a point-in-time IAM observation only. Investigate
+   **FAIL** by comparing the specific policy and parser condition; investigate
+   **INCONCLUSIVE** by checking authentication, parent-resource existence and
+   API accessibility. Do not weaken the parser or IAM trust to force PASS.
+5. For a failure on **another PR**, do **not** substitute PR #76 results or
+   change the input to that PR. Use read-only inspection of that PR's actual
+   resources and propose a separately reviewed extension of the diagnostic if
+   needed. Any extension must preserve exact resource allowlists, trusted
+   workflow identity, sanitized reporting, and no lifecycle/cleanup entry point.
+6. Before any recovery, independently validate Terraform state and resource
+   ownership, database/provisioner prerequisites, isolation from other previews,
+   and preservation baselines. Require a separate, single-use teardown approval.
+   Never automatically dispatch teardown based on this diagnostic.
+
+**Operational evidence (2026-11-03):** the single authorized PR #76 diagnostic
+[run 41658427872](https://github.com/jtesolin/haunted-halls/actions/runs/41658427872)
+returned PASS for both Cloud Run policies and frontend IAP. The separately
+approved [recovery run 41666861542](https://github.com/jtesolin/haunted-halls/actions/runs/41666861542)
+then completed successfully; independent checks found the database, three
+secrets, five IAM grants and two frontend tags removed, with retained Terraform
+state serial 15 and zero managed instances. This does not establish the original
+IAM failure's historical cause or guarantee future teardown success.
+
+Revisit diagnostic retention after the preview lifecycle has operated reliably
+for a meaningful period. Removal or generalization should be a separate reviewed
+change, not part of routine teardown or legacy-resource cleanup.
 
 ### Trusted reusable executor and coordination
 
