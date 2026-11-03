@@ -1,13 +1,21 @@
 """Value-free IAM evidence; never serialize policy contents or exceptions."""
 
 import json
+import re
 from datetime import datetime, timezone
 
 
 def cli_error_kind(diagnostic, resource):
     lowered = diagnostic.lower()
-    if any(marker in lowered for marker in (
-        b"401", b"403", b"unauthenticated", b"permission_denied", b"permission denied",
+    # Hyphens, paths and colons can embed numbers in resource identifiers.
+    denied_status = re.search(
+        rb"(?<![\w./:-])(?:401|403)(?![\w./:-])", lowered,
+    ) or re.search(
+        rb"""(?<![\w./:-])(?:code|status(?:_code)?)["']?\s*[:=]\s*["']?(?:401|403)(?![\w./:-])""",
+        lowered,
+    )
+    if denied_status or any(marker in lowered for marker in (
+        b"unauthenticated", b"permission_denied", b"permission denied",
     )):
         return "permission_denied"
     if (b"not_found" in lowered or b"not found" in lowered) and resource.encode() in diagnostic:

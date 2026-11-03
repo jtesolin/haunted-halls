@@ -406,7 +406,9 @@ An unsupported etag-plus-version policy still fails; current successful reads
 neither reproduce a historical failure nor approve cleanup.
 
 Authentication/permission errors take precedence over CLI NOT_FOUND text, even
-when the parent is absent. CLI timeouts and OS errors are reported separately
+when the parent is absent. Numeric 401/403 markers must be standalone status
+tokens or explicit error-code fields, not substrings in resource identifiers
+such as `hh-web-pr-401-engine`. CLI timeouts and OS errors are reported separately
 as `cli_transport_unavailable`. IAP policy success requires HTTP 200; unexpected
 2xx responses fail closed before database cleanup. Parent-aware HTTP 404 handling
 is unchanged.

@@ -575,7 +575,7 @@ class PreviewTeardown:
             evidence("cli_transport_unavailable")
             raise LifecycleError("Cloud Run IAM policy could not be verified; database deletion is blocked.") from None
         if result.returncode != 0:
-            kind = cli_error_kind(result.stdout + result.stderr, service)
+            kind = cli_error_kind(b"\n".join((result.stdout, result.stderr)), service)
             missing = parent_absent and kind == "not_found"
             evidence("not_found_with_absent_parent" if missing else
                      "permission_denied" if kind == "permission_denied"

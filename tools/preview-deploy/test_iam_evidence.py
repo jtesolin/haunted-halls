@@ -215,6 +215,56 @@ class LocalDiagnosticTests(unittest.TestCase):
         diagnostic.configure_targets("76")
         diagnostic.IMPERSONATE = False
 
+    def test_numeric_pr_names_do_not_mask_absence_or_genuine_denials(self):
+        denials = (
+            b"401", b"(403)", b"HTTP/1.1 401 Unauthorized", b"HTTP 403 Forbidden",
+            b'{"error":{"code":401}}', b'{"code": "403"}', b"status:401",
+            b"status_code=403", b"PERMISSION_DENIED private-member",
+            b"permission denied private-token", b"UNAUTHENTICATED private-error",
+        )
+        identifiers = (b"", b"other-hh-web-pr-401-engine other-hh-web-pr-403-frontend",
+                       b"projects/401/services/403", b"resource:401 resource:403",
+                       b"id_401 id_403 1401 4030", b"401.example/403")
+        for number in ("401", "403"):
+            diagnostic.configure_targets(number)
+            for marker in identifiers + denials:
+                for parent_absent in (True, False):
+                    denied = marker in denials
+                    accepted = parent_absent and not denied
+                    expected = ("permission_denied" if denied else
+                                "not_found_with_absent_parent" if parent_absent else "cli_read_failed")
+
+                    def cli(args, **kwargs):
+                        return subprocess.CompletedProcess(
+                            args, 1, b"NOT_FOUND " + args[4].encode(), marker + b" private-value")
+
+                    def read(url, method, token):
+                        if url.endswith(diagnostic.RUN_POLICY_SUFFIX):
+                            return 200, {"etag": "private-etag"}, None
+                        return (404 if parent_absent else 200), None, None
+
+                    instance = object.__new__(teardown.PreviewTeardown)
+                    instance.number = number
+                    output = io.StringIO()
+                    with self.subTest(number=number, marker=marker, parent=parent_absent), \
+                            patch.object(teardown.subprocess, "run", side_effect=cli), \
+                            patch.object(diagnostic, "read_policy", side_effect=read), \
+                            redirect_stdout(output):
+                        for service in diagnostic.SERVICES:
+                            if accepted:
+                                instance.verify_cloud_run_iam_absent(service, parent_absent)
+                            else:
+                                with self.assertRaises(teardown.LifecycleError):
+                                    instance.verify_cloud_run_iam_absent(service, parent_absent)
+                        records = diagnostic.diagnose("private-token")
+                    for line in output.getvalue().splitlines():
+                        evidence = json.loads(line.removeprefix("IAM verification: "))
+                        self.assertEqual(evidence["validation_condition"], expected)
+                    for entry in records[:2]:
+                        self.assertEqual(entry["cli_validation_condition"], expected)
+                        self.assertEqual(entry["result"], "PASS" if accepted else "INCONCLUSIVE")
+                    self.assertNotIn("private", output.getvalue() + json.dumps(records))
+
     def test_cli_mixed_denials_and_transport_failures_are_distinct(self):
         diagnostic.configure_targets("66")
 

@@ -171,7 +171,7 @@ def cli_policy(name):
     except (subprocess.TimeoutExpired, OSError):
         return -1, None, False, "Cloud Run CLI policy read unavailable."
     if result.returncode:
-        kind = cli_error_kind(result.stdout + result.stderr, name)
+        kind = cli_error_kind(b"\n".join((result.stdout, result.stderr)), name)
         return result.returncode, None, kind == "not_found", (
             "Cloud Run CLI permission denied." if kind == "permission_denied"
             else "Cloud Run CLI policy read failed."
