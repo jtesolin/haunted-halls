@@ -18,7 +18,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from iam_evidence import body_shape, condition as policy_condition, emit as emit_iam, record as iam_record
+from iam_evidence import (
+    body_shape, cli_error_kind, condition as policy_condition, emit as emit_iam, record as iam_record,
+)
 
 from lifecycle import (
     COMMENT_MARKER, DEPLOYER, INCARNATION_RE, PREVIEW_ENGINE_REPOSITORY,
@@ -573,15 +575,10 @@ class PreviewTeardown:
             evidence("cli_transport_unavailable")
             raise LifecycleError("Cloud Run IAM policy could not be verified; database deletion is blocked.") from None
         if result.returncode != 0:
-            diagnostic = result.stdout + result.stderr
-            missing = (
-                parent_absent
-                and (b"NOT_FOUND" in diagnostic or b"not found" in diagnostic.lower())
-                and service.encode() in diagnostic
-                and b"PERMISSION_DENIED" not in diagnostic and b"403" not in diagnostic
-            )
+            kind = cli_error_kind(result.stdout + result.stderr, service)
+            missing = parent_absent and kind == "not_found"
             evidence("not_found_with_absent_parent" if missing else
-                     "permission_denied" if b"PERMISSION_DENIED" in diagnostic or b"403" in diagnostic
+                     "permission_denied" if kind == "permission_denied"
                      else "cli_read_failed", code=result.returncode,
                      response_shape=body_shape(result.stdout))
             _expect(
@@ -638,6 +635,9 @@ class PreviewTeardown:
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
                 status = getattr(response, "status", None)
+                if status != 200:
+                    evidence("http_read_failed", status=status)
+                    raise LifecycleError("IAP policy API returned an unexpected status; database deletion is blocked.")
                 policy = json.load(response)
         except urllib.error.HTTPError as error:
             try:

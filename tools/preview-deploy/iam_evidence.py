@@ -4,6 +4,17 @@ import json
 from datetime import datetime, timezone
 
 
+def cli_error_kind(diagnostic, resource):
+    lowered = diagnostic.lower()
+    if any(marker in lowered for marker in (
+        b"401", b"403", b"unauthenticated", b"permission_denied", b"permission denied",
+    )):
+        return "permission_denied"
+    if (b"not_found" in lowered or b"not found" in lowered) and resource.encode() in diagnostic:
+        return "not_found"
+    return "cli_read_failed"
+
+
 def shape(value):
     fields = {}
     if isinstance(value, dict):

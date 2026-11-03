@@ -405,6 +405,12 @@ evidence before policy validation, without relaxing any acceptance condition.
 An unsupported etag-plus-version policy still fails; current successful reads
 neither reproduce a historical failure nor approve cleanup.
 
+Authentication/permission errors take precedence over CLI NOT_FOUND text, even
+when the parent is absent. CLI timeouts and OS errors are reported separately
+as `cli_transport_unavailable`. IAP policy success requires HTTP 200; unexpected
+2xx responses fail closed before database cleanup. Parent-aware HTTP 404 handling
+is unchanged.
+
 The Actions workflow remains restricted to PR #76 below; local generalization
 does not authorize a new workflow target or change WIF trust.
 

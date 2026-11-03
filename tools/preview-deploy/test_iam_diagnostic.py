@@ -194,7 +194,7 @@ class ReadTests(unittest.TestCase):
             result, reason = diagnostic.validate(200, policy, None, True, "roles/run.invoker")
             self.assertEqual(result, "FAIL")
             self.assertIn(condition, reason)
-        for status in (None, 401, 403, 429, 500, 503):
+        for status in (None, 201, 202, 204, 206, 401, 403, 429, 500, 503):
             self.assertEqual(diagnostic.validate(status, {}, None, True, "roles/run.invoker")[0],
                              "INCONCLUSIVE")
         self.assertEqual(diagnostic.validate(404, {}, None, False, "roles/run.invoker")[0],
@@ -346,7 +346,7 @@ class WorkflowIsolationTests(unittest.TestCase):
         imports = [n for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)]
         self.assertEqual([(n.module, [a.name for a in n.names]) for n in imports], [
             ("pathlib", ["Path"]), ("teardown", ["LifecycleError", "PreviewTeardown"]),
-            ("iam_evidence", ["condition", "record", "shape"]),
+            ("iam_evidence", ["cli_error_kind", "condition", "record", "shape"]),
         ])
         references = [n.attr for n in ast.walk(tree)
                       if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)

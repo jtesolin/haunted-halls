@@ -11,7 +11,7 @@ import urllib.error
 import urllib.request
 
 from teardown import LifecycleError, PreviewTeardown
-from iam_evidence import condition as policy_condition, record, shape
+from iam_evidence import cli_error_kind, condition as policy_condition, record, shape
 
 
 WORKFLOW = "jtesolin/haunted-halls/.github/workflows/preview-deploy.yml@refs/heads/main"
@@ -171,15 +171,10 @@ def cli_policy(name):
     except (subprocess.TimeoutExpired, OSError):
         return -1, None, False, "Cloud Run CLI policy read unavailable."
     if result.returncode:
-        diagnostic = result.stdout + result.stderr
-        missing = (
-            (b"NOT_FOUND" in diagnostic or b"not found" in diagnostic.lower())
-            and name.encode() in diagnostic
-            and b"PERMISSION_DENIED" not in diagnostic and b"403" not in diagnostic
-        )
-        denied = b"PERMISSION_DENIED" in diagnostic or b"403" in diagnostic or b"401" in diagnostic
-        return result.returncode, None, missing, (
-            "Cloud Run CLI permission denied." if denied else "Cloud Run CLI policy read failed."
+        kind = cli_error_kind(result.stdout + result.stderr, name)
+        return result.returncode, None, kind == "not_found", (
+            "Cloud Run CLI permission denied." if kind == "permission_denied"
+            else "Cloud Run CLI policy read failed."
         )
     try:
         return 0, json.loads(result.stdout), False, None
@@ -225,6 +220,7 @@ def diagnose(token):
             "cli_sanitized_json_shape": shape(rendered),
             "cli_verifier": cli_result, "cli_condition": cli_condition,
             "cli_validation_condition": (
+                "cli_transport_unavailable" if code == -1 else
                 "not_found_with_absent_parent" if code and missing and absent[name] else
                 "permission_denied" if code and cli_error == "Cloud Run CLI permission denied." else
                 "cli_read_failed" if code else "invalid_json" if cli_error else

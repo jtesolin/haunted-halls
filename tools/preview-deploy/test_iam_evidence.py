@@ -75,6 +75,7 @@ class EvidenceTests(unittest.TestCase):
             (1, b"", b"NOT_FOUND hh-web-pr-66-engine", True, "not_found_with_absent_parent", True),
             (1, b"", b"NOT_FOUND hh-web-pr-66-engine", False, "cli_read_failed", False),
             (1, b"", b"NOT_FOUND hh-web-pr-66-engine 403 private", True, "permission_denied", False),
+            (1, b"", b"NOT_FOUND hh-web-pr-66-engine 401 private", True, "permission_denied", False),
             (1, b"", b"NOT_FOUND hh-web-pr-67-engine", True, "cli_read_failed", False),
         ):
             with self.subTest(expected=expected, parent=parent):
@@ -89,13 +90,16 @@ class EvidenceTests(unittest.TestCase):
             (200, b'{"bindings":[]}', "empty_owned_role", True),
             (200, b'{"etag":"private","version":1}', "bindings_missing", False),
             (200, b"private-invalid-json", "invalid_json", False),
+            (201, b'{"bindings":[]}', "http_read_failed", False),
+            (204, b"", "http_read_failed", False),
+            (401, b"private-error", "permission_denied", False),
             (403, b"private-error", "permission_denied", False),
             (404, b"private-error", "not_found_with_absent_parent", True),
             (503, b"private-error", "http_read_failed", False),
         ):
             stream = io.BytesIO(body)
             stream.status = status
-            response = {"return_value": stream} if status == 200 else {
+            response = {"return_value": stream} if 200 <= status < 300 else {
                 "side_effect": HTTPError("private-url", status, "private-error", {}, stream)
             }
             output = io.StringIO()
@@ -115,10 +119,14 @@ class EvidenceTests(unittest.TestCase):
             self.assertNotIn("private", output.getvalue())
 
     def test_cli_transport_and_token_errors_emit_before_failure(self):
-        for site in ("cli", "token", "iap"):
+        for site, error in (
+            ("cli", OSError("private")),
+            ("cli", subprocess.TimeoutExpired("private", 120, output=b"private-token")),
+            ("token", OSError("private")), ("iap", OSError("private")),
+        ):
             output = io.StringIO()
             with self.subTest(site=site), redirect_stdout(output), \
-                    patch.object(teardown.subprocess, "run", side_effect=OSError("private")), \
+                    patch.object(teardown.subprocess, "run", side_effect=error), \
                     patch.object(teardown.Commands, "run", **(
                         {"side_effect": teardown.LifecycleError("private")} if site == "token" else
                         {"return_value": b"private-token"})), \
@@ -153,18 +161,30 @@ class EvidenceTests(unittest.TestCase):
                     status, None, None, parent, "roles/run.invoker"), expected)
 
     def test_each_policy_rejection_blocks_database_and_later_cleanup(self):
-        for failed in ("engine", "frontend", "iap"):
+        cases = [(failed, 200, None, "bindings_missing")
+                 for failed in ("engine", "frontend", "iap")]
+        cases += [("iap", status, None, "http_read_failed") for status in (201, 202, 204, 206)]
+        cases += [(failed, 200, marker, "permission_denied")
+                  for failed in ("engine", "frontend")
+                  for marker in (b"401", b"403", b"PERMISSION_DENIED", b"permission denied",
+                                 b"UNAUTHENTICATED")]
+        for failed, status, marker, expected in cases:
             instance = teardown.PreviewTeardown({"number": "56"}, Mock())
             output = io.StringIO()
 
             def cli(args, **kwargs):
                 bad = args[4].endswith("-" + failed)
+                if bad and marker:
+                    return subprocess.CompletedProcess(
+                        args, 1, b"NOT_FOUND " + args[4].encode(),
+                        marker + b" private-token")
                 return subprocess.CompletedProcess(
-                    args, 0, json.dumps({} if bad else {"etag": "private-etag"}).encode(), b"")
+                    args, 0, json.dumps({} if bad and status == 200 else
+                                        {"etag": "private-etag"}).encode(), b"")
 
-            response = io.BytesIO(b"{}")
-            response.status = 200
-            with self.subTest(failed=failed), redirect_stdout(output), \
+            response = io.BytesIO(b"" if status == 204 else b'{"bindings":[]}' if status != 200 else b"{}")
+            response.status = status
+            with self.subTest(failed=failed, status=status, marker=marker), redirect_stdout(output), \
                     patch.object(instance, "revalidate"), patch.object(instance, "check_secret_workflow"), \
                     patch.object(instance, "initialize"), patch.object(instance, "read_state", return_value=state()), \
                     patch.object(instance, "destroy") as destroy, \
@@ -182,7 +202,7 @@ class EvidenceTests(unittest.TestCase):
                 destroy.assert_called_once_with(runtime_only=True)
             records = [json.loads(line.removeprefix("IAM verification: "))
                        for line in output.getvalue().splitlines()]
-            self.assertEqual(records[-1]["validation_condition"], "bindings_missing")
+            self.assertEqual(records[-1]["validation_condition"], expected)
             suffix = "frontend" if failed == "iap" else failed
             self.assertTrue(records[-1]["resource"].endswith("-" + suffix))
             self.assertEqual(records[-1]["resource_type"],
@@ -194,6 +214,39 @@ class LocalDiagnosticTests(unittest.TestCase):
     def tearDown(self):
         diagnostic.configure_targets("76")
         diagnostic.IMPERSONATE = False
+
+    def test_cli_mixed_denials_and_transport_failures_are_distinct(self):
+        diagnostic.configure_targets("66")
+
+        def read(url, method, token):
+            return (200, {"etag": "private-etag"}, None) if url.endswith(
+                diagnostic.RUN_POLICY_SUFFIX) else (404, None, None)
+
+        cases = [(marker, "permission_denied") for marker in (
+            b"401", b"403", b"PERMISSION_DENIED", b"permission denied", b"UNAUTHENTICATED")]
+        cases += [(subprocess.TimeoutExpired("private-command", 60, output=b"private-token",
+                                            stderr=b"private-error"), "cli_transport_unavailable"),
+                  (OSError("private-token"), "cli_transport_unavailable"),
+                  (b"NOT_FOUND_OTHER", "cli_read_failed")]
+        for failure, expected in cases:
+            with self.subTest(failure=type(failure).__name__, expected=expected):
+                def cli(args, **kwargs):
+                    if isinstance(failure, Exception):
+                        raise failure
+                    return subprocess.CompletedProcess(
+                        args, 1, b"NOT_FOUND hh-web-pr-67-engine" if failure == b"NOT_FOUND_OTHER"
+                        else b"NOT_FOUND " + args[4].encode(), failure + b" private-token")
+
+                with patch.object(diagnostic, "read_policy", side_effect=read), \
+                        patch.object(diagnostic.subprocess, "run", side_effect=cli):
+                    records = diagnostic.diagnose("private-token")
+                for entry in records[:2]:
+                    self.assertEqual(entry["cli_validation_condition"], expected)
+                    self.assertEqual(entry["cli_verifier"], "INCONCLUSIVE")
+                    self.assertEqual(entry["result"], "INCONCLUSIVE")
+                    self.assertEqual(entry["cli_exit_code"],
+                                     -1 if isinstance(failure, Exception) else 1)
+                self.assertNotIn("private", json.dumps(records))
 
     def pr(self, **changes):
         return {"number": 66, "state": "closed", "closed_at": "2026-10-16T00:00:00Z",
