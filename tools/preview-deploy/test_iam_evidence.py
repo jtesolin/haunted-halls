@@ -88,7 +88,7 @@ class EvidenceTests(unittest.TestCase):
         for status, body, expected, accepted in (
             (200, b'{}', "bindings_missing", False),
             (200, b'{"bindings":[]}', "empty_owned_role", True),
-            (200, b'{"etag":"private","version":1}', "bindings_missing", False),
+            (200, b'{"etag":"private","version":1}', "empty_iap_policy_with_absent_parent", True),
             (200, b"private-invalid-json", "invalid_json", False),
             (201, b'{"bindings":[]}', "http_read_failed", False),
             (204, b"", "http_read_failed", False),
@@ -116,6 +116,141 @@ class EvidenceTests(unittest.TestCase):
             self.assertEqual(evidence["http_status"], status)
             self.assertEqual(evidence["validation_condition"], expected)
             self.assertTrue(evidence["resource"].endswith("/hh-web-pr-66-frontend"))
+            self.assertNotIn("private", output.getvalue())
+
+    def test_deleted_iap_metadata_is_narrow_and_shared_with_diagnostic(self):
+        role = "roles/iap.httpsResourceAccessor"
+        cases = [
+            ({"etag": "private-etag", "version": version}, True,
+             "empty_iap_policy_with_absent_parent") for version in (0, 1, 3)
+        ]
+        cases += [
+            ({}, False, "bindings_missing"), (None, False, "policy_not_object"),
+            ([], False, "policy_not_object"),
+            ({"version": 1}, False, "bindings_missing"),
+            ({"etag": "private-etag"}, True, "empty_owned_role"),
+            ({"bindings": []}, True, "empty_owned_role"),
+            ({"etag": "private-etag", "version": 3, "bindings": []}, True, "empty_owned_role"),
+            ({"etag": "private-etag", "version": 1, "bindings": None}, False, "bindings_not_list"),
+            ({"etag": "private-etag", "version": 1, "bindings": {}}, False, "bindings_not_list"),
+            ({"etag": "private-etag", "version": 1, "private-key": "private-value"},
+             False, "bindings_missing"),
+            ({"etag": "private-etag", "version": 1, "error": {"code": 403}},
+             False, "bindings_missing"),
+            ({"bindings": [{"role": role, "members": ["private-member"]}]},
+             False, "owned_members_remain"),
+            ({"bindings": [{"role": role, "members": ["private-member"],
+                           "condition": {"expression": "private-condition"}}]},
+             False, "owned_binding_conditional"),
+            ({"bindings": [{"role": role, "members": [123]}]}, False, "owned_member_not_string"),
+            ({"bindings": [None]}, False, "binding_structure_invalid"),
+        ]
+        cases += [({"etag": "private-etag", "version": version}, False, "bindings_missing")
+                  for version in (True, False, 1.0, "1", None, -1, 2, 4)]
+        cases += [({"etag": etag, "version": 1}, False, "bindings_missing")
+                  for etag in ("", None, 123)]
+        for policy, valid, expected in cases:
+            for parent_absent in (True, False):
+                special = expected == "empty_iap_policy_with_absent_parent"
+                accepted = valid and (not special or parent_absent)
+                condition = "bindings_missing" if special and not parent_absent else expected
+                with self.subTest(policy=policy, parent=parent_absent):
+                    response = io.BytesIO(json.dumps(policy).encode())
+                    response.status = 200
+                    output = io.StringIO()
+                    with patch.object(teardown.Commands, "run", return_value=b"private-token"), \
+                            patch.object(teardown.urllib.request, "urlopen", return_value=response), \
+                            redirect_stdout(output):
+                        if accepted:
+                            self.make().verify_iap_iam_absent(parent_absent)
+                        else:
+                            with self.assertRaises(teardown.LifecycleError):
+                                self.make().verify_iap_iam_absent(parent_absent)
+                    evidence = json.loads(output.getvalue().removeprefix("IAM verification: "))
+                    self.assertEqual(evidence["validation_condition"], condition)
+                    self.assertEqual(diagnostic.api_condition(
+                        200, policy, None, parent_absent, role), condition)
+                    self.assertEqual(diagnostic.validate(
+                        200, policy, None, parent_absent, role)[0], "PASS" if accepted else "FAIL")
+                    self.assertNotIn("private", output.getvalue())
+        for version in (0, 1, 3):
+            policy = {"etag": "private-etag", "version": version}
+            self.assertFalse(self.cli(policy, parent=True)[0])
+            self.assertEqual(diagnostic.validate(
+                200, policy, None, True, "roles/run.invoker")[0], "FAIL")
+
+    def test_iap_metadata_never_overrides_http_failure_or_unverified_404(self):
+        policy = {"etag": "private-etag", "version": 1}
+        role = "roles/iap.httpsResourceAccessor"
+        for parent_absent in (True, False):
+            for status in (201, 204, 401, 403, 404, 503):
+                accepted = status == 404 and parent_absent
+                stream = io.BytesIO(json.dumps(policy).encode())
+                stream.status = status
+                response = {"return_value": stream} if status < 300 else {
+                    "side_effect": HTTPError("private-url", status, "private-error", {}, stream)
+                }
+                output = io.StringIO()
+                with self.subTest(parent=parent_absent, status=status), \
+                        patch.object(teardown.Commands, "run", return_value=b"private-token"), \
+                        patch.object(teardown.urllib.request, "urlopen", **response), redirect_stdout(output):
+                    if accepted:
+                        self.make().verify_iap_iam_absent(parent_absent)
+                    else:
+                        with self.assertRaises(teardown.LifecycleError):
+                            self.make().verify_iap_iam_absent(parent_absent)
+                self.assertEqual(diagnostic.validate(
+                    status, policy, None, parent_absent, role)[0],
+                    "PASS" if accepted else "INCONCLUSIVE")
+                evidence = json.loads(output.getvalue().removeprefix("IAM verification: "))
+                self.assertEqual(evidence["validation_condition"], diagnostic.api_condition(
+                    status, policy, None, parent_absent, role))
+                self.assertNotIn("private", output.getvalue())
+
+    def test_iap_metadata_runs_through_existing_cleanup_guards(self):
+        role = "roles/iap.httpsResourceAccessor"
+        for policy, database_owned, reaches_database in (
+            ({"etag": "private-etag", "version": 1}, True, True),
+            ({"etag": "private-etag", "version": 1}, False, False),
+            ({}, True, False), ({"etag": "private-etag", "version": True}, True, False),
+            ({"etag": "private-etag", "version": 1, "bindings": None}, True, False),
+            ({"etag": "private-etag", "version": 1, "error": {"code": 403}}, True, False),
+            ({"bindings": [{"role": role, "members": ["private-member"]}]}, True, False),
+            ({"bindings": [{"role": role, "members": ["private-member"],
+                           "condition": {"expression": "private-condition"}}]}, True, False),
+        ):
+            instance = teardown.PreviewTeardown({"number": "56"}, Mock())
+            value = state()
+            if not database_owned:
+                value.pop("outputs")
+                value["resources"] = [item for item in value["resources"]
+                                      if item["type"].startswith("google_cloud_run")]
+            output = io.StringIO()
+            response = io.BytesIO(json.dumps(policy).encode())
+            response.status = 200
+            with self.subTest(policy=policy, owned=database_owned), redirect_stdout(output), \
+                    patch.object(instance, "revalidate"), patch.object(instance, "check_secret_workflow"), \
+                    patch.object(instance, "initialize"), patch.object(instance, "read_state", return_value=value), \
+                    patch.object(instance, "destroy") as destroy, \
+                    patch.object(instance, "verify_runtime_absent", return_value={
+                        "hh-web-pr-56-engine", "hh-web-pr-56-frontend"}), \
+                    patch.object(teardown.subprocess, "run", return_value=subprocess.CompletedProcess(
+                        [], 0, b'{"etag":"private-etag"}', b"")), \
+                    patch.object(teardown.Commands, "run", return_value=b"private-token"), \
+                    patch.object(teardown.urllib.request, "urlopen", return_value=response), \
+                    patch.object(instance, "guard") as guard, \
+                    patch.object(teardown, "request_database",
+                                 side_effect=teardown.LifecycleError("test database boundary")) as database, \
+                    patch.object(instance, "cleanup_tags") as tags:
+                with self.assertRaises(teardown.LifecycleError):
+                    instance.run()
+                if reaches_database:
+                    guard.assert_called_once_with()
+                    database.assert_called_once_with("56", "drop", instance.guard)
+                else:
+                    database.assert_not_called()
+                tags.assert_not_called()
+                destroy.assert_called_once_with(runtime_only=True)
             self.assertNotIn("private", output.getvalue())
 
     def test_cli_transport_and_token_errors_emit_before_failure(self):

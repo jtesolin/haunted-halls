@@ -35,10 +35,21 @@ def shape(value):
     return {"type": type(value).__name__, "fields": fields}
 
 
-def condition(policy, role):
+def empty_deleted_iap_policy(policy, role, parent_absent):
+    return (
+        parent_absent is True and role == "roles/iap.httpsResourceAccessor"
+        and isinstance(policy, dict) and set(policy) == {"etag", "version"}
+        and isinstance(policy["etag"], str) and bool(policy["etag"])
+        and type(policy["version"]) is int and policy["version"] in (0, 1, 3)
+    )
+
+
+def condition(policy, role, *, parent_absent=False):
     """Describe the existing verifier's first rejected condition, without relaxing it."""
     if not isinstance(policy, dict):
         return "policy_not_object"
+    if empty_deleted_iap_policy(policy, role, parent_absent):
+        return "empty_iap_policy_with_absent_parent"
     bindings = policy.get("bindings")
     if set(policy) == {"etag"} and isinstance(policy["etag"], str) and policy["etag"]:
         bindings = []

@@ -19,7 +19,8 @@ from pathlib import Path
 from typing import Any
 
 from iam_evidence import (
-    body_shape, cli_error_kind, condition as policy_condition, emit as emit_iam, record as iam_record,
+    body_shape, cli_error_kind, condition as policy_condition, emit as emit_iam,
+    empty_deleted_iap_policy, record as iam_record,
 )
 
 from lifecycle import (
@@ -518,12 +519,15 @@ class PreviewTeardown:
         return {f"hh-web-pr-{self.number}-frontend", f"hh-web-pr-{self.number}-engine"}
 
     @staticmethod
-    def policy_members(policy: object, role: str) -> set[str]:
+    def policy_members(policy: object, role: str, *, parent_absent: bool = False) -> set[str]:
         _expect(isinstance(policy, dict),
                 "Resource IAM policy is malformed or unavailable.")
         bindings = policy.get("bindings")
         # Cloud Run omits the repeated bindings field for an empty, etag-only policy.
         if set(policy) == {"etag"} and isinstance(policy["etag"], str) and policy["etag"]:
+            bindings = []
+        # ProtoJSON omits empty repeated bindings; scope version-bearing metadata to deleted IAP.
+        if empty_deleted_iap_policy(policy, role, parent_absent):
             bindings = []
         _expect(isinstance(bindings, list),
                 "Resource IAM policy is malformed or unavailable.")
@@ -663,8 +667,10 @@ class PreviewTeardown:
         except (urllib.error.URLError, TimeoutError, OSError):
             evidence("transport_unavailable", status=status)
             raise LifecycleError("IAP policy could not be verified; database deletion is blocked.") from None
-        evidence(policy_condition(policy, "roles/iap.httpsResourceAccessor"), policy, status)
-        remaining = self.policy_members(policy, "roles/iap.httpsResourceAccessor")
+        evidence(policy_condition(policy, "roles/iap.httpsResourceAccessor",
+                                  parent_absent=parent_absent), policy, status)
+        remaining = self.policy_members(policy, "roles/iap.httpsResourceAccessor",
+                                        parent_absent=parent_absent)
         _expect(not remaining,
                 "An owned IAP tester binding remains; database deletion is blocked.")
 
