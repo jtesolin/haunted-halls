@@ -3,6 +3,7 @@
 import ast
 from contextlib import redirect_stdout
 import copy
+import hashlib
 import io
 import json
 import os
@@ -305,11 +306,12 @@ class WorkflowIsolationTests(unittest.TestCase):
         self.assertTrue(selected(job, operation="acceptance"))
 
     def test_existing_deploy_and_teardown_jobs_are_unchanged(self):
-        baseline = subprocess.check_output([
-            "git", "show", "e65d442925fb5624b9955abb01aa5ce3eb1499ce:.github/workflows/preview-deploy.yml",
-        ]).decode()
-        self.assertEqual(WORKFLOW.split("\n  deploy:\n", 1)[1],
-                         baseline.split("\n  deploy:\n", 1)[1])
+        jobs = WORKFLOW.split("\n  deploy:\n", 1)[1].encode()
+        self.assertEqual(
+            hashlib.sha256(jobs).hexdigest(),
+            "653c0f6eed9101e60be93146faa784759097a0f612614ab2a7d00cdab164bee4",
+            "Deploy/teardown must match the reviewed main baseline, including in shallow checkouts.",
+        )
 
     def test_job_has_only_read_only_helper_and_existing_auth(self):
         self.assertIn("group: frontend-preview-pr-76", JOB)
