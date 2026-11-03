@@ -380,6 +380,34 @@ Manual dispatch uses `operation=teardown` and `pull_request_number=<N>` on
 remains `acceptance` (the existing non-destructive prerequisite checks).
 Historical closure events are not replayed; do not reopen PR #56.
 
+### Local closed-PR IAM diagnostic validation
+
+The local helper accepts an explicitly requested, canonical frontend PR number
+(`1..999999999`) after a read-only GitHub check confirms it is closed and targets
+this repository's `main`. For example:
+
+```bash
+python3 tools/preview-deploy/iam_diagnostic.py --local --pull-request-number 66
+```
+
+To attempt the same reads using **existing** preview-deployer impersonation
+permissions, append `--impersonate-deployer`. Denied token access reports
+INCONCLUSIVE and performs no policy reads; never grant permissions or change
+credentials to make this command work. Both REST and CLI use the selected
+identity. Local mode is rejected in GitHub Actions and cannot execute teardown,
+Terraform, the database provisioner, IAM writes, deletion or comment updates.
+
+The JSON records exact fixed resource identifiers/endpoints, parent state,
+HTTP status/CLI exit code, known policy field types/counts and distinct validation
+conditions. Unknown field names and all policy values, IAM members, etags,
+credentials and raw errors are excluded. Teardown emits the same value-free
+evidence before policy validation, without relaxing any acceptance condition.
+An unsupported etag-plus-version policy still fails; current successful reads
+neither reproduce a historical failure nor approve cleanup.
+
+The Actions workflow remains restricted to PR #76 below; local generalization
+does not authorize a new workflow target or change WIF trust.
+
 ### Temporary PR 76 read-only IAM diagnostic
 
 After review, merge, and **separate execution approval**, the existing trusted
@@ -407,7 +435,9 @@ The job runs only [`iam_diagnostic.py`](../../../tools/preview-deploy/iam_diagno
 never a teardown/lifecycle entry point. The helper references only the existing
 static IAM policy parser; it never constructs a lifecycle instance. It has no
 Terraform setup/commands, backend credentials, provisioner request, secret/tag
-deletion or GitHub API calls. The existing deploy/teardown jobs are unchanged.
+deletion or GitHub API writes. A fixed public GitHub GET validates PR closure
+without requiring a new credential or job permission. The existing
+deploy/teardown jobs are unchanged.
 Prerequisite acceptance now requires its explicit `acceptance` operation so a
 diagnostic dispatch cannot run its canary creation/cleanup. The diagnostic uses
 the existing PR 76 outer concurrency group and never cancels an active holder.
@@ -447,10 +477,10 @@ which historical response failed. Diagnostic execution itself requires approval.
 
 Keep this diagnostic available during the initial operational period of preview
 teardown so a recurrence of the PR #76 IAM-policy failure can be investigated.
-It is **PR #76-specific**, not a general diagnostic for arbitrary PRs: the
-workflow input guard, concurrency group, Cloud Run service names, IAP resource,
-and helper allowlist all target PR #76. Running it for another PR is rejected;
-a PASS for PR #76 says nothing about a different preview.
+The **Actions job remains PR #76-specific**: its input guard, helper context
+check and concurrency group reject another PR. The helper also supports the explicitly validated
+local closed-PR mode above, deriving its fixed Cloud Run/IAP allowlist from that
+number. A PASS for PR #76 says nothing about a different preview.
 
 For a future teardown failure:
 
@@ -472,7 +502,7 @@ For a future teardown failure:
    API accessibility. Do not weaken the parser or IAM trust to force PASS.
 5. For a failure on **another PR**, do **not** substitute PR #76 results or
    change the input to that PR. Use read-only inspection of that PR's actual
-   resources and propose a separately reviewed extension of the diagnostic if
+   resources and propose a separately reviewed extension of the Actions diagnostic if
    needed. Any extension must preserve exact resource allowlists, trusted
    workflow identity, sanitized reporting, and no lifecycle/cleanup entry point.
 6. Before any recovery, independently validate Terraform state and resource
