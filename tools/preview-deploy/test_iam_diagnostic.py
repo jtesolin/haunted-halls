@@ -75,7 +75,8 @@ class ContextTests(unittest.TestCase):
     def test_only_explicit_operation_and_exact_pr76(self):
         for operation, number in (
             ("acceptance", "76"), ("teardown", "76"), ("", "76"),
-            ("iam-diagnostic", "77"), ("iam-diagnostic", "076"),
+            ("iam-diagnostic", "66"), ("iam-diagnostic", "77"),
+            ("iam-diagnostic", "0"), ("iam-diagnostic", "076"),
             ("iam-diagnostic", 76), ("iam-diagnostic", ""),
         ):
             event = copy.deepcopy(EVENT)
@@ -94,7 +95,8 @@ class ContextTests(unittest.TestCase):
         process.assert_not_called()
 
     def test_check_context_mode_has_no_external_calls(self):
-        with patch.object(diagnostic, "check_context"), \
+        with patch.object(diagnostic, "check_context", return_value="76"), \
+             patch.object(diagnostic, "validate_closed_pr"), \
              patch.object(sys, "argv", ["iam_diagnostic.py", "--check-context"]), \
              patch.object(diagnostic.subprocess, "run") as process:
             self.assertEqual(diagnostic.main(), 0)
@@ -192,7 +194,7 @@ class ReadTests(unittest.TestCase):
             result, reason = diagnostic.validate(200, policy, None, True, "roles/run.invoker")
             self.assertEqual(result, "FAIL")
             self.assertIn(condition, reason)
-        for status in (None, 401, 403, 429, 500, 503):
+        for status in (None, 201, 202, 204, 206, 401, 403, 429, 500, 503):
             self.assertEqual(diagnostic.validate(status, {}, None, True, "roles/run.invoker")[0],
                              "INCONCLUSIVE")
         self.assertEqual(diagnostic.validate(404, {}, None, False, "roles/run.invoker")[0],
@@ -252,7 +254,8 @@ class ReadTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as directory:
                 summary = Path(directory) / "summary"
                 output = io.StringIO()
-                with patch.object(diagnostic, "check_context"), \
+                with patch.object(diagnostic, "check_context", return_value="76"), \
+                     patch.object(diagnostic, "validate_closed_pr"), \
                      patch.object(sys, "argv", ["iam_diagnostic.py"]), \
                      patch.object(diagnostic.subprocess, "run", return_value=subprocess.CompletedProcess(
                          [], 0, b"private-token", b"private-stderr",
@@ -343,6 +346,7 @@ class WorkflowIsolationTests(unittest.TestCase):
         imports = [n for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)]
         self.assertEqual([(n.module, [a.name for a in n.names]) for n in imports], [
             ("pathlib", ["Path"]), ("teardown", ["LifecycleError", "PreviewTeardown"]),
+            ("iam_evidence", ["cli_error_kind", "condition", "record", "shape"]),
         ])
         references = [n.attr for n in ast.walk(tree)
                       if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
@@ -357,7 +361,7 @@ class WorkflowIsolationTests(unittest.TestCase):
             self.assertIsInstance(call.args[0], ast.List)
             self.assertFalse(any(k.arg == "shell" for k in call.keywords))
         self.assertEqual([
-            [ast.literal_eval(n) for n in call.args[0].elts[:4]]
+            [ast.literal_eval(n) for n in call.args[0].elts if isinstance(n, ast.Constant)][:4]
             for call in process_calls
         ], [
             ["gcloud", "run", "services", "get-iam-policy"],

@@ -1136,17 +1136,21 @@ class ExecutionTests(unittest.TestCase):
             with self.assertRaisesRegex(lifecycle.LifecycleError, "policy could not be verified"):
                 instance.verify_cloud_run_iam_absent(engine, parent_absent=True)
 
+        empty_response = io.BytesIO(b'{"bindings":[]}')
+        empty_response.status = 200
         with (
             patch.object(teardown.Commands, "run", return_value=b"access-token"),
-            patch.object(teardown.urllib.request, "urlopen", return_value=io.BytesIO(b'{"bindings":[]}')),
+            patch.object(teardown.urllib.request, "urlopen", return_value=empty_response),
         ):
             instance.verify_iap_iam_absent(parent_absent=True)
+        owned_response = io.BytesIO(json.dumps({
+            "bindings": [{"role": "roles/iap.httpsResourceAccessor",
+                          "members": ["user:tester@example.com"]}],
+        }).encode())
+        owned_response.status = 200
         with (
             patch.object(teardown.Commands, "run", return_value=b"access-token"),
-            patch.object(teardown.urllib.request, "urlopen", return_value=io.BytesIO(json.dumps({
-                "bindings": [{"role": "roles/iap.httpsResourceAccessor",
-                              "members": ["user:tester@example.com"]}],
-            }).encode())),
+            patch.object(teardown.urllib.request, "urlopen", return_value=owned_response),
         ):
             with self.assertRaisesRegex(lifecycle.LifecycleError, "IAP tester binding remains"):
                 instance.verify_iap_iam_absent(parent_absent=True)
@@ -1176,10 +1180,12 @@ class ExecutionTests(unittest.TestCase):
             [], 0, json.dumps(policy).encode(), b"",
         )):
             instance.verify_cloud_run_iam_absent("hh-web-pr-56-engine", parent_absent=True)
+        response = io.BytesIO(json.dumps(policy).encode())
+        response.status = 200
         with (
             patch.object(teardown.Commands, "run", return_value=b"access-token"),
             patch.object(teardown.urllib.request, "urlopen",
-                         return_value=io.BytesIO(json.dumps(policy).encode())),
+                         return_value=response),
         ):
             instance.verify_iap_iam_absent(parent_absent=True)
 

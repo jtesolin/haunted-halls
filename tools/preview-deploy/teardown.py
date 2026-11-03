@@ -18,6 +18,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from iam_evidence import (
+    body_shape, cli_error_kind, condition as policy_condition, emit as emit_iam, record as iam_record,
+)
+
 from lifecycle import (
     COMMENT_MARKER, DEPLOYER, INCARNATION_RE, PREVIEW_ENGINE_REPOSITORY,
     PREVIEW_FRONTEND_REPOSITORY, PREVIEW_PROJECT, PREVIEW_PROJECT_NUMBER,
@@ -539,56 +543,113 @@ class PreviewTeardown:
         return members
 
     def verify_cloud_run_iam_absent(self, service: str, parent_absent: bool) -> None:
-        result = subprocess.run(
-            [
-                "gcloud", "run", "services", "get-iam-policy", service,
-                f"--project={PREVIEW_PROJECT}", f"--region={PREVIEW_REGION}", "--format=json",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=120,
-            check=False,
+        endpoint = (
+            f"https://run.googleapis.com/v1/projects/{PREVIEW_PROJECT}"
+            f"/locations/{PREVIEW_REGION}/services/{service}:getIamPolicy"
+            "?options.requestedPolicyVersion=3"
         )
+
+        def evidence(condition, policy=None, code=None, response_shape=None):
+            entry = iam_record(
+                "cloud_run_service", f"projects/{PREVIEW_PROJECT}/locations/{PREVIEW_REGION}/services/{service}",
+                "gcloud run services get-iam-policy", endpoint,
+                "absent" if parent_absent else "unknown", policy,
+                cli_exit_code=code, validation_condition=condition,
+            )
+            if response_shape is not None:
+                entry["sanitized_json_shape"] = response_shape
+            emit_iam(entry)
+
+        try:
+            result = subprocess.run(
+                [
+                    "gcloud", "run", "services", "get-iam-policy", service,
+                    f"--project={PREVIEW_PROJECT}", f"--region={PREVIEW_REGION}", "--format=json",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=120,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            evidence("cli_transport_unavailable")
+            raise LifecycleError("Cloud Run IAM policy could not be verified; database deletion is blocked.") from None
         if result.returncode != 0:
-            diagnostic = result.stdout + result.stderr
+            kind = cli_error_kind(b"\n".join((result.stdout, result.stderr)), service)
+            missing = parent_absent and kind == "not_found"
+            evidence("not_found_with_absent_parent" if missing else
+                     "permission_denied" if kind == "permission_denied"
+                     else "cli_read_failed", code=result.returncode,
+                     response_shape=body_shape(result.stdout))
             _expect(
-                parent_absent
-                and (b"NOT_FOUND" in diagnostic or b"not found" in diagnostic.lower())
-                and service.encode() in diagnostic
-                and b"PERMISSION_DENIED" not in diagnostic and b"403" not in diagnostic,
+                missing,
                 "Cloud Run IAM policy could not be verified; database deletion is blocked.",
             )
             return
         try:
             policy = json.loads(result.stdout)
         except (UnicodeDecodeError, json.JSONDecodeError):
+            evidence("invalid_json", code=result.returncode)
             raise LifecycleError("Cloud Run IAM policy returned invalid metadata.") from None
+        evidence(policy_condition(policy, "roles/run.invoker"), policy, result.returncode)
         remaining = self.policy_members(policy, "roles/run.invoker")
         _expect(not remaining, "An owned Cloud Run invoker binding remains; database deletion is blocked.")
 
     def verify_iap_iam_absent(self, parent_absent: bool) -> None:
-        token = Commands.run(
-            ["gcloud", "auth", "print-access-token"],
-            label="IAP teardown policy access token",
-        ).decode("utf-8", errors="strict").strip()
-        _expect(bool(token), "IAP teardown policy access token is unavailable.")
         resource = (
             f"https://iap.googleapis.com/v1/projects/{PREVIEW_PROJECT_NUMBER}"
             f"/iap_web/cloud_run-{PREVIEW_REGION}/services/"
             f"hh-web-pr-{self.number}-frontend"
         )
+        endpoint = resource + ":getIamPolicy?options.requestedPolicyVersion=3"
+
+        def evidence(condition, policy=None, status=None, response_shape=None):
+            entry = iam_record(
+                "iap_web_service", resource.removeprefix("https://iap.googleapis.com/v1/"),
+                "POST getIamPolicy", endpoint, "absent" if parent_absent else "unknown",
+                policy, http_status=status, validation_condition=condition,
+            )
+            if response_shape is not None:
+                entry["sanitized_json_shape"] = response_shape
+            emit_iam(entry)
+
+        try:
+            token = Commands.run(
+                ["gcloud", "auth", "print-access-token"],
+                label="IAP teardown policy access token",
+            ).decode("utf-8", errors="strict").strip()
+        except (LifecycleError, OSError, UnicodeError, subprocess.TimeoutExpired):
+            evidence("token_unavailable")
+            raise LifecycleError("IAP teardown policy access token is unavailable.") from None
+        if not token:
+            evidence("token_unavailable")
+        _expect(bool(token), "IAP teardown policy access token is unavailable.")
         request = urllib.request.Request(
-            resource + ":getIamPolicy?options.requestedPolicyVersion=3",
+            endpoint,
             data=json.dumps({"options": {"requestedPolicyVersion": 3}}).encode(),
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             method="POST",
         )
         del token
+        status = None
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
+                status = getattr(response, "status", None)
+                if status != 200:
+                    evidence("http_read_failed", status=status)
+                    raise LifecycleError("IAP policy API returned an unexpected status; database deletion is blocked.")
                 policy = json.load(response)
         except urllib.error.HTTPError as error:
             try:
+                try:
+                    error_body = error.read()
+                except (OSError, ValueError):
+                    error_body = None
+                evidence("not_found_with_absent_parent" if error.code == 404 and parent_absent
+                         else "parent_absence_unverified" if error.code == 404
+                         else "permission_denied" if error.code in (401, 403)
+                         else "http_read_failed", status=error.code,
+                         response_shape=body_shape(error_body))
                 _expect(
                     error.code == 404 and parent_absent,
                     "IAP policy API failed; database deletion is blocked.",
@@ -596,8 +657,13 @@ class PreviewTeardown:
                 return
             finally:
                 error.close()
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        except (ValueError, UnicodeError):
+            evidence("invalid_json", status=status)
             raise LifecycleError("IAP policy could not be verified; database deletion is blocked.") from None
+        except (urllib.error.URLError, TimeoutError, OSError):
+            evidence("transport_unavailable", status=status)
+            raise LifecycleError("IAP policy could not be verified; database deletion is blocked.") from None
+        evidence(policy_condition(policy, "roles/iap.httpsResourceAccessor"), policy, status)
         remaining = self.policy_members(policy, "roles/iap.httpsResourceAccessor")
         _expect(not remaining,
                 "An owned IAP tester binding remains; database deletion is blocked.")
