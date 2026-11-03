@@ -137,9 +137,14 @@ def validate(status, policy, error, parent_absent, role):
     try:
         members = PreviewTeardown.policy_members(policy, role, parent_absent=parent_absent)
     except LifecycleError as failure:
+        bindings_condition = (
+            "bindings must be a list, an etag-only policy, or valid metadata for verified-absent IAP"
+            if role == "roles/iap.httpsResourceAccessor" and parent_absent is True
+            else "bindings must be a list or policy must contain only a nonempty string etag"
+        )
         condition = (
             "policy must be an object" if not isinstance(policy, dict)
-            else "bindings must be a list, an etag-only policy, or valid metadata for verified-absent IAP"
+            else bindings_condition
             if not isinstance(policy.get("bindings"), list)
             else "binding/member structure or owned-role condition must validate"
         )
