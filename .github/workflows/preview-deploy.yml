@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Check prerequisites or remove one closed PR preview
+        description: Check prerequisites, remove a closed PR preview, or diagnose PR 76 IAM
         type: choice
         default: acceptance
-        options: [acceptance, teardown]
+        options: [acceptance, teardown, iam-diagnostic]
       pull_request_number:
-        description: Closed frontend PR number (required for teardown)
+        description: Closed frontend PR number (required for teardown; exactly 76 for iam-diagnostic)
         type: string
   pull_request_target:
     branches: [main]
@@ -31,7 +31,7 @@ jobs:
     name: Manual trusted prerequisite checks
     if: >-
       github.event_name == 'workflow_dispatch' &&
-      inputs.operation != 'teardown' &&
+      inputs.operation == 'acceptance' &&
       github.ref == 'refs/heads/main' &&
       github.repository == 'jtesolin/haunted-halls'
     runs-on: ubuntu-latest
@@ -88,6 +88,62 @@ jobs:
           FAIL: trusted preview authentication was not established; acceptance did not run.
           IAP, Secret Manager, quota, staging metadata, and source registry checks: NOT RUN. No canaries created.
           SUMMARY
+
+  iam-diagnostic:
+    name: Read-only PR 76 IAM diagnostic
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.operation == 'iam-diagnostic' &&
+      inputs.pull_request_number == '76' &&
+      github.ref == 'refs/heads/main' &&
+      github.repository == 'jtesolin/haunted-halls'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: frontend-preview-pr-76
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Require existing trusted caller identity
+        run: |
+          set -euo pipefail
+          test "$GITHUB_WORKFLOW_REF" = "jtesolin/haunted-halls/.github/workflows/preview-deploy.yml@refs/heads/main"
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_REPOSITORY" = "jtesolin/haunted-halls"
+          test "$GITHUB_EVENT_NAME" = "workflow_dispatch"
+
+      - name: Check out only the trusted main revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify trusted source
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Validate explicit diagnostic request before authentication
+        run: python tools/preview-deploy/iam_diagnostic.py --check-context
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Authenticate as the existing preview deployer
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT }}
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOY_SERVICE_ACCOUNT }}
+          export_environment_variables: true
+
+      - name: Read fixed IAM policies and report sanitized verification
+        run: python tools/preview-deploy/iam_diagnostic.py
 
   deploy:
     name: Create or update the frontend PR preview

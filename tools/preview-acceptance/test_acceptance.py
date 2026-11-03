@@ -5,6 +5,7 @@ from contextlib import redirect_stdout
 import importlib.util
 import io
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,13 +22,16 @@ SPEC.loader.exec_module(acceptance)
 class WorkflowContracts(unittest.TestCase):
     def setUp(self):
         self.workflow = WORKFLOW.read_text()
+        self.acceptance_job = re.split(
+            r"\n  [a-z_-]+:\n", self.workflow.split("\n  acceptance:\n", 1)[1], maxsplit=1,
+        )[0]
 
     def test_manual_acceptance_is_scoped_and_separate_from_automatic_deploy(self):
         triggers = self.workflow.split("on:\n", 1)[1].split("\npermissions:", 1)[0]
         self.assertIn("workflow_dispatch:", triggers)
         self.assertIn("workflow_run:", triggers)
-        jobs = self.workflow.split("\njobs:\n", 1)[1]
-        acceptance_job, deploy_job = jobs.split("\n  deploy:\n", 1)
+        acceptance_job = self.acceptance_job
+        deploy_job = self.workflow.split("\n  deploy:\n", 1)[1]
         self.assertIn("github.event_name == 'workflow_dispatch'", acceptance_job)
         self.assertIn("github.ref == 'refs/heads/main'", acceptance_job)
         self.assertIn("github.repository == 'jtesolin/haunted-halls'", acceptance_job)
@@ -58,9 +62,7 @@ class WorkflowContracts(unittest.TestCase):
         self.assertIn("tools/preview-deploy/lifecycle.py", deploy_job)
 
     def test_exact_permission_set_and_hosted_runner(self):
-        acceptance_job = self.workflow.split("\n  acceptance:\n", 1)[1].split(
-            "\n  deploy:\n", 1
-        )[0]
+        acceptance_job = self.acceptance_job
         permissions = acceptance_job.split("\n    permissions:\n", 1)[1].split(
             "\n    timeout-minutes:", 1
         )[0]
@@ -115,9 +117,7 @@ class WorkflowContracts(unittest.TestCase):
         self.assertNotIn("continue-on-error", self.workflow)
 
     def test_auth_failure_fixed_text_has_identical_log_and_summary_output(self):
-        acceptance_job = self.workflow.split("\n  acceptance:\n", 1)[1].split(
-            "\n  deploy:\n", 1
-        )[0]
+        acceptance_job = self.acceptance_job
         step = acceptance_job.split("- name: Report authentication failure\n", 1)[1]
         script = step.split("        run: |\n", 1)[1]
         script = "\n".join(line.removeprefix("          ") for line in script.splitlines()) + "\n"
