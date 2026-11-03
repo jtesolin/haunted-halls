@@ -380,6 +380,76 @@ Manual dispatch uses `operation=teardown` and `pull_request_number=<N>` on
 remains `acceptance` (the existing non-destructive prerequisite checks).
 Historical closure events are not replayed; do not reopen PR #56.
 
+### Temporary PR 76 read-only IAM diagnostic
+
+After review, merge, and **separate execution approval**, the existing trusted
+caller supports:
+
+```bash
+gh workflow run preview-deploy.yml \
+  --repo jtesolin/haunted-halls \
+  --ref main \
+  -f operation=iam-diagnostic \
+  -f pull_request_number=76
+```
+
+This is not a teardown request. A separate job requires the exact manual
+operation, PR `76`, repository, main ref and caller workflow identity before
+authentication. It checks out and verifies only `github.sha`. Its only GitHub
+permissions are `contents: read` and `id-token: write`. The existing deployer
+authentication is reused without changing WIF or service-account IAM:
+`assertion.workflow_ref` is still
+`jtesolin/haunted-halls/.github/workflows/preview-deploy.yml@refs/heads/main`.
+This is a direct job in that caller, not a new workflow/reusable identity.
+No new trigger, OIDC claim override or trust allowlist entry is introduced.
+
+The job runs only [`iam_diagnostic.py`](../../../tools/preview-deploy/iam_diagnostic.py),
+never a teardown/lifecycle entry point. The helper references only the existing
+static IAM policy parser; it never constructs a lifecycle instance. It has no
+Terraform setup/commands, backend credentials, provisioner request, secret/tag
+deletion or GitHub API calls. The existing deploy/teardown jobs are unchanged.
+Prerequisite acceptance now requires its explicit `acceptance` operation so a
+diagnostic dispatch cannot run its canary creation/cleanup. The diagnostic uses
+the existing PR 76 outer concurrency group and never cancels an active holder.
+
+It reads the two fixed Cloud Run service parents/policies and the fixed frontend
+IAP policy. Cloud Run is captured both via the same gcloud command as teardown
+and a separate v1 HTTP policy read with requested version 3; IAP uses the same
+read-only POST `getIamPolicy` and version 3 body as teardown. HTTP redirects are
+refused. These are sequential observations, not the same HTTP exchange:
+the CLI exit code and its sanitized policy shape are reported separately from
+the REST HTTP status. No HTTP status is invented for the CLI.
+
+Logs and the Actions summary contain resource IDs, methods, actual HTTP statuses,
+fixed-field presence/types/counts for `bindings`, `etag`, and `version`, and
+verifier conditions. Unknown field names, policy members, conditions, etag values,
+raw error messages, credentials, tokens and authorization headers are not emitted.
+No raw response artifact is uploaded.
+
+- **PASS:** verified runtime parent absence and accepted empty owned-role
+  memberships (or parent-aware policy absence). All three policies must pass.
+- **FAIL:** malformed/invalid JSON policy, failed existing parser condition, or
+  remaining owned-role memberships. API and CLI disagreement cannot pass.
+- **INCONCLUSIVE:** authentication/transport/API access failure, or unverified
+  parent absence. Such responses never become successful cleanup.
+
+FAIL/INCONCLUSIVE exit nonzero. A PASS only allows considering a separately
+authorized recovery: it does not verify state/database/secret ownership, authorize
+cleanup, change the existing PR comment, or certify lifecycle acceptance. The
+`existing_teardown_policy_checks_pass` field evaluates the CLI/IAP paths used
+by teardown; the overall result also requires the independent REST observations
+to pass. A raw REST/CLI difference can therefore block diagnostic PASS even if
+the current teardown policy paths accept their responses. The
+original failure's resource/body was not retained; current results cannot prove
+which historical response failed. Diagnostic execution itself requires approval.
+
+After the evidence is reviewed, remove the `iam-diagnostic` dispatch option/job,
+helper, its focused tests and this subsection in one cleanup PR. Retain the
+explicit `acceptance` operation guard and the separately saved diagnostic
+evidence. Do not retain this mode as a general-purpose cloud diagnostic surface.
+
+### Trusted reusable executor and coordination
+
 The local reusable executor reference selects the caller's exact commit.
 Under `workflow_call`, GitHub retains the caller's `github` context, event
 payload and workflow ref: the executor therefore checks `preview-deploy.yml`
