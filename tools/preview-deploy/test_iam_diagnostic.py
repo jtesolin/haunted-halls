@@ -206,6 +206,28 @@ class ReadTests(unittest.TestCase):
             {"role": "roles/run.invoker", "members": ["private-member"]},
         ]}, None, True, "roles/run.invoker")[0], "FAIL")
 
+    def test_missing_bindings_wording_matches_role_and_verified_parent_context(self):
+        generic = "bindings must be a list or policy must contain only a nonempty string etag"
+        iap = "bindings must be a list, an etag-only policy, or valid metadata for verified-absent IAP"
+        for role, parent_absent, expected in (
+            ("roles/run.invoker", True, generic),
+            ("roles/run.invoker", False, generic),
+            ("roles/run.invoker", None, generic),
+            ("roles/iap.httpsResourceAccessor", True, iap),
+            ("roles/iap.httpsResourceAccessor", False, generic),
+            ("roles/iap.httpsResourceAccessor", None, generic),
+            ("roles/iap.httpsResourceAccessor", 1, generic),
+        ):
+            for policy in ({}, {"etag": "private-etag", "version": "private-version"},
+                           {"bindings": None}, {"bindings": "private-bindings"}):
+                with self.subTest(role=role, parent=parent_absent, policy=policy):
+                    result, reason = diagnostic.validate(200, policy, None, parent_absent, role)
+                    self.assertEqual(result, "FAIL")
+                    self.assertEqual(reason,
+                                     "Resource IAM policy is malformed or unavailable. "
+                                     f"Condition: {expected}.")
+                    self.assertNotIn("private", reason)
+
     def test_shape_never_contains_policy_values_or_unexpected_field_names(self):
         policy = {"bindings": [{"members": ["private-member"], "role": "private-role",
                                 "condition": {"expression": "private-expression"}}],

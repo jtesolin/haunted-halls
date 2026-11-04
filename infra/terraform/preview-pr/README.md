@@ -402,8 +402,31 @@ HTTP status/CLI exit code, known policy field types/counts and distinct validati
 conditions. Unknown field names and all policy values, IAM members, etags,
 credentials and raw errors are excluded. Teardown emits the same value-free
 evidence before policy validation, without relaxing any acceptance condition.
-An unsupported etag-plus-version policy still fails; current successful reads
-neither reproduce a historical failure nor approve cleanup.
+Current successful reads neither reproduce a historical failure nor approve cleanup.
+
+The PR #79 teardown [run 41713349167](https://github.com/jtesolin/haunted-halls/actions/runs/41713349167)
+identified a concrete IAP response-shape mismatch: after verified frontend-parent
+absence, IAP returned HTTP 200 with exactly a string etag and integer version,
+but no bindings. Both Cloud Run IAM checks passed. The
+[IAP Policy schema](https://docs.cloud.google.com/iap/docs/reference/rest/Shared.Types/Policy)
+permits versions `0`, `1`, and `3`, and
+[ProtoJSON serialization](https://protobuf.dev/programming-guides/json/#presence-and-default-values)
+omits empty repeated fields. This is a legitimate empty-policy representation,
+not evidence of an IAM permission failure. The sanitized log does not reveal the
+etag or actual version value; it does not prove a deletion-propagation race.
+
+Only for IAP, after independently verified parent absence and HTTP 200, the
+verifier also accepts **exactly** `etag` (nonempty string) plus `version`
+(integer `0`, `1`, or `3`; booleans excluded) without bindings. The diagnostic
+uses the same rule and emits `empty_iap_policy_with_absent_parent`. This exception
+does not apply to Cloud Run, present/unknown parents, extra fields, invalid
+versions, null/wrong-type bindings or error envelopes. Explicit binding lists
+still undergo the existing member and condition checks; no grant is ignored.
+Existing etag-only and explicit-empty-binding acceptance is unchanged.
+
+PR #79 recovery and remaining legacy cleanup stay paused pending review and
+separate execution authorization. No workflow dispatch, cleanup retry, IAM
+change or remote-state operation is part of this fix.
 
 Authentication/permission errors take precedence over CLI NOT_FOUND text, even
 when the parent is absent. Numeric 401/403 markers must be standalone status
