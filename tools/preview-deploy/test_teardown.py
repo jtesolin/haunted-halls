@@ -1191,6 +1191,38 @@ class ExecutionTests(unittest.TestCase):
         tags.assert_not_called()
         database.assert_not_called()
 
+    def test_secret_listing_permission_failure_blocks_both_noop_paths_without_mutation(self):
+        for value in (None, empty_state()):
+            instance = self.make()
+            with (
+                self.subTest(state=value),
+                patch.object(instance, "revalidate"),
+                patch.object(instance, "check_secret_workflow"),
+                patch.object(instance, "initialize"),
+                patch.object(instance, "read_state", return_value=value),
+                patch.object(instance, "verify_runtime_absent", return_value=set()),
+                patch.object(instance, "verify_runtime_iam_absent"),
+                patch.object(teardown.subprocess, "run", return_value=subprocess.CompletedProcess(
+                    [], 1, b"", b"PERMISSION_DENIED: secretmanager.secrets.list private-details",
+                )) as command,
+                patch.object(instance, "destroy") as destroy,
+                patch.object(instance, "cleanup_tags") as tags,
+                patch.object(teardown, "request_database") as database,
+                self.assertRaises(lifecycle.LifecycleError) as error,
+            ):
+                instance.run()
+            message = str(error.exception)
+            self.assertIn("secretmanager.secrets.list", message)
+            self.assertIn("No-op teardown is blocked", message)
+            self.assertIn("explicit approval", message)
+            self.assertNotIn("private-details", message)
+            self.assertEqual(instance.status, "Cleanup incomplete")
+            command.assert_called_once()
+            self.assertEqual(command.call_args.args[0][:3], ["gcloud", "secrets", "list"])
+            destroy.assert_not_called()
+            tags.assert_not_called()
+            database.assert_not_called()
+
     def test_retained_empty_state_still_retries_owned_tag_cleanup(self):
         instance = self.make()
         tag_prefix = (

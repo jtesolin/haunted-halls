@@ -347,6 +347,13 @@ does not launch a build pipeline or execute the downloaded image on its
 privileged runner. Deploy and teardown share the existing per-PR lock; queued
 deploys recheck eligibility and cannot resurrect closed PRs.
 
+Artifact errors identify the exact expected artifact name. Only frontend
+`frontend-pr-image-...` lookup failures recommend re-running Frontend CI.
+Errors for `preview-secret-version-metadata` refer to the trusted
+secret-preparation run, not the image build. Inspect that run and its
+generation/reconciliation state; do not blindly repeat secret writes or
+re-run Frontend CI to repair a secret-preparation artifact.
+
 ## Create/update lifecycle ordering
 
 Configure the repository Actions variable `PREVIEW_IAP_TESTERS` as a
@@ -402,6 +409,35 @@ The required order is:
    migration or Terraform operation never triggers an automatic destroy.
 
 ## Closed-PR teardown and reconciliation
+
+### Merge blocker: untracked-secret absence permission
+
+The checked-in deployer IAM contract in
+[`deployer-iam.tf`](../preview-foundation/deployer-iam.tf) grants
+`secretmanager.secrets.create` on the preview project and
+`secretmanager.secrets.get/update/delete/getIamPolicy/setIamPolicy` only on
+PR-namespaced secret resources. It does **not** grant project-level
+`secretmanager.secrets.list`, which the new untracked-secret absence check
+requires. Named-resource `get` cannot enumerate unknown incarnation-qualified
+secret names and is not an equivalent absence check.
+
+Consequently, never-deployed and retained-empty-state teardown remain
+**blocked** under the declared IAM configuration. A denied listing fails with
+an explicit prerequisite/approval message, preserves `Cleanup incomplete`,
+and performs no secret/database deletion or tag cleanup. Successful mocked
+no-op tests demonstrate control flow, not deployer authorization.
+
+Do not merge on the assumption that this is already authorized. The smallest
+permission-based resolution requires explicit approval for a separate
+project-level custom grant containing only `secretmanager.secrets.list`
+(metadata enumeration, no payload/version access). The existing conditional
+secret-resource grant cannot authorize a project-level listing. Alternatively,
+an operator must approve a different ownership/absence-proof design. Neither
+resolution is implemented or authorized here; no IAM grant was broadened and
+no live GCP permission check was performed. Do not remove the check, infer
+absence from permission denial, or probe guessed incarnation names.
+
+### Teardown entry points
 
 The existing [`preview-deploy.yml`](../../../.github/workflows/preview-deploy.yml)
 uses `pull_request_target: closed` against `main` for both closure and merge.

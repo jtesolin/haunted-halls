@@ -188,6 +188,20 @@ run "otherwise_valid_alternate_project" {
                          '(resource.name.startsWith("projects/${data.google_project.preview.number}/secrets/hh-web-pr-") || '
                          'resource.name.startsWith("projects/${data.google_project.preview.number}/secrets/hh-engine-pr-"))')
 
+    def test_deployer_named_secret_permissions_do_not_authorize_project_listing(self):
+        creator = self.foundation_resource(
+            "google_project_iam_custom_role", "preview_per_pr_secret_creator"
+        )
+        lifecycle = self.foundation_resource(
+            "google_project_iam_custom_role", "preview_per_pr_secret_lifecycle"
+        )
+        self.assertIn("secretmanager.secrets.get", permissions(lifecycle))
+        self.assertNotIn("secretmanager.secrets.list", permissions(creator) | permissions(lifecycle))
+        source = (FOUNDATION / "deployer-iam.tf").read_text()
+        self.assertNotIn("secretmanager.secrets.list", source)
+        self.assertNotIn('"roles/secretmanager.admin"', source)
+        self.assertNotIn('"roles/secretmanager.viewer"', source)
+
     def test_secret_preparer_has_only_web_pr_version_metadata_and_add_permissions(self):
         role = self.foundation_resource(
             "google_project_iam_custom_role", "preview_per_pr_secret_preparer"

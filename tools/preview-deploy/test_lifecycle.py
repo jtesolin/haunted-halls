@@ -378,8 +378,10 @@ class ManualDeploymentTests(unittest.TestCase):
         ):
             self.artifacts = {"artifacts": artifacts}
             self.github.artifact_zip.reset_mock()
-            with self.subTest(artifacts=artifacts), self.assertRaises(lifecycle.LifecycleError):
+            with self.subTest(artifacts=artifacts), self.assertRaises(lifecycle.LifecycleError) as error:
                 self.prepare()
+            self.assertIn(item["name"], str(error.exception))
+            self.assertIn("Re-run Frontend CI for the current PR head", str(error.exception))
             self.github.artifact_zip.assert_not_called()
 
     def test_invalid_archive_or_image_labels_fail(self):

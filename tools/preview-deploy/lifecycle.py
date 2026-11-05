@@ -180,19 +180,19 @@ def artifact_name(number: str, sha: str, attempt: int) -> str:
 def validate_artifact_record(
     run_id: int, expected_name: str, artifacts: object
 ) -> dict[str, Any]:
-    _expect(type(run_id) is int and run_id > 0, "CI workflow run ID is invalid.")
-    _expect(isinstance(artifacts, list), "GitHub artifact metadata is malformed.")
+    label = f"GitHub artifact {expected_name!r}"
+    _expect(type(run_id) is int and run_id > 0, f"{label}: workflow run ID is invalid.")
+    _expect(isinstance(artifacts, list), f"{label}: artifact metadata is malformed.")
     matches = [item for item in artifacts if isinstance(item, dict) and item.get("name") == expected_name]
-    _expect(len(matches) == 1, "The exact CI image artifact is missing or ambiguous. "
-            "Re-run Frontend CI for the current PR head, then dispatch deploy again.")
+    _expect(len(matches) == 1, f"{label}: the exact artifact is missing or ambiguous.")
     artifact = matches[0]
-    _expect(artifact.get("expired") is False, "The CI image artifact has expired. "
-            "Re-run Frontend CI for the current PR head, then dispatch deploy again.")
-    _expect(type(artifact.get("id")) is int and artifact["id"] > 0, "Artifact ID is invalid.")
+    _expect(artifact.get("expired") is False, f"{label}: the artifact has expired.")
+    _expect(type(artifact.get("id")) is int and artifact["id"] > 0,
+            f"{label}: artifact ID is invalid.")
     _expect(
         isinstance(artifact.get("digest"), str)
         and re.fullmatch(r"sha256:[0-9a-f]{64}", artifact["digest"]),
-        "GitHub did not provide an immutable artifact digest.",
+        f"{label}: GitHub did not provide an immutable artifact digest.",
     )
     return artifact
 
@@ -1157,9 +1157,14 @@ def prepare(args: argparse.Namespace) -> int:
         and len(artifact_response["artifacts"]) < 100,
         "GitHub artifact metadata is malformed or incomplete; re-run current-head Frontend CI.",
     )
-    artifact = validate_artifact_record(
-        run_id, expected_name, artifact_response.get("artifacts")
-    )
+    try:
+        artifact = validate_artifact_record(
+            run_id, expected_name, artifact_response.get("artifacts")
+        )
+    except LifecycleError as error:
+        raise LifecycleError(
+            f"{error} Re-run Frontend CI for the current PR head, then dispatch deploy again."
+        ) from None
     archive = github.artifact_zip(artifact["id"], artifact["digest"])
     files = extract_artifact_zip(
         archive,

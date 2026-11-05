@@ -768,9 +768,19 @@ class PreviewTeardown:
         _expect(not owned_tags(), "PR image tags remain; retry tag cleanup.")
 
     def verify_untracked_secrets_absent(self) -> None:
-        secrets = Commands.json([
-            "gcloud", "secrets", "list", f"--project={PREVIEW_PROJECT}", "--format=json",
-        ], label="Untracked PR secret absence verification")
+        try:
+            secrets = Commands.json([
+                "gcloud", "secrets", "list", f"--project={PREVIEW_PROJECT}", "--format=json",
+            ], label="Untracked PR secret absence verification")
+        except LifecycleError:
+            raise LifecycleError(
+                "Cannot verify untracked PR secret absence. Project-level "
+                "secretmanager.secrets.list is required but is not granted by the checked-in "
+                "preview deployer roles. No-op teardown is blocked; do not infer absence "
+                "from named-secret get permission. Obtain explicit approval for a "
+                "least-privilege absence-verification permission or reviewed alternative; "
+                "do not broaden IAM or bypass ownership checks."
+            ) from None
         _expect(isinstance(secrets, list), "Secret inventory is malformed.")
         for secret in secrets:
             _expect(isinstance(secret, dict) and isinstance(secret.get("name"), str),

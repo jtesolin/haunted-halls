@@ -380,6 +380,30 @@ class DispatchTests(unittest.TestCase):
                 lifecycle.validate_secret_metadata(self.metadata(request_id), "41", INCARNATION,
                                                    8, REQUEST_ID)
 
+    def test_secret_artifact_failures_never_recommend_frontend_ci(self):
+        artifact = {
+            "id": 1, "name": lifecycle.SECRET_ARTIFACT, "expired": False,
+            "digest": "sha256:" + "a" * 64,
+        }
+        for artifacts in (
+            [], [artifact, artifact], [{**artifact, "expired": True}],
+            [{**artifact, "id": 0}], [{**artifact, "digest": None}], None,
+        ):
+            current = deployment()
+            current.revalidate_pr = Mock()
+            current.wait_for_secret_workflow = Mock(return_value={"id": 7})
+            current.github.api.side_effect = [b"", {"artifacts": artifacts}]
+            with (
+                self.subTest(artifacts=artifacts),
+                patch.dict(os.environ, {"PREVIEW_IAP_TESTERS": "user:tester@example.com"}),
+                self.assertRaises(lifecycle.LifecycleError) as error,
+            ):
+                current.run_secret_workflow("prepare", INCARNATION, 8)
+            self.assertIn(lifecycle.SECRET_ARTIFACT, str(error.exception))
+            self.assertNotIn("Frontend CI", str(error.exception))
+            self.assertNotIn("CI image", str(error.exception))
+            current.github.artifact_zip.assert_not_called()
+
     def test_rapid_identical_dispatches_bind_distinct_title_and_metadata(self):
         current = deployment()
         current.revalidate_pr = Mock()
