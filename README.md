@@ -1300,12 +1300,18 @@ engine status updates are deferred under the explicit no-engine-edits boundary.
 
 ### Manual trusted prerequisite acceptance (#41)
 
+For the current frontend lifecycle, see the
+[manual deploy/redeploy operator guide](infra/terraform/preview-pr/README.md#manual-deploy-and-redeploy)
+and [closed-PR teardown guide](infra/terraform/preview-pr/README.md#closed-pr-teardown-and-reconciliation).
+PR CI does not deploy previews; explicit trusted-main dispatch does.
+Automatic close/merge teardown remains enabled.
+
 The reviewed prerequisite plans were applied from
 `b4b4e1c090916977ea3c591d5d39c6fc07565dfd`; this harness never reapplies them.
-The manual-only [preview acceptance workflow](.github/workflows/preview-deploy.yml)
-occupies the exact path already trusted by preview WIF. It is **not 41C**:
+The manual-only acceptance job in the [preview workflow](.github/workflows/preview-deploy.yml)
+occupies the exact path already trusted by preview WIF. That job is **not 41C**:
 no automatic PR triggers, artifact build/copy, Terraform, real preview DB,
-migration, application rollout, or PR teardown is implemented.
+migration, application rollout, or PR teardown is performed by the acceptance job.
 
 Only dispatches from this repository's reviewed `main` can authenticate.
 The fresh GitHub-hosted runner checks out the dispatch's exact main SHA, verifies

@@ -26,10 +26,10 @@ class WorkflowContracts(unittest.TestCase):
             r"\n  [a-z_-]+:\n", self.workflow.split("\n  acceptance:\n", 1)[1], maxsplit=1,
         )[0]
 
-    def test_manual_acceptance_is_scoped_and_separate_from_automatic_deploy(self):
+    def test_manual_acceptance_is_scoped_and_separate_from_manual_deploy(self):
         triggers = self.workflow.split("on:\n", 1)[1].split("\npermissions:", 1)[0]
         self.assertIn("workflow_dispatch:", triggers)
-        self.assertIn("workflow_run:", triggers)
+        self.assertNotIn("workflow_run:", triggers)
         acceptance_job = self.acceptance_job
         deploy_job = self.workflow.split("\n  deploy:\n", 1)[1]
         self.assertIn("github.event_name == 'workflow_dispatch'", acceptance_job)
@@ -58,7 +58,8 @@ class WorkflowContracts(unittest.TestCase):
             "production-promoter",
         ):
             self.assertNotIn(forbidden, acceptance_job.lower())
-        self.assertIn("github.event_name == 'workflow_run'", deploy_job)
+        self.assertIn("github.event_name == 'workflow_dispatch'", deploy_job)
+        self.assertIn("inputs.operation == 'deploy'", deploy_job)
         self.assertIn("tools/preview-deploy/lifecycle.py", deploy_job)
 
     def test_exact_permission_set_and_hosted_runner(self):

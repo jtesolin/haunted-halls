@@ -180,17 +180,19 @@ def artifact_name(number: str, sha: str, attempt: int) -> str:
 def validate_artifact_record(
     run_id: int, expected_name: str, artifacts: object
 ) -> dict[str, Any]:
-    _expect(type(run_id) is int and run_id > 0, "CI workflow run ID is invalid.")
-    _expect(isinstance(artifacts, list), "GitHub artifact metadata is malformed.")
+    label = f"GitHub artifact {expected_name!r}"
+    _expect(type(run_id) is int and run_id > 0, f"{label}: workflow run ID is invalid.")
+    _expect(isinstance(artifacts, list), f"{label}: artifact metadata is malformed.")
     matches = [item for item in artifacts if isinstance(item, dict) and item.get("name") == expected_name]
-    _expect(len(matches) == 1, "The exact CI image artifact is missing or ambiguous.")
+    _expect(len(matches) == 1, f"{label}: the exact artifact is missing or ambiguous.")
     artifact = matches[0]
-    _expect(artifact.get("expired") is False, "The CI image artifact has expired.")
-    _expect(type(artifact.get("id")) is int and artifact["id"] > 0, "Artifact ID is invalid.")
+    _expect(artifact.get("expired") is False, f"{label}: the artifact has expired.")
+    _expect(type(artifact.get("id")) is int and artifact["id"] > 0,
+            f"{label}: artifact ID is invalid.")
     _expect(
         isinstance(artifact.get("digest"), str)
         and re.fullmatch(r"sha256:[0-9a-f]{64}", artifact["digest"]),
-        "GitHub did not provide an immutable artifact digest.",
+        f"{label}: GitHub did not provide an immutable artifact digest.",
     )
     return artifact
 
@@ -1043,26 +1045,76 @@ def prepare(args: argparse.Namespace) -> int:
     _expect(
         workflow_ref == f"{REPOSITORY}/.github/workflows/preview-deploy.yml@refs/heads/main"
         and git_ref == "refs/heads/main"
-        and event_name == "workflow_run",
+        and event_name == "workflow_dispatch",
         "Preview deployment did not start in the trusted default-branch workflow.",
     )
     try:
         event = json.loads(Path(args.event).read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         raise LifecycleError("The workflow event payload is invalid.") from None
-    event_run = event.get("workflow_run") if isinstance(event, dict) else None
-    _expect(isinstance(event_run, dict), "The workflow event has no source CI run.")
-    run_id = event_run.get("id")
-    _expect(type(run_id) is int and run_id > 0, "The source CI run ID is invalid.")
+    _expect(
+        isinstance(event, dict)
+        and isinstance(event.get("repository"), dict)
+        and event.get("repository", {}).get("full_name") == REPOSITORY
+        and isinstance(event.get("inputs"), dict)
+        and event["inputs"].get("operation") == "deploy",
+        "Only an explicit deploy dispatch may deploy a preview.",
+    )
+    number = event["inputs"].get("pull_request_number")
+    _expect(isinstance(number, str) and PR_RE.fullmatch(number), "PR number is not canonical.")
 
     github = Github(os.environ.get("GH_TOKEN", ""))
+    pr = github.api(f"repos/{REPOSITORY}/pulls/{number}")
+    head = pr.get("head") if isinstance(pr, dict) else None
+    sha = head.get("sha") if isinstance(head, dict) else None
+    _expect(
+        isinstance(sha, str) and SHA_RE.fullmatch(sha)
+        and validate_secret_preparation_pr(number, pr, sha)
+        and isinstance(pr["head"].get("ref"), str) and bool(pr["head"]["ref"]),
+        "Deploy requires an open, non-draft, same-repository PR targeting main.",
+    )
     workflow = github.api(f"repos/{REPOSITORY}/actions/workflows/ci.yml")
+    _expect(
+        isinstance(workflow, dict) and type(workflow.get("id")) is int
+        and workflow["id"] > 0 and workflow.get("path") == ".github/workflows/ci.yml",
+        "The frontend CI workflow identity is invalid.",
+    )
+    # PR runs use a synthetic merge head_sha; the linked PR head binds the image source.
+    query = urllib.parse.urlencode({
+        "branch": pr["head"]["ref"], "event": "pull_request",
+        "status": "success", "per_page": 100,
+    })
+    response = github.api(f"repos/{REPOSITORY}/actions/workflows/ci.yml/runs?{query}")
+    _expect(
+        isinstance(response, dict) and isinstance(response.get("workflow_runs"), list)
+        and type(response.get("total_count")) is int
+        and response["total_count"] == len(response["workflow_runs"])
+        and response["total_count"] <= 100,
+        "CI run lookup is incomplete or ambiguous; inspect Frontend CI runs for this PR head.",
+    )
+    matches = [
+        item for item in response["workflow_runs"]
+        if isinstance(item, dict) and eligibility(item, pr) == (number, sha)
+    ]
+    _expect(
+        bool(matches),
+        "No successful Frontend CI run matches the current PR head. "
+        "Run or re-run Frontend CI for this PR, wait for success, then dispatch deploy again.",
+    )
+    _expect(
+        all(type(item.get("id")) is int and item["id"] > 0 for item in matches)
+        and len({item["id"] for item in matches}) == len(matches),
+        "Matching CI run identities are invalid or ambiguous.",
+    )
+    # A rerun supersedes older runs; never fall back to an older run's artifact.
+    selected = max(matches, key=lambda item: item["id"])
+    run_id = selected["id"]
     run = github.api(f"repos/{REPOSITORY}/actions/runs/{run_id}")
     _expect(
-        isinstance(workflow, dict)
-        and workflow.get("path") == ".github/workflows/ci.yml"
-        and type(workflow.get("id")) is int
-        and isinstance(run, dict)
+        isinstance(run, dict)
+        and run.get("id") == run_id
+        and isinstance(run.get("repository"), dict)
+        and run.get("repository", {}).get("full_name") == REPOSITORY
         and run.get("workflow_id") == workflow.get("id")
         and run.get("path") == ".github/workflows/ci.yml"
         and run.get("event") == "pull_request"
@@ -1080,30 +1132,15 @@ def prepare(args: argparse.Namespace) -> int:
         "The source CI run head SHA is invalid.",
     )
     _expect(
-        event_run.get("head_sha") == run.get("head_sha")
-        and event_run.get("id") == run.get("id"),
-        "The workflow event does not match the exact source CI run.",
+        run.get("head_sha") == selected.get("head_sha")
+        and run.get("run_attempt") == selected.get("run_attempt"),
+        "The CI run changed during lookup; wait for CI success and dispatch deploy again.",
     )
-    linked_prs = run.get("pull_requests")
-    _expect(
-        isinstance(linked_prs, list)
-        and len(linked_prs) == 1
-        and type(linked_prs[0].get("number")) is int
-        and isinstance(linked_prs[0].get("head"), dict),
-        "The source CI run is not bound to exactly one PR.",
-    )
-    number = str(linked_prs[0]["number"])
     pr = github.api(f"repos/{REPOSITORY}/pulls/{number}")
     current = eligibility(run, pr)
-    output = Path(args.github_output)
-    if current is None:
-        output.write_text("deploy=false\n", encoding="utf-8")
-        return 0
-    expected_number, sha = current
     _expect(
-        expected_number == number
-        and sha == linked_prs[0]["head"].get("sha"),
-        "The workflow event, CI run and current PR head do not match.",
+        current == (number, sha),
+        "The PR changed or is no longer eligible; dispatch deploy again after current-head CI succeeds.",
     )
     verify_ci_source(
         github.api(f"repos/{REPOSITORY}/contents/.github/workflows/ci.yml?ref={sha}"),
@@ -1115,12 +1152,19 @@ def prepare(args: argparse.Namespace) -> int:
         f"repos/{REPOSITORY}/actions/runs/{run_id}/artifacts?per_page=100"
     )
     _expect(
-        isinstance(artifact_response, dict),
-        "GitHub artifact metadata is malformed.",
+        isinstance(artifact_response, dict)
+        and isinstance(artifact_response.get("artifacts"), list)
+        and len(artifact_response["artifacts"]) < 100,
+        "GitHub artifact metadata is malformed or incomplete; re-run current-head Frontend CI.",
     )
-    artifact = validate_artifact_record(
-        run_id, expected_name, artifact_response.get("artifacts")
-    )
+    try:
+        artifact = validate_artifact_record(
+            run_id, expected_name, artifact_response.get("artifacts")
+        )
+    except LifecycleError as error:
+        raise LifecycleError(
+            f"{error} Re-run Frontend CI for the current PR head, then dispatch deploy again."
+        ) from None
     archive = github.artifact_zip(artifact["id"], artifact["digest"])
     files = extract_artifact_zip(
         archive,
@@ -1152,6 +1196,12 @@ def prepare(args: argparse.Namespace) -> int:
         and labels.get("org.opencontainers.image.revision") == sha,
         "Frontend image labels do not bind it to the current repository and PR head.",
     )
+    _expect(
+        validate_secret_preparation_pr(
+            number, github.api(f"repos/{REPOSITORY}/pulls/{number}"), sha,
+        ),
+        "The PR changed during artifact validation; dispatch deploy again after current-head CI succeeds.",
+    )
     context = BuildContext(
         pull_request_number=number,
         head_sha=sha,
@@ -1165,7 +1215,7 @@ def prepare(args: argparse.Namespace) -> int:
     context_path = Path(args.output_directory) / "preview-context.json"
     context_path.write_text(json.dumps(context.__dict__, sort_keys=True), encoding="utf-8")
     context_path.chmod(0o600)
-    output.write_text("deploy=true\n", encoding="utf-8")
+    Path(args.github_output).write_text("deploy=true\n", encoding="utf-8")
     return 0
 
 
@@ -1200,7 +1250,7 @@ class PreviewDeployment:
             and os.environ.get("GITHUB_WORKFLOW_REF")
             == f"{REPOSITORY}/.github/workflows/preview-deploy.yml@refs/heads/main"
             and os.environ.get("GITHUB_REF") == "refs/heads/main"
-            and os.environ.get("GITHUB_EVENT_NAME") == "workflow_run",
+            and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch",
             "Deployment lost its trusted default-branch context.",
         )
         self.revalidate_pr()

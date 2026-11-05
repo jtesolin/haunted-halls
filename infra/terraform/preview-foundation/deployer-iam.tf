@@ -62,6 +62,24 @@ resource "google_project_iam_member" "deployer_per_pr_secret_creator" {
   member  = "serviceAccount:${google_service_account.deployer.email}"
 }
 
+resource "google_project_iam_custom_role" "preview_secret_inventory" {
+  project     = var.preview_project_id
+  role_id     = "previewSecretInventory"
+  title       = "List preview secret container metadata"
+  description = "Verify untracked PR secret absence at teardown; no payload, version, or write authority."
+  permissions = [
+    "secretmanager.secrets.list",
+  ]
+
+  depends_on = [google_project_service.apis["iam.googleapis.com"]]
+}
+
+resource "google_project_iam_member" "deployer_secret_inventory" {
+  project = var.preview_project_id
+  role    = google_project_iam_custom_role.preview_secret_inventory.name
+  member  = "serviceAccount:${google_service_account.deployer.email}"
+}
+
 resource "google_project_iam_custom_role" "preview_per_pr_secret_lifecycle" {
   role_id     = "previewPerPrSecretLifecycle"
   title       = "Manage disposable PR secret containers"

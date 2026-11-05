@@ -304,9 +304,55 @@ operations:
 The workflow runs on a fresh default-branch runner, uses a unique `TF_DATA_DIR`,
 and rechecks the backend metadata before every plan/state operation. It never
 uses `-migrate-state`, imports resources, or selects a non-default workspace.
-This implementation PR itself does not trigger the privileged `workflow_run`
-deployment path; a live preview is created only for eligible PRs after the
-trusted workflow is present on `main`.
+
+## Manual deploy and redeploy
+
+PR open/reopen, ready-for-review, new commits, and successful Frontend CI runs
+do **not** create or update previews. CI still builds the unprivileged image
+artifact for eligible same-repository PRs. Operators explicitly deploy the
+current head of an open, non-draft frontend PR targeting `main`; subsequent
+commits leave an existing preview unchanged until another explicit deploy.
+Redeploying uses the same PR environment and reuses its database without reset.
+
+After this workflow is merged into `main`, use the GitHub UI:
+**Actions -> Preview Prerequisite Acceptance -> Run workflow -> Branch: main**.
+Choose **operation: deploy**, enter the canonical **pull_request_number**, then
+click **Run workflow**. The workflow retains its existing name and default
+`acceptance` operation; choose `deploy` explicitly.
+
+Equivalent CLI (replace `83` with the eligible frontend PR number):
+
+```bash
+gh workflow run preview-deploy.yml --repo jtesolin/haunted-halls --ref main \
+  -f operation=deploy -f pull_request_number=83
+gh run list --repo jtesolin/haunted-halls --workflow preview-deploy.yml --limit 5
+gh run watch <deploy-run-id> --repo jtesolin/haunted-halls --exit-status
+```
+
+The trusted `main` job looks up successful `ci.yml` PR runs on the live source
+branch and requires exactly one PR association matching the PR's current head.
+GitHub's run `head_sha` can be a synthetic merge SHA; the associated PR head SHA
+is the image source. The newest matching successful run is selected; its current
+attempt must provide exactly one non-expired artifact with the expected name,
+immutable GitHub digest, archive checksum, and image labels. CI workflow source
+must match reviewed `main`. No older-run, older-attempt or previous-SHA fallback
+is allowed. An incomplete/ambiguous lookup (including more than 100 successful
+branch runs), changed PR, or untrusted provenance fails before GCP authentication.
+
+Artifacts retain the existing **one-day** lifetime. If missing/expired, re-run
+**Frontend CI** for the current PR head in Actions, wait for the full run to
+succeed, then repeat the deploy command. Dispatching Frontend CI manually is not
+a substitute: only its `pull_request` runs produce eligible artifacts. Deploy
+does not launch a build pipeline or execute the downloaded image on its
+privileged runner. Deploy and teardown share the existing per-PR lock; queued
+deploys recheck eligibility and cannot resurrect closed PRs.
+
+Artifact errors identify the exact expected artifact name. Only frontend
+`frontend-pr-image-...` lookup failures recommend re-running Frontend CI.
+Errors for `preview-secret-version-metadata` refer to the trusted
+secret-preparation run, not the image build. Inspect that run and its
+generation/reconciliation state; do not blindly repeat secret writes or
+re-run Frontend CI to repair a secret-preparation artifact.
 
 ## Create/update lifecycle ordering
 
@@ -328,7 +374,7 @@ The required order is:
 
 1. Normal CI must pass. For a ready same-repository PR, a credential-free job
    builds the exact PR-head image and uploads only the image archive and its
-   checksum. The trusted `workflow_run` job verifies the run/workflow/PR/SHA,
+   checksum. The explicitly dispatched trusted job verifies the run/workflow/PR/SHA,
    unique artifact ID and GitHub artifact digest before authentication. Draft,
    fork, stale-head and closed PR runs do not deploy.
 2. In the fresh default-branch runner, revalidate the PR and capture exactly
@@ -364,6 +410,65 @@ The required order is:
 
 ## Closed-PR teardown and reconciliation
 
+### Untracked-secret absence permission: separate foundation apply required
+
+The checked-in deployer IAM contract in
+[`deployer-iam.tf`](../preview-foundation/deployer-iam.tf) grants
+`secretmanager.secrets.create` on the preview project and
+`secretmanager.secrets.get/update/delete/getIamPolicy/setIamPolicy` only on
+PR-namespaced secret resources. The separately approved `previewSecretInventory`
+custom role contains **only** `secretmanager.secrets.list`, granted at project
+level to the existing preview deployer in the fixed preview project. It does
+not expand the existing lifecycle role, grant payload/version access, or add
+write authority. Listing is necessarily project-wide metadata enumeration;
+the trusted teardown rejects PR-named orphans without adopting them.
+Named-resource `get` cannot enumerate unknown incarnation-qualified secret
+names and is not an equivalent absence check.
+
+Never-deployed and retained-empty-state teardown require this new grant to be
+**applied separately**. A denied listing fails with
+an explicit prerequisite/approval message, preserves `Cleanup incomplete`,
+and performs no secret/database deletion or tag cleanup. Successful mocked
+no-op tests demonstrate control flow, not deployer authorization.
+
+Configuration approval is not apply authorization. A foundation operator must
+generate and review a saved plan from the reviewed revision: require only
+`google_project_iam_custom_role.preview_secret_inventory` and
+`google_project_iam_member.deployer_secret_inventory` additions, with exactly
+the list-only permission, preview project and existing deployer member.
+Stop on other changes; do not use targeting to conceal drift. Apply that
+reviewed saved plan only after separate explicit authorization. This PR
+performs no plan, apply or live GCP permission check. Do not remove the check,
+infer absence from permission denial, or probe guessed incarnation names.
+
+### Safe merge sequence while old main auto-deploys
+
+Keep this PR draft until a repository operator approves and performs this
+maintenance sequence; none of these remote actions is performed by this PR:
+
+1. Temporarily disable **Preview Prerequisite Acceptance**
+   (`preview-deploy.yml`) in Actions, and confirm no queued/in-progress runs
+   of that workflow remain. This pauses automatic teardown too: avoid closing
+   other PRs during the window and record any closures for reconciliation.
+   Do not assume disabling cancels runs already queued or executing.
+2. With the privileged workflow disabled, mark the PR ready, wait for required
+   CI/review to pass, and merge. Frontend CI is still enabled and unprivileged;
+   its successful completion cannot launch the disabled preview workflow.
+3. Keep the preview workflow disabled while the foundation operator obtains
+   the reviewed list-only plan and separate explicit apply authorization.
+   Apply only that approved plan. If not authorized, leave previews paused.
+4. Verify the merged main workflow has no `workflow_run` trigger and requires
+   explicit deploy dispatch, then re-enable it. Reconcile any PR closures
+   missed during the pause via the existing manual teardown path.
+5. Only with separate live-test approval, smoke-test manual deploy/redeploy,
+   database preservation, close teardown and never-deployed no-op.
+
+This sequence creates no extra PR, changes no workflow source beyond this
+feature, and prevents old-main CI completion from deploying an unintended
+preview. Re-enabling a workflow is not authorization to dispatch a deployment.
+
+### Teardown entry points
+
 The existing [`preview-deploy.yml`](../../../.github/workflows/preview-deploy.yml)
 uses `pull_request_target: closed` against `main` for both closure and merge.
 This privileged event is intentional: it runs the base repository's reviewed
@@ -379,6 +484,22 @@ Manual dispatch uses `operation=teardown` and `pull_request_number=<N>` on
 `main`. It invokes exactly the same cleanup checks. The default manual operation
 remains `acceptance` (the existing non-destructive prerequisite checks).
 Historical closure events are not replayed; do not reopen PR #56.
+
+For manual teardown, use **Actions -> Preview Prerequisite Acceptance ->
+Run workflow -> Branch: main**, choose **operation: teardown**, enter the
+**pull_request_number** of a closed/merged PR, and click **Run workflow**.
+Equivalent CLI:
+
+```bash
+gh workflow run preview-deploy.yml --repo jtesolin/haunted-halls --ref main \
+  -f operation=teardown -f pull_request_number=83
+gh run list --repo jtesolin/haunted-halls --workflow preview-deploy.yml --limit 5
+gh run watch <teardown-run-id> --repo jtesolin/haunted-halls --exit-status
+```
+
+Closing or merging any frontend PR still automatically invokes this teardown,
+including PRs that never had previews. Do not dispatch live deploy/teardown
+without the operator's explicit execution approval.
 
 ### Local closed-PR IAM diagnostic validation
 
@@ -699,14 +820,23 @@ the remaining state still proves ownership. Missing identity after an
 out-of-band/partial deletion requires operator inspection, never adoption or
 state removal to bypass checks. A valid existing empty state produces a
 successful **no tracked resources** no-op, not an assertion that untracked
-orphan databases/secrets cannot exist. Even an empty inventory must contain
+orphan databases cannot exist. Runtime, IAM and PR-named secrets must be
+verified absent; unexpected/unowned resources fail without adoption. A valid
+retained empty state still permits retrying cleanup of owned frontend tags
+after an interrupted teardown. Even an empty inventory must contain
 a nonblank string lineage and a nonnegative integer serial (not a boolean);
-it does not require an incarnation output after successful cleanup. Missing
-or unreadable authoritative state, nonzero Terraform exit codes, empty/blank
-output, invalid JSON and structurally malformed state all fail closed.
-Missing-state diagnostics are never converted into manufactured empty state.
-This intentionally also fails closed for a never-provisioned PR with no state
-object; a successful cleanup/no-op cannot be inferred from absent evidence.
+it does not require an incarnation output after successful cleanup. Unreadable
+existing state, invalid JSON and structurally malformed state fail closed.
+If Terraform cannot return state, the trusted job requires a successful GCS
+bucket listing for the exact `previews/web-pr-<N>/default.tfstate` prefix to
+prove no state object exists. Permission/network failures, missing buckets,
+existing objects, or malformed/paginated responses cannot establish absence.
+For a never-deployed PR with verified absent state, it also verifies runtime,
+IAM, PR-named secrets and image tags absent, then rechecks the closed PR and
+state absence. This is a successful verified no-op with **no** destroy,
+database request, tag deletion or manufactured empty state.
+Without authoritative database ownership it never adopts/drops a database by
+name; orphan databases still require separate operator ownership verification.
 
 A retry from PR #56's serial-44 partial state (three owned secret containers
 and five secret grants, with the original lineage and identity output) does

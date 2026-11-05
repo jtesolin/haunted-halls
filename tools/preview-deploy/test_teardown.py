@@ -776,6 +776,8 @@ class ExecutionTests(unittest.TestCase):
             patch.object(instance, "destroy", side_effect=destroy),
             patch.object(instance, "verify_runtime_absent", side_effect=lambda: calls.append("verify-runtime")),
             patch.object(instance, "verify_runtime_iam_absent", side_effect=lambda *a: calls.append("verify-runtime-iam")),
+            patch.object(instance, "verify_untracked_secrets_absent",
+                         side_effect=lambda: calls.append("verify-untracked")),
             patch.object(instance, "verify_secrets_absent", side_effect=lambda x: calls.append("verify-secrets")),
             patch.object(instance, "cleanup_tags", side_effect=lambda: calls.append("tags")),
             patch.object(teardown, "request_database", side_effect=database),
@@ -825,7 +827,7 @@ class ExecutionTests(unittest.TestCase):
             with self.subTest(attempt=attempt):
                 instance, calls, error = self.run_mocked(value)
                 self.assertIsNone(error)
-                self.assertEqual(calls, ["verify-runtime", "verify-runtime-iam", "tags"])
+                self.assertEqual(calls, ["verify-runtime", "verify-runtime-iam", "verify-untracked", "tags"])
                 self.assertEqual(instance.status, "No-op: no tracked preview resources")
                 self.assertEqual(value, original)
 
@@ -852,7 +854,7 @@ class ExecutionTests(unittest.TestCase):
         instance, calls, error = self.run_mocked(valid)
         self.assertIsNone(error)
         self.assertEqual(instance.status, "No-op: no tracked preview resources")
-        self.assertEqual(calls, ["verify-runtime", "verify-runtime-iam", "tags"])
+        self.assertEqual(calls, ["verify-runtime", "verify-runtime-iam", "verify-untracked", "tags"])
         for fields in (
             {"type": "google_storage_bucket", "name": "shared"},
             {"name": 'pr["foreign"]'},
@@ -1058,6 +1060,9 @@ class ExecutionTests(unittest.TestCase):
         with patch.object(instance, "check_backend"), patch.object(
             teardown.subprocess, "run",
             return_value=subprocess.CompletedProcess([], 1, b"", b"PERMISSION_DENIED"),
+        ), patch.object(
+            instance, "verify_state_absent",
+            side_effect=lifecycle.LifecycleError("Cannot read authoritative PR state"),
         ):
             with self.assertRaisesRegex(lifecycle.LifecycleError, "authoritative PR state"):
                 instance.read_state()
@@ -1095,6 +1100,8 @@ class ExecutionTests(unittest.TestCase):
                 patch.object(instance, "check_secret_workflow"),
                 patch.object(instance, "initialize"),
                 patch.object(instance, "check_backend"),
+                patch.object(instance, "verify_state_absent",
+                             side_effect=lifecycle.LifecycleError("State absence unverified")),
                 patch.object(teardown.subprocess, "run", return_value=result),
                 patch.object(instance, "destroy") as destroy,
                 patch.object(teardown, "request_database") as database,
@@ -1107,6 +1114,205 @@ class ExecutionTests(unittest.TestCase):
                 destroy.assert_not_called()
                 database.assert_not_called()
                 runtime.assert_not_called()
+                tags.assert_not_called()
+
+    def test_failed_pull_is_absent_only_after_authoritative_bucket_check(self):
+        instance = self.make()
+        with (
+            patch.object(instance, "check_backend"),
+            patch.object(teardown.subprocess, "run", return_value=subprocess.CompletedProcess(
+                [], 1, b"", b"No state file was found!",
+            )),
+            patch.object(instance, "verify_state_absent") as verify,
+        ):
+            self.assertIsNone(instance.read_state())
+        verify.assert_called_once_with()
+
+    def test_state_absence_requires_successful_empty_exact_prefix_listing(self):
+        instance = self.make()
+        for listing, success in (
+            ({"kind": "storage#objects"}, True),
+            ({"kind": "storage#objects", "items": []}, True),
+            ({"kind": "storage#objects", "items": [{"name": "state"}]}, False),
+            ({"kind": "storage#objects", "items": None}, False),
+            ({"kind": "storage#objects", "nextPageToken": "more"}, False),
+            ({"error": {"code": 403}}, False),
+            ({}, False),
+        ):
+            response = io.BytesIO(json.dumps(listing).encode())
+            response.status = 200
+            with (
+                self.subTest(listing=listing),
+                patch.object(teardown.Commands, "run", return_value=b"access-token"),
+                patch.object(teardown.urllib.request, "urlopen", return_value=response) as read,
+            ):
+                if success:
+                    instance.verify_state_absent()
+                else:
+                    with self.assertRaises(lifecycle.LifecycleError):
+                        instance.verify_state_absent()
+                self.assertIn(
+                    "prefix=previews%2Fweb-pr-56%2Fdefault.tfstate",
+                    read.call_args.args[0].full_url,
+                )
+        for code in (401, 403, 404, 500):
+            with (
+                self.subTest(code=code),
+                patch.object(teardown.Commands, "run", return_value=b"access-token"),
+                patch.object(teardown.urllib.request, "urlopen", side_effect=(
+                    teardown.urllib.error.HTTPError("https://storage.googleapis.com/fixed",
+                                                   code, "failure", {}, io.BytesIO())
+                )),
+                self.assertRaises(lifecycle.LifecycleError),
+            ):
+                instance.verify_state_absent()
+
+    def test_never_deployed_closed_pr_is_verified_noop_without_mutation(self):
+        instance = self.make()
+        with (
+            patch.object(instance, "revalidate"),
+            patch.object(instance, "check_secret_workflow"),
+            patch.object(instance, "initialize"),
+            patch.object(instance, "read_state", return_value=None),
+            patch.object(instance, "verify_runtime_absent", return_value=set()),
+            patch.object(instance, "verify_runtime_iam_absent") as iam,
+            patch.object(instance, "verify_state_absent") as state_absence,
+            patch.object(teardown.Commands, "json", return_value=[]) as inventories,
+            patch.object(instance, "destroy") as destroy,
+            patch.object(instance, "cleanup_tags") as tags,
+            patch.object(teardown, "request_database") as database,
+        ):
+            instance.run()
+        self.assertEqual(instance.status, "No-op: no tracked preview resources")
+        self.assertEqual(inventories.call_count, 2)
+        iam.assert_called_once_with({}, set())
+        state_absence.assert_called_once_with()
+        destroy.assert_not_called()
+        tags.assert_not_called()
+        database.assert_not_called()
+
+    def test_secret_listing_permission_failure_blocks_both_noop_paths_without_mutation(self):
+        for value in (None, empty_state()):
+            instance = self.make()
+            with (
+                self.subTest(state=value),
+                patch.object(instance, "revalidate"),
+                patch.object(instance, "check_secret_workflow"),
+                patch.object(instance, "initialize"),
+                patch.object(instance, "read_state", return_value=value),
+                patch.object(instance, "verify_runtime_absent", return_value=set()),
+                patch.object(instance, "verify_runtime_iam_absent"),
+                patch.object(teardown.subprocess, "run", return_value=subprocess.CompletedProcess(
+                    [], 1, b"", b"PERMISSION_DENIED: secretmanager.secrets.list private-details",
+                )) as command,
+                patch.object(instance, "destroy") as destroy,
+                patch.object(instance, "cleanup_tags") as tags,
+                patch.object(teardown, "request_database") as database,
+                self.assertRaises(lifecycle.LifecycleError) as error,
+            ):
+                instance.run()
+            message = str(error.exception)
+            self.assertIn("secretmanager.secrets.list", message)
+            self.assertIn("previewSecretInventory", message)
+            self.assertIn("reviewed foundation plan", message)
+            self.assertIn("No-op teardown is blocked", message)
+            self.assertIn("explicit approval", message)
+            self.assertNotIn("private-details", message)
+            self.assertEqual(instance.status, "Cleanup incomplete")
+            command.assert_called_once()
+            self.assertEqual(command.call_args.args[0][:3], ["gcloud", "secrets", "list"])
+            destroy.assert_not_called()
+            tags.assert_not_called()
+            database.assert_not_called()
+
+    def test_successful_project_secret_listing_supports_both_noop_paths(self):
+        for value in (None, empty_state()):
+            instance = self.make()
+            commands = []
+            def inventory(arguments, **kwargs):
+                commands.append(arguments)
+                return [{"name": f"projects/{teardown.PREVIEW_PROJECT}/secrets/hh-web-pr-57-i-other"}] if "secrets" in arguments else []
+            with (
+                self.subTest(state=value),
+                patch.object(instance, "revalidate"),
+                patch.object(instance, "check_secret_workflow"),
+                patch.object(instance, "initialize"),
+                patch.object(instance, "read_state", return_value=value),
+                patch.object(instance, "verify_state_absent"),
+                patch.object(instance, "verify_runtime_absent", return_value=set()),
+                patch.object(instance, "verify_runtime_iam_absent"),
+                patch.object(teardown.Commands, "json", side_effect=inventory),
+                patch.object(teardown.Commands, "run") as mutation,
+                patch.object(instance, "destroy") as destroy,
+                patch.object(teardown, "request_database") as database,
+            ):
+                instance.run()
+            self.assertEqual(instance.status, "No-op: no tracked preview resources")
+            secret_commands = [command for command in commands if "secrets" in command]
+            self.assertEqual(secret_commands, [[
+                "gcloud", "secrets", "list",
+                f"--project={teardown.PREVIEW_PROJECT}", "--format=json",
+            ]])
+            mutation.assert_not_called()
+            destroy.assert_not_called()
+            database.assert_not_called()
+
+    def test_retained_empty_state_still_retries_owned_tag_cleanup(self):
+        instance = self.make()
+        tag_prefix = (
+            f"projects/{teardown.PREVIEW_PROJECT}/locations/{teardown.PREVIEW_REGION}"
+            "/repositories/haunted-halls-preview/packages/frontend/tags/"
+        )
+        tag = f"pr-56-{SHA}-run-123-attempt-1"
+        with (
+            patch.object(instance, "revalidate"),
+            patch.object(instance, "check_secret_workflow"),
+            patch.object(instance, "initialize"),
+            patch.object(instance, "read_state", return_value=empty_state()),
+            patch.object(instance, "verify_runtime_absent", return_value=set()),
+            patch.object(instance, "verify_runtime_iam_absent"),
+            patch.object(teardown.Commands, "json", side_effect=[
+                [], [{"tag": tag_prefix + tag}], [],
+            ]),
+            patch.object(teardown.Commands, "run") as run,
+            patch.object(teardown, "request_database") as database,
+        ):
+            instance.run()
+        self.assertEqual(instance.status, "No-op: no tracked preview resources")
+        run.assert_called_once()
+        self.assertIn(f"{teardown.PREVIEW_FRONTEND_REPOSITORY}:{tag}", run.call_args.args[0])
+        database.assert_not_called()
+
+    def test_never_deployed_pr_with_untracked_resources_fails_without_adoption(self):
+        for kind in ("runtime", "iam", "secret", "tag", "state"):
+            instance = self.make()
+            error = lifecycle.LifecycleError("Untracked resource")
+            def inventory(arguments, **kwargs):
+                if "secrets" in arguments:
+                    return [{"name": "projects/fixed/secrets/hh-web-pr-56-i-orphan"}] if kind == "secret" else []
+                return [{"tag": "projects/fixed/tags/pr-56-orphan"}] if kind == "tag" else []
+            with (
+                self.subTest(kind=kind),
+                patch.object(instance, "revalidate"),
+                patch.object(instance, "check_secret_workflow"),
+                patch.object(instance, "initialize"),
+                patch.object(instance, "read_state", return_value=None),
+                patch.object(instance, "verify_runtime_absent",
+                             side_effect=error if kind == "runtime" else None),
+                patch.object(instance, "verify_runtime_iam_absent",
+                             side_effect=error if kind == "iam" else None),
+                patch.object(instance, "verify_state_absent",
+                             side_effect=error if kind == "state" else None),
+                patch.object(teardown.Commands, "json", side_effect=inventory),
+                patch.object(instance, "destroy") as destroy,
+                patch.object(teardown, "request_database") as database,
+                patch.object(instance, "cleanup_tags") as tags,
+            ):
+                with self.assertRaises(lifecycle.LifecycleError):
+                    instance.run()
+                self.assertEqual(instance.status, "Cleanup incomplete")
+                destroy.assert_not_called()
+                database.assert_not_called()
                 tags.assert_not_called()
 
     def test_cloud_run_and_iap_policy_reads_reject_remaining_and_api_errors(self):
@@ -1459,7 +1665,7 @@ class ReportingAndWorkflowTests(unittest.TestCase):
         outer_lock = "frontend-preview-pr-${{ github.event.pull_request.number || inputs.pull_request_number }}"
         inner_lock = "preview-secret-preparation-${{ inputs.pull_request_number }}"
         self.assertIn(outer_lock, teardown_job)
-        self.assertIn("group: frontend-preview-pr-${{ github.event.workflow_run.pull_requests[0].number || github.run_id }}", deployment)
+        self.assertIn("group: frontend-preview-pr-${{ inputs.pull_request_number }}", deployment)
         self.assertIn("group: preview-secret-preparation-${{ inputs.pull_request_number }}", secret_preparation)
         self.assertIn(inner_lock, executor)
         self.assertNotEqual(outer_lock, inner_lock)
