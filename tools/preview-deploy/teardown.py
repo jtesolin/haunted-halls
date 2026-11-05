@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -386,14 +387,41 @@ class PreviewTeardown:
         except (OSError, ValueError):
             raise LifecycleError("Teardown backend identity is incorrect or unavailable.") from None
 
-    def read_state(self) -> dict[str, Any]:
+    def verify_state_absent(self) -> None:
+        """Only a successful bucket listing can establish current state absence."""
+        token = Commands.run(
+            ["gcloud", "auth", "print-access-token"], label="State absence verification token",
+        ).decode().strip()
+        _expect(bool(token), "State absence verification token is unavailable.")
+        name = f"previews/web-pr-{self.number}/default.tfstate"
+        request = urllib.request.Request(
+            f"https://storage.googleapis.com/storage/v1/b/{STATE_BUCKET}/o?"
+            + urllib.parse.urlencode({"prefix": name, "maxResults": 2}),
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                _expect(response.status == 200, "State absence was not verified.")
+                listing = json.load(response)
+        except (urllib.error.URLError, OSError, ValueError):
+            raise LifecycleError("Cannot verify absent PR state; cleanup refused.") from None
+        _expect(
+            isinstance(listing, dict) and not listing.get("nextPageToken")
+            and set(listing) <= {"kind", "items", "nextPageToken"}
+            and listing.get("kind") == "storage#objects"
+            and listing.get("items", []) == [],
+            "PR state exists or its absence is unverified; cleanup refused.",
+        )
+
+    def read_state(self) -> dict[str, Any] | None:
         self.check_backend()
         result = subprocess.run(
             ["terraform", f"-chdir={TERRAFORM_ROOT}", "state", "pull"],
             capture_output=True, timeout=120, check=False,
         )
-        _expect(result.returncode == 0 and result.stdout.strip(),
-                "Cannot read authoritative PR state; cleanup refused.")
+        if result.returncode != 0 or not result.stdout.strip():
+            self.verify_state_absent()
+            return None
         try:
             state = json.loads(result.stdout)
         except (ValueError, UnicodeError):
@@ -739,15 +767,52 @@ class PreviewTeardown:
             ], label="Owned frontend image tag removal")
         _expect(not owned_tags(), "PR image tags remain; retry tag cleanup.")
 
+    def verify_untracked_secrets_absent(self) -> None:
+        secrets = Commands.json([
+            "gcloud", "secrets", "list", f"--project={PREVIEW_PROJECT}", "--format=json",
+        ], label="Untracked PR secret absence verification")
+        _expect(isinstance(secrets, list), "Secret inventory is malformed.")
+        for secret in secrets:
+            _expect(isinstance(secret, dict) and isinstance(secret.get("name"), str),
+                    "Secret inventory is malformed.")
+            _expect(not secret["name"].rsplit("/", 1)[-1].startswith(f"hh-web-pr-{self.number}-"),
+                    "Untracked PR secrets exist; separate ownership verification is required.")
+
+    def verify_untracked_tags_absent(self) -> None:
+        tags = Commands.json([
+            "gcloud", "artifacts", "docker", "tags", "list",
+            PREVIEW_FRONTEND_REPOSITORY, "--format=json",
+        ], label="Untracked PR image tag absence verification")
+        _expect(isinstance(tags, list), "Frontend image tag inventory is malformed.")
+        for tag in tags:
+            _expect(isinstance(tag, dict) and isinstance(tag.get("tag"), str),
+                    "Frontend image tag inventory is malformed.")
+            _expect(not tag["tag"].rsplit("/", 1)[-1].startswith(f"pr-{self.number}-"),
+                    "Untracked PR image tags exist; separate ownership verification is required.")
+
     def run(self) -> None:
         self.revalidate()
         self.check_secret_workflow()
         self.initialize()
         self.state = self.read_state()
+        if self.state is None:
+            absent_services = self.verify_runtime_absent()
+            self.verify_runtime_iam_absent({}, absent_services)
+            self.verify_untracked_secrets_absent()
+            self.verify_untracked_tags_absent()
+            self.revalidate()
+            self.verify_state_absent()
+            self.progress = (
+                "PR state, runtime, IAM, secrets and image tags verified absent. "
+                "No database ownership evidence; no destructive operation attempted."
+            )
+            self.status = "No-op: no tracked preview resources"
+            return
         incarnation, inventory = validate_state(self.state, self.number)
         if not inventory and incarnation is None:
             absent_services = self.verify_runtime_absent()
             self.verify_runtime_iam_absent({}, absent_services)
+            self.verify_untracked_secrets_absent()
             self.progress = (
                 "Retained state has no tracked preview resources; no database deletion attempted. "
                 "Untracked orphan resources require separate ownership verification."

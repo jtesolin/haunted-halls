@@ -65,13 +65,14 @@ class CiSourceTests(unittest.TestCase):
         run = {**workflow_run(), "id": 123, "workflow_id": 10,
                "path": ".github/workflows/ci.yml", "event": "pull_request",
                "status": "completed", "conclusion": "success", "run_attempt": 1,
+               "repository": {"full_name": lifecycle.REPOSITORY},
                "head_repository": {"full_name": lifecycle.REPOSITORY}}
         environment = {
             "GITHUB_REPOSITORY": lifecycle.REPOSITORY,
             "GITHUB_WORKFLOW_REF": (
                 f"{lifecycle.REPOSITORY}/.github/workflows/preview-deploy.yml@refs/heads/main"
             ),
-            "GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "workflow_run",
+            "GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "workflow_dispatch",
             "GH_TOKEN": "offline",
         }
         for changed in (False, True):
@@ -82,6 +83,8 @@ class CiSourceTests(unittest.TestCase):
                     return {"id": 10, "path": ".github/workflows/ci.yml"}
                 if endpoint.endswith("/actions/runs/123"):
                     return run
+                if "/ci.yml/runs?" in endpoint:
+                    return {"total_count": 1, "workflow_runs": [run]}
                 if endpoint.endswith("/pulls/41"):
                     return github_pr()
                 if "/contents/" in endpoint:
@@ -91,7 +94,10 @@ class CiSourceTests(unittest.TestCase):
                 raise RuntimeError("artifact gate reached")
             with tempfile.TemporaryDirectory() as directory:
                 event = Path(directory) / "event.json"
-                event.write_text(json.dumps({"workflow_run": run}))
+                event.write_text(json.dumps({
+                    "repository": {"full_name": lifecycle.REPOSITORY},
+                    "inputs": {"operation": "deploy", "pull_request_number": "41"},
+                }))
                 args = argparse.Namespace(event=str(event), output_directory=directory,
                                           github_output=str(Path(directory) / "output"))
                 with patch.dict(os.environ, environment), patch.object(

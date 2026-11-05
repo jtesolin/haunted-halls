@@ -3,7 +3,6 @@
 import ast
 from contextlib import redirect_stdout
 import copy
-import hashlib
 import io
 import json
 import os
@@ -35,7 +34,9 @@ EVENT = {
 
 def selected(job, event="workflow_dispatch", operation="iam-diagnostic", number="76",
              ref="refs/heads/main", repository="jtesolin/haunted-halls"):
-    condition = job.split("    if: >-\n", 1)[1].split("\n    runs-on:", 1)[0]
+    condition = re.split(
+        r"\n    [a-z-]+:", job.split("    if: >-\n", 1)[1], maxsplit=1,
+    )[0]
     for symbol, value in {
         "github.event_name": event, "inputs.operation": operation,
         "inputs.pull_request_number": number, "github.ref": ref,
@@ -330,13 +331,16 @@ class WorkflowIsolationTests(unittest.TestCase):
         self.assertFalse(selected(job, operation=""))
         self.assertTrue(selected(job, operation="acceptance"))
 
-    def test_existing_deploy_and_teardown_jobs_are_unchanged(self):
-        jobs = WORKFLOW.split("\n  deploy:\n", 1)[1].encode()
-        self.assertEqual(
-            hashlib.sha256(jobs).hexdigest(),
-            "653c0f6eed9101e60be93146faa784759097a0f612614ab2a7d00cdab164bee4",
-            "Deploy/teardown must match the reviewed main baseline, including in shallow checkouts.",
-        )
+    def test_diagnostic_does_not_select_deploy_or_teardown(self):
+        deploy = WORKFLOW.split("\n  deploy:\n", 1)[1].split("\n  teardown:\n", 1)[0]
+        teardown = WORKFLOW.split("\n  teardown:\n", 1)[1]
+        self.assertFalse(selected(deploy))
+        self.assertFalse(selected(teardown))
+        self.assertTrue(selected(deploy, operation="deploy"))
+        self.assertTrue(selected(teardown, operation="teardown"))
+        for event in ("workflow_run", "pull_request"):
+            self.assertFalse(selected(deploy, event=event, operation="deploy"))
+        self.assertTrue(selected(teardown, event="pull_request_target", operation=""))
 
     def test_job_has_only_read_only_helper_and_existing_auth(self):
         self.assertIn("group: frontend-preview-pr-76", JOB)

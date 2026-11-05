@@ -1,4 +1,6 @@
 import hashlib
+import argparse
+import base64
 import importlib.util
 import io
 import json
@@ -9,7 +11,7 @@ import unittest
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).parent
@@ -204,6 +206,219 @@ class EligibilityTests(unittest.TestCase):
                 {"database": database, "operation": "drop", "created": False},
                 database,
             )
+
+class ManualDeploymentTests(unittest.TestCase):
+    def setUp(self):
+        self.environment = {
+            "GITHUB_REPOSITORY": lifecycle.REPOSITORY,
+            "GITHUB_WORKFLOW_REF": (
+                f"{lifecycle.REPOSITORY}/.github/workflows/preview-deploy.yml@refs/heads/main"
+            ),
+            "GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GH_TOKEN": "offline",
+        }
+        self.event = {
+            "repository": {"full_name": lifecycle.REPOSITORY},
+            "inputs": {"operation": "deploy", "pull_request_number": "41"},
+        }
+        self.pr = github_pr()
+        self.run = {
+            **workflow_run(), "head_sha": "e" * 40,
+            "id": 123, "workflow_id": 10, "run_attempt": 2,
+            "path": ".github/workflows/ci.yml", "event": "pull_request",
+            "status": "completed", "conclusion": "success",
+            "repository": {"full_name": lifecycle.REPOSITORY},
+            "head_repository": {"full_name": lifecycle.REPOSITORY},
+        }
+        self.runs = {"total_count": 1, "workflow_runs": [copy.deepcopy(self.run)]}
+        files = {
+            "frontend-image.tar": b"offline image",
+            "frontend-image.tar.sha256": (
+                hashlib.sha256(b"offline image").hexdigest() + "  frontend-image.tar\n"
+            ).encode(),
+        }
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as output:
+            for name, value in files.items():
+                output.writestr(name, value)
+        self.archive = archive.getvalue()
+        self.artifacts = {"artifacts": [{
+            "id": 456, "name": lifecycle.artifact_name("41", SHA, 2),
+            "expired": False, "digest": "sha256:" + hashlib.sha256(self.archive).hexdigest(),
+        }]}
+        self.github = Mock()
+        self.github.api.side_effect = self.api
+        self.github.artifact_zip.return_value = self.archive
+        self.labels = {
+            "org.opencontainers.image.source": f"https://github.com/{lifecycle.REPOSITORY}",
+            "org.opencontainers.image.revision": SHA,
+        }
+
+    def api(self, endpoint):
+        if endpoint.endswith("/pulls/41"):
+            return self.pr
+        if endpoint.endswith("/actions/workflows/ci.yml"):
+            return {"id": 10, "path": ".github/workflows/ci.yml"}
+        if "/ci.yml/runs?" in endpoint:
+            self.assertIn("branch=preview-test&event=pull_request&status=success", endpoint)
+            self.assertNotIn("head_sha=", endpoint)
+            return self.runs
+        if endpoint.endswith("/actions/runs/123"):
+            return self.run
+        if "/contents/" in endpoint:
+            trusted = Path(".github/workflows/ci.yml").read_bytes()
+            return {
+                "type": "file", "encoding": "base64",
+                "content": base64.b64encode(trusted).decode(),
+                "sha": hashlib.sha1(f"blob {len(trusted)}\0".encode() + trusted).hexdigest(),
+            }
+        if "/actions/runs/123/artifacts?" in endpoint:
+            return self.artifacts
+        self.fail(f"Unexpected endpoint: {endpoint}")
+
+    def prepare(self):
+        with tempfile.TemporaryDirectory() as directory:
+            event = Path(directory) / "event.json"
+            event.write_text(json.dumps(self.event))
+            args = argparse.Namespace(
+                event=str(event), output_directory=directory,
+                github_output=str(Path(directory) / "output"),
+            )
+            with (
+                patch.dict("os.environ", self.environment),
+                patch.object(lifecycle, "Github", return_value=self.github),
+                patch.object(lifecycle.Commands, "run", return_value=(
+                    f"Loaded image: hh-web-pr-41-frontend:{SHA}\n".encode()
+                )) as commands,
+                patch.object(lifecycle.Commands, "json", return_value=[
+                    {"Config": {"Labels": self.labels}}
+                ]),
+            ):
+                try:
+                    lifecycle.prepare(args)
+                finally:
+                    self.assertTrue(all(
+                        call.args[0][0] == "docker" for call in commands.call_args_list
+                    ), "Provenance preparation must not invoke cloud commands.")
+            self.assertEqual(Path(args.github_output).read_text(), "deploy=true\n")
+            return lifecycle.BuildContext.from_json(json.loads(
+                (Path(directory) / "preview-context.json").read_text()
+            ))
+
+    def test_explicit_deploy_and_redeploy_use_current_head_despite_merge_run_sha(self):
+        self.runs["workflow_runs"].append({**copy.deepcopy(self.run), "id": 122})
+        self.runs["total_count"] = 2
+        for _ in range(2):
+            context = self.prepare()
+            self.assertEqual((context.pull_request_number, context.head_sha), ("41", SHA))
+            self.assertEqual((context.workflow_run_id, context.run_attempt), (123, 2))
+            self.assertEqual(context.artifact_id, 456)
+
+    def test_missing_stale_wrong_pr_or_truncated_runs_fail_before_artifacts(self):
+        original = copy.deepcopy(self.runs)
+        cases = [
+            {"total_count": 0, "workflow_runs": []},
+            {"total_count": 1, "workflow_runs": [{
+                **self.run, "pull_requests": [{"number": 41, "head": {"sha": "d" * 40}}],
+            }]},
+            {"total_count": 1, "workflow_runs": [{
+                **self.run, "pull_requests": [{"number": 42, "head": {"sha": SHA}}],
+            }]},
+            {"total_count": 101, "workflow_runs": [self.run]},
+            {"total_count": 2, "workflow_runs": [self.run, self.run]},
+        ]
+        for runs in cases:
+            with self.subTest(runs=runs):
+                self.runs = runs
+                self.github.artifact_zip.reset_mock()
+                with self.assertRaises(lifecycle.LifecycleError):
+                    self.prepare()
+                self.github.artifact_zip.assert_not_called()
+        self.runs = original
+
+    def test_ineligible_prs_fail_before_ci_lookup(self):
+        cases = [
+            {"state": "closed"}, {"draft": True}, {"number": 42},
+            {"head": {**self.pr["head"], "repo": {"full_name": "someone/fork"}}},
+            {"base": {**self.pr["base"], "ref": "other"}},
+            {"head": None},
+        ]
+        original = copy.deepcopy(self.pr)
+        for changes in cases:
+            self.pr = {**original, **changes}
+            self.github.api.reset_mock()
+            with self.subTest(changes=changes), self.assertRaises(lifecycle.LifecycleError):
+                self.prepare()
+            self.assertEqual(len(self.github.api.call_args_list), 1)
+
+    def test_untrusted_or_changed_run_fails_before_download(self):
+        original = copy.deepcopy(self.run)
+        for changes in (
+            {"head_sha": "d" * 40}, {"id": 999}, {"workflow_id": 11},
+            {"repository": {"full_name": "someone/fork"}},
+            {"head_repository": {"full_name": "someone/fork"}},
+            {"event": "push"}, {"status": "in_progress"}, {"conclusion": "failure"},
+            {"path": ".github/workflows/other.yml"}, {"run_attempt": 0},
+            {"pull_requests": [{"number": 42, "head": {"sha": SHA}}]},
+        ):
+            self.run = {**original, **changes}
+            self.github.artifact_zip.reset_mock()
+            with self.subTest(changes=changes), self.assertRaises(lifecycle.LifecycleError):
+                self.prepare()
+            self.github.artifact_zip.assert_not_called()
+
+    def test_missing_expired_ambiguous_stale_attempt_or_unverified_artifact_fails(self):
+        original = copy.deepcopy(self.artifacts)
+        item = original["artifacts"][0]
+        for artifacts in (
+            [], [item, item], [{**item, "expired": True}],
+            [{**item, "digest": None}],
+            [{**item, "name": lifecycle.artifact_name("41", SHA, 1)}],
+            [{**item, "name": lifecycle.artifact_name("41", "d" * 40, 2)}],
+        ):
+            self.artifacts = {"artifacts": artifacts}
+            self.github.artifact_zip.reset_mock()
+            with self.subTest(artifacts=artifacts), self.assertRaises(lifecycle.LifecycleError):
+                self.prepare()
+            self.github.artifact_zip.assert_not_called()
+
+    def test_invalid_archive_or_image_labels_fail(self):
+        self.github.artifact_zip.return_value = b"corrupted"
+        with self.assertRaises(lifecycle.LifecycleError):
+            self.prepare()
+        self.github.artifact_zip.return_value = self.archive
+        self.labels["org.opencontainers.image.revision"] = "d" * 40
+        with self.assertRaises(lifecycle.LifecycleError):
+            self.prepare()
+
+    def test_late_close_or_new_commit_before_authentication_fails(self):
+        original_api = self.api
+        for change in ({"state": "closed"}, {"head": {**self.pr["head"], "sha": "d" * 40}}):
+            reads = []
+            def api(endpoint):
+                if endpoint.endswith("/pulls/41"):
+                    reads.append(endpoint)
+                    if len(reads) == 3:
+                        return {**self.pr, **change}
+                return original_api(endpoint)
+            self.github.api.side_effect = api
+            with self.subTest(change=change), self.assertRaises(lifecycle.LifecycleError):
+                self.prepare()
+
+    def test_automatic_events_wrong_operations_and_non_main_dispatches_are_rejected(self):
+        for changes in (
+            {"GITHUB_EVENT_NAME": "workflow_run"},
+            {"GITHUB_EVENT_NAME": "pull_request_target"},
+            {"GITHUB_REF": "refs/heads/feature"},
+        ):
+            original = self.environment.copy()
+            self.environment.update(changes)
+            with self.subTest(changes=changes), self.assertRaises(lifecycle.LifecycleError):
+                self.prepare()
+            self.environment = original
+        self.event["inputs"]["operation"] = "teardown"
+        with self.assertRaises(lifecycle.LifecycleError):
+            self.prepare()
 
 
 class StagingAndTerraformTests(unittest.TestCase):
@@ -723,14 +938,16 @@ class OrchestrationTests(unittest.TestCase):
                 f"{lifecycle.REPOSITORY}/.github/workflows/preview-deploy.yml@refs/heads/main"
             ),
             "GITHUB_REF": "refs/heads/main",
-            "GITHUB_EVENT_NAME": "workflow_run",
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
             "PREVIEW_IAP_TESTERS": "user:tester@example.com",
         }
         with patch.dict("os.environ", environment, clear=False):
             deployment.run()
+            deployment.run()
         self.assertLess(calls.index("migrate-to-head"), calls.index("rollout"))
         self.assertIn("reuse-database", calls)
         self.assertIn("verify-runtime-reused-db", calls)
+        self.assertEqual(calls.count("reuse-database"), 2)
         self.assertLess(calls.index("rollout"), calls.index("comment"))
 
     def test_failed_migration_stops_before_rollout_and_comment(self):
@@ -758,7 +975,7 @@ class OrchestrationTests(unittest.TestCase):
                 f"{lifecycle.REPOSITORY}/.github/workflows/preview-deploy.yml@refs/heads/main"
             ),
             "GITHUB_REF": "refs/heads/main",
-            "GITHUB_EVENT_NAME": "workflow_run",
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
             "PREVIEW_IAP_TESTERS": "user:tester@example.com",
         }
         with patch.dict("os.environ", environment, clear=False):
@@ -926,15 +1143,17 @@ class WorkflowBoundaryTests(unittest.TestCase):
             deploy.index("Install pinned checksum-verified gcrane"),
             deploy.index("Authenticate directly with WIF for the Terraform backend"),
         )
-    def test_automatic_deploy_is_limited_to_successful_pr_workflow_runs(self):
+    def test_deploy_requires_explicit_dispatch_and_ci_cannot_redeploy(self):
         workflow = (ROOT.parents[1] / ".github/workflows/preview-deploy.yml").read_text()
         triggers = workflow.split("on:\n", 1)[1].split("\npermissions:", 1)[0]
         deploy = workflow.split("\n  deploy:\n", 1)[1]
-        self.assertIn('workflows: ["Frontend CI"]', triggers)
-        self.assertIn("types: [completed]", triggers)
-        self.assertIn("github.event_name == 'workflow_run'", deploy)
-        self.assertIn("github.event.workflow_run.event == 'pull_request'", deploy)
-        self.assertIn("github.event.workflow_run.conclusion == 'success'", deploy)
+        self.assertNotIn("workflow_run:", triggers)
+        self.assertNotIn("\n  pull_request:", triggers)
+        self.assertIn("options: [acceptance, deploy, teardown, iam-diagnostic]", triggers)
+        self.assertIn("github.event_name == 'workflow_dispatch'", deploy)
+        self.assertIn("inputs.operation == 'deploy'", deploy)
+        self.assertIn("github.ref == 'refs/heads/main'", deploy)
+        self.assertIn('test "$GITHUB_EVENT_NAME" = "workflow_dispatch"', deploy)
         self.assertIn("github.repository == 'jtesolin/haunted-halls'", deploy)
 
     def test_privileged_workflow_checks_out_only_its_default_branch(self):
@@ -965,7 +1184,7 @@ class WorkflowBoundaryTests(unittest.TestCase):
         acceptance = acceptance.split("\n  acceptance:\n", 1)[1]
         self.assertIn("group: preview-prerequisite-acceptance", acceptance)
         self.assertIn(
-            "group: frontend-preview-pr-${{ github.event.workflow_run.pull_requests[0].number || github.run_id }}",
+            "group: frontend-preview-pr-${{ inputs.pull_request_number }}",
             deploy,
         )
         self.assertIn("cancel-in-progress: false", deploy)
