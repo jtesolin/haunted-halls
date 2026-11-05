@@ -198,9 +198,24 @@ run "otherwise_valid_alternate_project" {
         self.assertIn("secretmanager.secrets.get", permissions(lifecycle))
         self.assertNotIn("secretmanager.secrets.list", permissions(creator) | permissions(lifecycle))
         source = (FOUNDATION / "deployer-iam.tf").read_text()
-        self.assertNotIn("secretmanager.secrets.list", source)
         self.assertNotIn('"roles/secretmanager.admin"', source)
         self.assertNotIn('"roles/secretmanager.viewer"', source)
+
+    def test_deployer_inventory_is_separate_project_list_only_grant(self):
+        role = self.foundation_resource(
+            "google_project_iam_custom_role", "preview_secret_inventory"
+        )
+        self.assertEqual(permissions(role), {"secretmanager.secrets.list"})
+        self.assertEqual(attribute(role, "project"), "var.preview_project_id")
+        self.assertEqual(attribute(role, "role_id"), '"previewSecretInventory"')
+        grant = self.foundation_resource(
+            "google_project_iam_member", "deployer_secret_inventory"
+        )
+        self.assertEqual(attribute(grant, "project"), "var.preview_project_id")
+        self.assertEqual(attribute(grant, "member"), DEPLOYER_MEMBER)
+        self.assertEqual(attribute(grant, "role"),
+                         "google_project_iam_custom_role.preview_secret_inventory.name")
+        self.assertNotRegex(grant, r"\bcondition\s*\{")
 
     def test_secret_preparer_has_only_web_pr_version_metadata_and_add_permissions(self):
         role = self.foundation_resource(

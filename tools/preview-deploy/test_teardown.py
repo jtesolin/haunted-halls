@@ -1213,6 +1213,8 @@ class ExecutionTests(unittest.TestCase):
                 instance.run()
             message = str(error.exception)
             self.assertIn("secretmanager.secrets.list", message)
+            self.assertIn("previewSecretInventory", message)
+            self.assertIn("reviewed foundation plan", message)
             self.assertIn("No-op teardown is blocked", message)
             self.assertIn("explicit approval", message)
             self.assertNotIn("private-details", message)
@@ -1221,6 +1223,38 @@ class ExecutionTests(unittest.TestCase):
             self.assertEqual(command.call_args.args[0][:3], ["gcloud", "secrets", "list"])
             destroy.assert_not_called()
             tags.assert_not_called()
+            database.assert_not_called()
+
+    def test_successful_project_secret_listing_supports_both_noop_paths(self):
+        for value in (None, empty_state()):
+            instance = self.make()
+            commands = []
+            def inventory(arguments, **kwargs):
+                commands.append(arguments)
+                return [{"name": f"projects/{teardown.PREVIEW_PROJECT}/secrets/hh-web-pr-57-i-other"}] if "secrets" in arguments else []
+            with (
+                self.subTest(state=value),
+                patch.object(instance, "revalidate"),
+                patch.object(instance, "check_secret_workflow"),
+                patch.object(instance, "initialize"),
+                patch.object(instance, "read_state", return_value=value),
+                patch.object(instance, "verify_state_absent"),
+                patch.object(instance, "verify_runtime_absent", return_value=set()),
+                patch.object(instance, "verify_runtime_iam_absent"),
+                patch.object(teardown.Commands, "json", side_effect=inventory),
+                patch.object(teardown.Commands, "run") as mutation,
+                patch.object(instance, "destroy") as destroy,
+                patch.object(teardown, "request_database") as database,
+            ):
+                instance.run()
+            self.assertEqual(instance.status, "No-op: no tracked preview resources")
+            secret_commands = [command for command in commands if "secrets" in command]
+            self.assertEqual(secret_commands, [[
+                "gcloud", "secrets", "list",
+                f"--project={teardown.PREVIEW_PROJECT}", "--format=json",
+            ]])
+            mutation.assert_not_called()
+            destroy.assert_not_called()
             database.assert_not_called()
 
     def test_retained_empty_state_still_retries_owned_tag_cleanup(self):

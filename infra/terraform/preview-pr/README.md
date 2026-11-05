@@ -410,32 +410,62 @@ The required order is:
 
 ## Closed-PR teardown and reconciliation
 
-### Merge blocker: untracked-secret absence permission
+### Untracked-secret absence permission: separate foundation apply required
 
 The checked-in deployer IAM contract in
 [`deployer-iam.tf`](../preview-foundation/deployer-iam.tf) grants
 `secretmanager.secrets.create` on the preview project and
 `secretmanager.secrets.get/update/delete/getIamPolicy/setIamPolicy` only on
-PR-namespaced secret resources. It does **not** grant project-level
-`secretmanager.secrets.list`, which the new untracked-secret absence check
-requires. Named-resource `get` cannot enumerate unknown incarnation-qualified
-secret names and is not an equivalent absence check.
+PR-namespaced secret resources. The separately approved `previewSecretInventory`
+custom role contains **only** `secretmanager.secrets.list`, granted at project
+level to the existing preview deployer in the fixed preview project. It does
+not expand the existing lifecycle role, grant payload/version access, or add
+write authority. Listing is necessarily project-wide metadata enumeration;
+the trusted teardown rejects PR-named orphans without adopting them.
+Named-resource `get` cannot enumerate unknown incarnation-qualified secret
+names and is not an equivalent absence check.
 
-Consequently, never-deployed and retained-empty-state teardown remain
-**blocked** under the declared IAM configuration. A denied listing fails with
+Never-deployed and retained-empty-state teardown require this new grant to be
+**applied separately**. A denied listing fails with
 an explicit prerequisite/approval message, preserves `Cleanup incomplete`,
 and performs no secret/database deletion or tag cleanup. Successful mocked
 no-op tests demonstrate control flow, not deployer authorization.
 
-Do not merge on the assumption that this is already authorized. The smallest
-permission-based resolution requires explicit approval for a separate
-project-level custom grant containing only `secretmanager.secrets.list`
-(metadata enumeration, no payload/version access). The existing conditional
-secret-resource grant cannot authorize a project-level listing. Alternatively,
-an operator must approve a different ownership/absence-proof design. Neither
-resolution is implemented or authorized here; no IAM grant was broadened and
-no live GCP permission check was performed. Do not remove the check, infer
-absence from permission denial, or probe guessed incarnation names.
+Configuration approval is not apply authorization. A foundation operator must
+generate and review a saved plan from the reviewed revision: require only
+`google_project_iam_custom_role.preview_secret_inventory` and
+`google_project_iam_member.deployer_secret_inventory` additions, with exactly
+the list-only permission, preview project and existing deployer member.
+Stop on other changes; do not use targeting to conceal drift. Apply that
+reviewed saved plan only after separate explicit authorization. This PR
+performs no plan, apply or live GCP permission check. Do not remove the check,
+infer absence from permission denial, or probe guessed incarnation names.
+
+### Safe merge sequence while old main auto-deploys
+
+Keep this PR draft until a repository operator approves and performs this
+maintenance sequence; none of these remote actions is performed by this PR:
+
+1. Temporarily disable **Preview Prerequisite Acceptance**
+   (`preview-deploy.yml`) in Actions, and confirm no queued/in-progress runs
+   of that workflow remain. This pauses automatic teardown too: avoid closing
+   other PRs during the window and record any closures for reconciliation.
+   Do not assume disabling cancels runs already queued or executing.
+2. With the privileged workflow disabled, mark the PR ready, wait for required
+   CI/review to pass, and merge. Frontend CI is still enabled and unprivileged;
+   its successful completion cannot launch the disabled preview workflow.
+3. Keep the preview workflow disabled while the foundation operator obtains
+   the reviewed list-only plan and separate explicit apply authorization.
+   Apply only that approved plan. If not authorized, leave previews paused.
+4. Verify the merged main workflow has no `workflow_run` trigger and requires
+   explicit deploy dispatch, then re-enable it. Reconcile any PR closures
+   missed during the pause via the existing manual teardown path.
+5. Only with separate live-test approval, smoke-test manual deploy/redeploy,
+   database preservation, close teardown and never-deployed no-op.
+
+This sequence creates no extra PR, changes no workflow source beyond this
+feature, and prevents old-main CI completion from deploying an unintended
+preview. Re-enabling a workflow is not authorization to dispatch a deployment.
 
 ### Teardown entry points
 

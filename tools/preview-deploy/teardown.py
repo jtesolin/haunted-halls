@@ -775,11 +775,11 @@ class PreviewTeardown:
         except LifecycleError:
             raise LifecycleError(
                 "Cannot verify untracked PR secret absence. Project-level "
-                "secretmanager.secrets.list is required but is not granted by the checked-in "
-                "preview deployer roles. No-op teardown is blocked; do not infer absence "
-                "from named-secret get permission. Obtain explicit approval for a "
-                "least-privilege absence-verification permission or reviewed alternative; "
-                "do not broaden IAM or bypass ownership checks."
+                "secretmanager.secrets.list is required by the previewSecretInventory role. "
+                "No-op teardown is blocked; verify that its dedicated preview-project grant "
+                "was applied using a reviewed foundation plan and explicit approval. "
+                "If already applied, inspect authentication or API failures. Do not infer "
+                "absence from named-secret get permission, broaden IAM, or bypass ownership checks."
             ) from None
         _expect(isinstance(secrets, list), "Secret inventory is malformed.")
         for secret in secrets:
