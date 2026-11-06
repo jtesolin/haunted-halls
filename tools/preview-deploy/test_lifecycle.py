@@ -597,6 +597,123 @@ class StagingAndTerraformTests(unittest.TestCase):
                     PREVIEW_FRONTEND,
                 )
 
+    def test_preview_accepts_only_the_verified_amd64_child_of_the_frozen_index(self):
+        child_digest = "sha256:" + "d" * 64
+        image_index = {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "manifests": [
+                {
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": child_digest,
+                    "platform": {"architecture": "amd64", "os": "linux"},
+                },
+                {
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": "sha256:" + "e" * 64,
+                    "platform": {"architecture": "arm64", "os": "linux"},
+                },
+            ],
+        }
+        manifest = json.dumps(image_index, separators=(",", ":"), sort_keys=True).encode()
+        index_digest = "sha256:" + hashlib.sha256(manifest).hexdigest()
+        expected_image = f"{PREVIEW_FRONTEND.rsplit('@', 1)[0]}@{index_digest}"
+        actual_image = f"{PREVIEW_FRONTEND.rsplit('@', 1)[0]}@{child_digest}"
+        revision_name = "hh-web-pr-84-frontend-00001-abc"
+        service = {
+            "metadata": {"name": "hh-web-pr-84-frontend"},
+            "status": {
+                "conditions": [{"type": "Ready", "status": "True"}],
+                "latestCreatedRevisionName": revision_name,
+                "latestReadyRevisionName": revision_name,
+                "traffic": [{"revisionName": revision_name, "percent": 100}],
+                "url": "https://hh-web-pr-84-frontend-1001419903197.us-east1.run.app",
+            },
+        }
+        revision = {
+            "metadata": {"name": revision_name},
+            "spec": {"containers": [{"image": actual_image}]},
+            "status": {"conditions": [{"type": "Ready", "status": "True"}]},
+        }
+        registry_index = (
+            "application/vnd.oci.image.index.v1+json",
+            index_digest,
+            manifest,
+        )
+        with patch.object(
+            lifecycle, "_read_image_index", return_value=registry_index
+        ) as read_index:
+            self.assertEqual(
+                lifecycle.verify_serving_revision(
+                    service, revision, "hh-web-pr-84-frontend", expected_image
+                )[0],
+                actual_image,
+            )
+        read_index.assert_called_once_with(expected_image)
+
+        invalid_images = (
+            f"{PREVIEW_FRONTEND.rsplit('@', 1)[0]}@sha256:{'f' * 64}",
+            f"{PREVIEW_ENGINE.rsplit('@', 1)[0]}@{child_digest}",
+        )
+        for invalid_image in invalid_images:
+            invalid_revision = copy.deepcopy(revision)
+            invalid_revision["spec"]["containers"][0]["image"] = invalid_image
+            with self.subTest(image=invalid_image), patch.object(
+                lifecycle, "_read_image_index", return_value=registry_index
+            ), self.assertRaises(lifecycle.LifecycleError):
+                lifecycle.verify_serving_revision(
+                    service,
+                    invalid_revision,
+                    "hh-web-pr-84-frontend",
+                    expected_image,
+                )
+
+        with patch.object(
+            lifecycle,
+            "_read_image_index",
+            return_value=(
+                registry_index[0],
+                index_digest,
+                manifest + b" ",
+            ),
+        ), self.assertRaises(lifecycle.LifecycleError):
+            lifecycle.verify_serving_revision(
+                service,
+                revision,
+                "hh-web-pr-84-frontend",
+                expected_image,
+            )
+
+        wrong_platform_index = copy.deepcopy(image_index)
+        wrong_platform_index["manifests"][0]["platform"] = {
+            "architecture": "arm64",
+            "os": "linux",
+        }
+        wrong_platform_manifest = json.dumps(
+            wrong_platform_index, separators=(",", ":"), sort_keys=True
+        ).encode()
+        wrong_platform_digest = (
+            "sha256:" + hashlib.sha256(wrong_platform_manifest).hexdigest()
+        )
+        wrong_platform_expected = (
+            f"{PREVIEW_FRONTEND.rsplit('@', 1)[0]}@{wrong_platform_digest}"
+        )
+        with patch.object(
+            lifecycle,
+            "_read_image_index",
+            return_value=(
+                "application/vnd.oci.image.index.v1+json",
+                wrong_platform_digest,
+                wrong_platform_manifest,
+            ),
+        ), self.assertRaises(lifecycle.LifecycleError):
+            lifecycle.verify_serving_revision(
+                service,
+                revision,
+                "hh-web-pr-84-frontend",
+                wrong_platform_expected,
+            )
+
     def test_database_provisioner_is_resolved_from_fixed_service_identity(self):
         service = {
             "apiVersion": "serving.knative.dev/v1",
