@@ -8,10 +8,11 @@ import copy
 import sys
 import tempfile
 import unittest
+import urllib.error
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 
 ROOT = Path(__file__).parent
@@ -491,6 +492,148 @@ class StagingAndTerraformTests(unittest.TestCase):
         with self.assertRaises(lifecycle.LifecycleError):
             lifecycle.staging_engine_digest(service, revision)
 
+    def test_registry_manifest_read_authenticates_and_verifies_response(self):
+        media_type = "application/vnd.oci.image.manifest.v1+json"
+        manifest = {
+            "schemaVersion": 2,
+            "mediaType": media_type,
+            "config": {"digest": "sha256:" + "d" * 64},
+            "layers": [],
+        }
+        body = json.dumps(manifest, separators=(",", ":"), sort_keys=True).encode()
+        digest = "sha256:" + hashlib.sha256(body).hexdigest()
+        image = f"{PREVIEW_FRONTEND.rsplit('@', 1)[0]}@{digest}"
+        response = Mock()
+        response.headers = {
+            "Content-Type": media_type + "; charset=utf-8",
+            "Docker-Content-Digest": digest,
+        }
+        response.read.return_value = body
+        http_response = MagicMock()
+        http_response.__enter__.return_value = response
+        opener = Mock()
+        opener.open.return_value = http_response
+
+        with patch.object(
+            lifecycle.Commands, "run", return_value=b"registry-token"
+        ) as run, patch.object(
+            lifecycle.urllib.request, "build_opener", return_value=opener
+        ):
+            self.assertEqual(
+                lifecycle._read_registry_manifest(image),
+                (media_type, manifest),
+            )
+
+        run.assert_called_once_with(
+            ["gcloud", "auth", "print-access-token"],
+            label="Artifact Registry manifest authentication",
+            timeout=30,
+        )
+        request = opener.open.call_args.args[0]
+        self.assertEqual(
+            request.full_url,
+            f"https://us-east1-docker.pkg.dev/v2/"
+            "hh-preview-458395246135/haunted-halls-preview/frontend/manifests/"
+            f"{digest}",
+        )
+        self.assertEqual(request.get_header("Authorization"), "Bearer registry-token")
+        for accepted_type in lifecycle.OCI_INDEX_MEDIA_TYPES | lifecycle.OCI_IMAGE_MEDIA_TYPES:
+            self.assertIn(accepted_type, request.get_header("Accept"))
+        opener.open.assert_called_once_with(request, timeout=30)
+        response.read.assert_called_once_with(1_048_577)
+
+    def test_registry_manifest_read_rejects_bad_headers_bodies_and_size(self):
+        media_type = "application/vnd.oci.image.manifest.v1+json"
+        manifest = {"schemaVersion": 2, "mediaType": media_type}
+        body = json.dumps(manifest, separators=(",", ":"), sort_keys=True).encode()
+        digest = "sha256:" + hashlib.sha256(body).hexdigest()
+        image = f"{PREVIEW_FRONTEND.rsplit('@', 1)[0]}@{digest}"
+        oversized_body = b"x" * 1_048_577
+        malformed_body = b"{"
+        invalid_responses = (
+            (
+                image,
+                {"Content-Type": "text/plain", "Docker-Content-Digest": digest},
+                body,
+            ),
+            (
+                image,
+                {
+                    "Content-Type": media_type,
+                    "Docker-Content-Digest": "sha256:" + "f" * 64,
+                },
+                body,
+            ),
+            (
+                image,
+                {"Content-Type": media_type, "Docker-Content-Digest": digest},
+                body + b" ",
+            ),
+            (
+                f"{PREVIEW_FRONTEND.rsplit('@', 1)[0]}@sha256:{hashlib.sha256(malformed_body).hexdigest()}",
+                {
+                    "Content-Type": media_type,
+                    "Docker-Content-Digest": "sha256:" + hashlib.sha256(malformed_body).hexdigest(),
+                },
+                malformed_body,
+            ),
+            (
+                f"{PREVIEW_FRONTEND.rsplit('@', 1)[0]}@sha256:{hashlib.sha256(oversized_body).hexdigest()}",
+                {
+                    "Content-Type": media_type,
+                    "Docker-Content-Digest": "sha256:" + hashlib.sha256(oversized_body).hexdigest(),
+                },
+                oversized_body,
+            ),
+        )
+        for response_image, headers, response_body in invalid_responses:
+            response = Mock()
+            response.headers = headers
+            response.read.return_value = response_body
+            http_response = MagicMock()
+            http_response.__enter__.return_value = response
+            opener = Mock()
+            opener.open.return_value = http_response
+            with self.subTest(headers=headers, body_size=len(response_body)), patch.object(
+                lifecycle.Commands, "run", return_value=b"registry-token"
+            ), patch.object(
+                lifecycle.urllib.request, "build_opener", return_value=opener
+            ), self.assertRaises(lifecycle.LifecycleError):
+                lifecycle._read_registry_manifest(response_image)
+
+    def test_registry_manifest_read_fails_closed_on_auth_and_transport_errors(self):
+        image = PREVIEW_FRONTEND
+        with patch.object(
+            lifecycle.Commands,
+            "run",
+            side_effect=lifecycle.LifecycleError("token unavailable"),
+        ), patch.object(lifecycle.urllib.request, "build_opener") as build_opener:
+            with self.assertRaises(lifecycle.LifecycleError):
+                lifecycle._read_registry_manifest(image)
+            build_opener.assert_not_called()
+
+        with patch.object(lifecycle.Commands, "run", return_value=b"token"), patch.object(
+            lifecycle.urllib.request,
+            "build_opener",
+            side_effect=urllib.error.URLError("registry unavailable"),
+        ):
+            with self.assertRaises(lifecycle.LifecycleError):
+                lifecycle._read_registry_manifest(image)
+
+        opener = Mock()
+        opener.open.side_effect = urllib.error.HTTPError(
+            "https://us-east1-docker.pkg.dev/",
+            401,
+            "unauthorized",
+            {},
+            None,
+        )
+        with patch.object(lifecycle.Commands, "run", return_value=b"token"), patch.object(
+            lifecycle.urllib.request, "build_opener", return_value=opener
+        ):
+            with self.assertRaises(lifecycle.LifecycleError):
+                lifecycle._read_registry_manifest(image)
+
     def test_preview_verification_checks_the_actual_nested_serving_revision(self):
         service_name = "hh-web-pr-41-frontend"
         url = "https://service-1234567890-ue.a.run.app"
@@ -533,20 +676,35 @@ class StagingAndTerraformTests(unittest.TestCase):
             "spec": {"containers": [{"image": PREVIEW_FRONTEND}]},
             "status": {"conditions": [{"type": "Ready", "status": "True"}]},
         }
-        self.assertEqual(
-            lifecycle.verify_serving_revision(
-                service, revision, service_name, PREVIEW_FRONTEND
-            ),
-            (PREVIEW_FRONTEND, url),
-        )
+        single_manifest = {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        }
+        with patch.object(
+            lifecycle,
+            "_read_registry_manifest",
+            return_value=(single_manifest["mediaType"], single_manifest),
+        ) as read_manifest:
+            self.assertEqual(
+                lifecycle.verify_serving_revision(
+                    service, revision, service_name, PREVIEW_FRONTEND
+                ),
+                (PREVIEW_FRONTEND, url),
+            )
+        read_manifest.assert_called_once_with(PREVIEW_FRONTEND)
         deterministic_service = copy.deepcopy(service)
         deterministic_service["status"]["url"] = deterministic_url
-        self.assertEqual(
-            lifecycle.verify_serving_revision(
-                deterministic_service, revision, service_name, PREVIEW_FRONTEND
-            ),
-            (PREVIEW_FRONTEND, deterministic_url),
-        )
+        with patch.object(
+            lifecycle,
+            "_read_registry_manifest",
+            return_value=(single_manifest["mediaType"], single_manifest),
+        ):
+            self.assertEqual(
+                lifecycle.verify_serving_revision(
+                    deterministic_service, revision, service_name, PREVIEW_FRONTEND
+                ),
+                (PREVIEW_FRONTEND, deterministic_url),
+            )
         invalid_cases = []
         old_revision_traffic = copy.deepcopy(service)
         old_revision_traffic["status"]["traffic"][0]["revisionName"] = (
@@ -589,6 +747,10 @@ class StagingAndTerraformTests(unittest.TestCase):
             with self.subTest(
                 service=candidate_service["status"],
                 revision=candidate_revision["status"],
+            ), patch.object(
+                lifecycle,
+                "_read_registry_manifest",
+                return_value=(single_manifest["mediaType"], single_manifest),
             ), self.assertRaises(lifecycle.LifecycleError):
                 lifecycle.verify_serving_revision(
                     candidate_service,
@@ -596,6 +758,127 @@ class StagingAndTerraformTests(unittest.TestCase):
                     service_name,
                     PREVIEW_FRONTEND,
                 )
+
+    def test_preview_accepts_only_the_verified_amd64_child_of_the_frozen_index(self):
+        child_digest = "sha256:" + "d" * 64
+        image_index = {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "manifests": [
+                {
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": child_digest,
+                    "platform": {"architecture": "amd64", "os": "linux"},
+                },
+                {
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": "sha256:" + "e" * 64,
+                    "platform": {"architecture": "arm64", "os": "linux"},
+                },
+            ],
+        }
+        manifest = json.dumps(image_index, separators=(",", ":"), sort_keys=True).encode()
+        index_digest = "sha256:" + hashlib.sha256(manifest).hexdigest()
+        expected_image = f"{PREVIEW_FRONTEND.rsplit('@', 1)[0]}@{index_digest}"
+        actual_image = f"{PREVIEW_FRONTEND.rsplit('@', 1)[0]}@{child_digest}"
+        revision_name = "hh-web-pr-84-frontend-00001-abc"
+        service = {
+            "metadata": {"name": "hh-web-pr-84-frontend"},
+            "status": {
+                "conditions": [{"type": "Ready", "status": "True"}],
+                "latestCreatedRevisionName": revision_name,
+                "latestReadyRevisionName": revision_name,
+                "traffic": [{"revisionName": revision_name, "percent": 100}],
+                "url": "https://hh-web-pr-84-frontend-1001419903197.us-east1.run.app",
+            },
+        }
+        revision = {
+            "metadata": {"name": revision_name},
+            "spec": {"containers": [{"image": actual_image}]},
+            "status": {"conditions": [{"type": "Ready", "status": "True"}]},
+        }
+        registry_index = ("application/vnd.oci.image.index.v1+json", image_index)
+        with patch.object(
+            lifecycle, "_read_registry_manifest", return_value=registry_index
+        ) as read_index:
+            self.assertEqual(
+                lifecycle.verify_serving_revision(
+                    service, revision, "hh-web-pr-84-frontend", expected_image
+                )[0],
+                actual_image,
+            )
+        read_index.assert_called_once_with(expected_image)
+
+        invalid_images = (
+            f"{PREVIEW_FRONTEND.rsplit('@', 1)[0]}@sha256:{'f' * 64}",
+            f"{PREVIEW_ENGINE.rsplit('@', 1)[0]}@{child_digest}",
+        )
+        for invalid_image in invalid_images:
+            invalid_revision = copy.deepcopy(revision)
+            invalid_revision["spec"]["containers"][0]["image"] = invalid_image
+            with self.subTest(image=invalid_image), patch.object(
+                lifecycle, "_read_registry_manifest", return_value=registry_index
+            ), self.assertRaises(lifecycle.LifecycleError):
+                lifecycle.verify_serving_revision(
+                    service,
+                    invalid_revision,
+                    "hh-web-pr-84-frontend",
+                    expected_image,
+                )
+
+        exact_index_revision = copy.deepcopy(revision)
+        exact_index_revision["spec"]["containers"][0]["image"] = expected_image
+        with patch.object(
+            lifecycle, "_read_registry_manifest", return_value=registry_index
+        ), self.assertRaises(lifecycle.LifecycleError):
+            lifecycle.verify_serving_revision(
+                service,
+                exact_index_revision,
+                "hh-web-pr-84-frontend",
+                expected_image,
+            )
+
+        duplicate_child_index = copy.deepcopy(image_index)
+        duplicate_child_index["manifests"].append(
+            copy.deepcopy(duplicate_child_index["manifests"][0])
+        )
+        with patch.object(
+            lifecycle,
+            "_read_registry_manifest",
+            return_value=(registry_index[0], duplicate_child_index),
+        ), self.assertRaises(lifecycle.LifecycleError):
+            lifecycle.verify_serving_revision(
+                service, revision, "hh-web-pr-84-frontend", expected_image
+            )
+
+        wrong_platform_index = copy.deepcopy(image_index)
+        wrong_platform_index["manifests"][0]["platform"] = {
+            "architecture": "arm64",
+            "os": "linux",
+        }
+        wrong_platform_manifest = json.dumps(
+            wrong_platform_index, separators=(",", ":"), sort_keys=True
+        ).encode()
+        wrong_platform_digest = (
+            "sha256:" + hashlib.sha256(wrong_platform_manifest).hexdigest()
+        )
+        wrong_platform_expected = (
+            f"{PREVIEW_FRONTEND.rsplit('@', 1)[0]}@{wrong_platform_digest}"
+        )
+        with patch.object(
+            lifecycle,
+            "_read_registry_manifest",
+            return_value=(
+                "application/vnd.oci.image.index.v1+json",
+                wrong_platform_index,
+            ),
+        ), self.assertRaises(lifecycle.LifecycleError):
+            lifecycle.verify_serving_revision(
+                service,
+                revision,
+                "hh-web-pr-84-frontend",
+                wrong_platform_expected,
+            )
 
     def test_database_provisioner_is_resolved_from_fixed_service_identity(self):
         service = {

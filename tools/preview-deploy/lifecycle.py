@@ -54,6 +54,14 @@ PREVIEW_ENGINE_REPOSITORY = (
 PREVIEW_FRONTEND_REPOSITORY = (
     "us-east1-docker.pkg.dev/hh-preview-458395246135/haunted-halls-preview/frontend"
 )
+OCI_INDEX_MEDIA_TYPES = {
+    "application/vnd.oci.image.index.v1+json",
+    "application/vnd.docker.distribution.manifest.list.v2+json",
+}
+OCI_IMAGE_MEDIA_TYPES = {
+    "application/vnd.oci.image.manifest.v1+json",
+    "application/vnd.docker.distribution.manifest.v2+json",
+}
 STATE_BUCKET = "hh-preview-458395246135-per-pr-tf-state"
 DEPLOYER = "hh-preview-deployer@hh-preview-458395246135.iam.gserviceaccount.com"
 SECRET_WORKFLOW = "preview-secret-prepare.yml"
@@ -279,6 +287,102 @@ def _cloud_run_url(value: object) -> str:
     return value.rstrip("/")
 
 
+def _read_registry_manifest(image: str) -> tuple[str, dict[str, Any]]:
+    repository, separator, digest = image.rpartition("@")
+    _expect(
+        separator == "@"
+        and repository in {PREVIEW_FRONTEND_REPOSITORY, PREVIEW_ENGINE_REPOSITORY}
+        and DIGEST_RE.fullmatch(digest) is not None,
+        "The frozen preview image reference is invalid.",
+    )
+    try:
+        token = Commands.run(
+            ["gcloud", "auth", "print-access-token"],
+            label="Artifact Registry manifest authentication",
+            timeout=30,
+        ).decode("ascii", errors="strict").strip()
+    except UnicodeDecodeError:
+        raise LifecycleError("Artifact Registry manifest authentication is unavailable.") from None
+    _expect(
+        bool(token) and all(33 <= ord(character) <= 126 for character in token),
+        "Artifact Registry manifest authentication is unavailable.",
+    )
+    path = repository.removeprefix("us-east1-docker.pkg.dev/")
+    accept = ", ".join(sorted(OCI_INDEX_MEDIA_TYPES | OCI_IMAGE_MEDIA_TYPES))
+    request = urllib.request.Request(
+        f"https://us-east1-docker.pkg.dev/v2/{path}/manifests/{digest}",
+        headers={"Authorization": f"Bearer {token}", "Accept": accept},
+    )
+    try:
+        opener = urllib.request.build_opener(NoRedirect)
+        with opener.open(request, timeout=30) as response:
+            body = response.read(1_048_577)
+            content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            registry_digest = response.headers.get("Docker-Content-Digest", "")
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise LifecycleError("The frozen preview image manifest could not be verified.") from None
+    _expect(
+        len(body) <= 1_048_576,
+        "The frozen preview image manifest is too large to verify.",
+    )
+    content_type = content_type.split(";", 1)[0].strip().lower()
+    _expect(
+        content_type in OCI_INDEX_MEDIA_TYPES | OCI_IMAGE_MEDIA_TYPES
+        and registry_digest == digest
+        and hashlib.sha256(body).hexdigest() == digest.removeprefix("sha256:"),
+        "The frozen preview image manifest digest or media type is invalid.",
+    )
+    try:
+        manifest = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        raise LifecycleError("The frozen preview image manifest is malformed.") from None
+    _expect(
+        isinstance(manifest, dict)
+        and manifest.get("schemaVersion") == 2
+        and manifest.get("mediaType") == content_type,
+        "The frozen preview image manifest metadata is invalid.",
+    )
+    return content_type, manifest
+
+
+def _serving_image_matches(expected_image: str, actual_image: str) -> bool:
+    expected_repository, expected_separator, expected_digest = expected_image.rpartition("@")
+    actual_repository, actual_separator, actual_digest = actual_image.rpartition("@")
+    if (
+        expected_separator != "@"
+        or actual_separator != "@"
+        or expected_repository != actual_repository
+        or expected_repository
+        not in {PREVIEW_FRONTEND_REPOSITORY, PREVIEW_ENGINE_REPOSITORY}
+        or DIGEST_RE.fullmatch(expected_digest) is None
+        or DIGEST_RE.fullmatch(actual_digest) is None
+    ):
+        return False
+    content_type, manifest = _read_registry_manifest(expected_image)
+    if expected_image == actual_image:
+        return content_type in OCI_IMAGE_MEDIA_TYPES
+    if content_type not in OCI_INDEX_MEDIA_TYPES:
+        return False
+    if (
+        not isinstance(manifest.get("manifests"), list)
+    ):
+        return False
+    matching_children = []
+    for descriptor in manifest["manifests"]:
+        if not isinstance(descriptor, dict):
+            continue
+        platform = descriptor.get("platform")
+        if (
+            descriptor.get("digest") == actual_digest
+            and descriptor.get("mediaType") in OCI_IMAGE_MEDIA_TYPES
+            and isinstance(platform, dict)
+            and platform.get("architecture") == "amd64"
+            and platform.get("os") == "linux"
+        ):
+            matching_children.append(descriptor)
+    return len(matching_children) == 1
+
+
 def verify_serving_revision(
     service: object,
     revision: object,
@@ -350,7 +454,7 @@ def verify_serving_revision(
     image = containers[0]["image"]
     if expected_image is not None:
         _expect(
-            image == expected_image,
+            _serving_image_matches(expected_image, image),
             "Deployed serving revision image differs from its frozen digest.",
         )
     url = _cloud_run_url(service_status.get("url") or service.get("uri"))
