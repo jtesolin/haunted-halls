@@ -287,7 +287,7 @@ def _cloud_run_url(value: object) -> str:
     return value.rstrip("/")
 
 
-def _read_image_index(image: str) -> tuple[str, str, bytes]:
+def _read_registry_manifest(image: str) -> tuple[str, dict[str, Any]]:
     repository, separator, digest = image.rpartition("@")
     _expect(
         separator == "@"
@@ -308,7 +308,7 @@ def _read_image_index(image: str) -> tuple[str, str, bytes]:
         "Artifact Registry manifest authentication is unavailable.",
     )
     path = repository.removeprefix("us-east1-docker.pkg.dev/")
-    accept = ", ".join(sorted(OCI_INDEX_MEDIA_TYPES))
+    accept = ", ".join(sorted(OCI_INDEX_MEDIA_TYPES | OCI_IMAGE_MEDIA_TYPES))
     request = urllib.request.Request(
         f"https://us-east1-docker.pkg.dev/v2/{path}/manifests/{digest}",
         headers={"Authorization": f"Bearer {token}", "Accept": accept},
@@ -320,17 +320,32 @@ def _read_image_index(image: str) -> tuple[str, str, bytes]:
             content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
             registry_digest = response.headers.get("Docker-Content-Digest", "")
     except (urllib.error.URLError, TimeoutError, OSError):
-        raise LifecycleError("The frozen preview image index could not be verified.") from None
+        raise LifecycleError("The frozen preview image manifest could not be verified.") from None
     _expect(
         len(body) <= 1_048_576,
-        "The frozen preview image index is too large to verify.",
+        "The frozen preview image manifest is too large to verify.",
     )
-    return content_type, registry_digest, body
+    content_type = content_type.split(";", 1)[0].strip().lower()
+    _expect(
+        content_type in OCI_INDEX_MEDIA_TYPES | OCI_IMAGE_MEDIA_TYPES
+        and registry_digest == digest
+        and hashlib.sha256(body).hexdigest() == digest.removeprefix("sha256:"),
+        "The frozen preview image manifest digest or media type is invalid.",
+    )
+    try:
+        manifest = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        raise LifecycleError("The frozen preview image manifest is malformed.") from None
+    _expect(
+        isinstance(manifest, dict)
+        and manifest.get("schemaVersion") == 2
+        and manifest.get("mediaType") == content_type,
+        "The frozen preview image manifest metadata is invalid.",
+    )
+    return content_type, manifest
 
 
 def _serving_image_matches(expected_image: str, actual_image: str) -> bool:
-    if expected_image == actual_image:
-        return True
     expected_repository, expected_separator, expected_digest = expected_image.rpartition("@")
     actual_repository, actual_separator, actual_digest = actual_image.rpartition("@")
     if (
@@ -343,26 +358,17 @@ def _serving_image_matches(expected_image: str, actual_image: str) -> bool:
         or DIGEST_RE.fullmatch(actual_digest) is None
     ):
         return False
-    content_type, registry_digest, body = _read_image_index(expected_image)
-    if (
-        content_type not in OCI_INDEX_MEDIA_TYPES
-        or registry_digest != expected_digest
-        or hashlib.sha256(body).hexdigest() != expected_digest.removeprefix("sha256:")
-    ):
-        return False
-    try:
-        index = json.loads(body)
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+    content_type, manifest = _read_registry_manifest(expected_image)
+    if expected_image == actual_image:
+        return content_type in OCI_IMAGE_MEDIA_TYPES
+    if content_type not in OCI_INDEX_MEDIA_TYPES:
         return False
     if (
-        not isinstance(index, dict)
-        or index.get("schemaVersion") != 2
-        or index.get("mediaType") != content_type
-        or not isinstance(index.get("manifests"), list)
+        not isinstance(manifest.get("manifests"), list)
     ):
         return False
     matching_children = []
-    for descriptor in index["manifests"]:
+    for descriptor in manifest["manifests"]:
         if not isinstance(descriptor, dict):
             continue
         platform = descriptor.get("platform")
