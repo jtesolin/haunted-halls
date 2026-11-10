@@ -86,7 +86,7 @@ describe("CharacterSheetPanel", () => {
   it("shows an empty state without fetching when no character is available", () => {
     render(<CharacterSheetPanel characterId={null} closeLabel="Collapse sidebar" onClose={vi.fn()} />);
 
-    expect(screen.getByText(/No character is available for this campaign yet/)).toBeInTheDocument();
+    expect(screen.getByText(/This campaign has no character yet/)).toBeInTheDocument();
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
@@ -216,7 +216,7 @@ describe("CharacterSheetPanel", () => {
 
     rerender(<CharacterSheetPanel characterId={null} closeLabel="Collapse sidebar" onClose={vi.fn()} />);
     expect(screen.queryByText("Ada Vale")).not.toBeInTheDocument();
-    expect(screen.getByText(/No character is available for this campaign yet/)).toBeInTheDocument();
+    expect(screen.getByText(/This campaign has no character yet/)).toBeInTheDocument();
   });
 
   it("does not show the previous error while a retry is loading", async () => {

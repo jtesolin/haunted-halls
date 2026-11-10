@@ -62,7 +62,7 @@ export default function CampaignToolbar({
               aria-label="Open navigation menu"
               aria-haspopup="dialog"
               aria-expanded={mobileView === "menu"}
-              aria-controls="mobile-nav-menu"
+              aria-controls={mobileView === "menu" ? "mobile-nav-menu" : undefined}
               title="Open navigation menu"
               className={`${RAIL_BUTTON_CLASS} ${RAIL_IDLE_CLASS}`}
             >
@@ -137,7 +137,7 @@ export default function CampaignToolbar({
               onClick={() => onToggleDesktopPanel("campaigns")}
               aria-label="Campaigns"
               aria-expanded={desktopPanel === "campaigns"}
-              aria-controls="campaign-sidebar"
+              aria-controls={desktopPanel === "campaigns" ? "campaign-sidebar" : undefined}
               title="Campaigns"
               className={`${RAIL_BUTTON_CLASS} ${desktopPanel === "campaigns" ? RAIL_SELECTED_CLASS : RAIL_IDLE_CLASS}`}
             >
@@ -150,7 +150,7 @@ export default function CampaignToolbar({
               disabled={!characterEnabled}
               aria-label="Character Sheet"
               aria-expanded={desktopPanel === "character"}
-              aria-controls="character-sheet-panel"
+              aria-controls={desktopPanel === "character" ? "character-sheet-panel" : undefined}
               title={characterEnabled ? "Character Sheet" : CHARACTER_UNAVAILABLE_HINT}
               className={`${RAIL_BUTTON_CLASS} ${desktopPanel === "character" ? RAIL_SELECTED_CLASS : RAIL_IDLE_CLASS}`}
             >

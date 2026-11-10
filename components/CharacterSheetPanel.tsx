@@ -147,7 +147,7 @@ export default function CharacterSheetPanel({
         <div className="min-h-0 flex-1 overflow-y-auto pr-1 custom-scrollbar" aria-live="polite" aria-busy={Boolean(characterId) && result === null}>
           {!characterId ? (
             <p className="text-sm text-zinc-400">
-              No character is available for this campaign yet. Send a command to begin your adventure.
+              This campaign has no character yet.
             </p>
           ) : result === null ? (
             <p className="animate-pulse text-sm text-zinc-400">Loading character...</p>

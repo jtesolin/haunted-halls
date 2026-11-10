@@ -21,7 +21,11 @@ const CHARACTER = {
 
 type Campaigns = { campaign_id: string; name: string; last_message: string | null; character_id: string | null }[];
 
-function mockBackend(campaigns: Campaigns) {
+function mockBackend(
+  campaigns: Campaigns,
+  // Override the detail response's character_id: a value, null, or "omit" to leave the field out.
+  detailCharacterId?: string | null | "omit"
+) {
   const characterFetches: string[] = [];
   global.fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -46,10 +50,16 @@ function mockBackend(campaigns: Campaigns) {
     if (url.startsWith("/api/campaign/")) {
       const id = decodeURIComponent(url.split("/").pop()!);
       const campaign = campaigns.find((entry) => entry.campaign_id === id)!;
+      const detailCampaign: Record<string, unknown> = { ...campaign };
+      if (detailCharacterId === "omit") {
+        delete detailCampaign.character_id;
+      } else if (detailCharacterId !== undefined) {
+        detailCampaign.character_id = detailCharacterId;
+      }
       return Promise.resolve(
         new Response(
           JSON.stringify({
-            ...campaign,
+            ...detailCampaign,
             description: null,
             truncated: false,
             messages: [{ turn_id: `t-${id}`, role: "assistant", content: `Welcome to ${campaign.name}`, created_at: "2026-01-01" }],
@@ -195,6 +205,53 @@ describe("unified sidebar panel navigation", () => {
   describe("desktop panel state edge cases", () => {
     beforeEach(() => setMobile(false));
 
+    it("clears a stored character id when the campaign detail reports an explicit null", async () => {
+      const { characterFetches } = mockBackend(WITH_CHARACTER, null);
+      render(<Home />);
+      await screen.findByText("Welcome to Crypt");
+
+      await waitFor(() => expect(screen.getByRole("button", { name: "Character Sheet" })).toBeDisabled());
+      expect(characterFetches).toEqual([]);
+    });
+
+    it("keeps the stored character id when the campaign detail omits the field", async () => {
+      mockBackend(WITH_CHARACTER, "omit");
+      render(<Home />);
+      await screen.findByText("Welcome to Crypt");
+
+      expect(screen.getByRole("button", { name: "Character Sheet" })).toBeEnabled();
+    });
+
+    it("updates the stored character id when the campaign detail reports a different id", async () => {
+      const { characterFetches } = mockBackend(WITH_CHARACTER, "char-9");
+      render(<Home />);
+      await screen.findByText("Welcome to Crypt");
+
+      fireEvent.click(screen.getByRole("button", { name: "Character Sheet" }));
+      await screen.findByText("Ada Vale");
+      expect(characterFetches).toEqual(["/api/character/char-9"]);
+    });
+
+    it("only sets aria-controls on a rail button while its panel is mounted", async () => {
+      mockBackend(WITH_CHARACTER);
+      render(<Home />);
+      await screen.findByText("Welcome to Crypt");
+      const campaignsButton = screen.getByRole("button", { name: "Campaigns" });
+      const characterButton = screen.getByRole("button", { name: "Character Sheet" });
+
+      expect(campaignsButton).toHaveAttribute("aria-controls", "campaign-sidebar");
+      expect(characterButton).not.toHaveAttribute("aria-controls");
+
+      fireEvent.click(characterButton);
+      await screen.findByText("Ada Vale");
+      expect(characterButton).toHaveAttribute("aria-controls", "character-sheet-panel");
+      expect(campaignsButton).not.toHaveAttribute("aria-controls");
+
+      fireEvent.click(characterButton);
+      expect(characterButton).not.toHaveAttribute("aria-controls");
+      expect(campaignsButton).not.toHaveAttribute("aria-controls");
+    });
+
     it("keeps the Character panel usable when the active campaign changes to one without a character", async () => {
       mockBackend(WITH_CHARACTER);
       render(<Home />);
@@ -209,7 +266,7 @@ describe("unified sidebar panel navigation", () => {
       await screen.findByText("A blank page");
 
       expect(screen.queryByText("Ada Vale")).not.toBeInTheDocument();
-      expect(screen.getByText(/No character is available for this campaign yet/)).toBeInTheDocument();
+      expect(screen.getByText(/This campaign has no character yet/)).toBeInTheDocument();
       // The open panel can still be closed because its button stays enabled.
       const openCharacterButton = screen.getByRole("button", { name: "Character Sheet" });
       expect(openCharacterButton).toBeEnabled();
@@ -262,7 +319,9 @@ describe("unified sidebar panel navigation", () => {
 
       const hamburger = screen.getByRole("button", { name: "Open navigation menu" });
       await waitFor(() => expect(hamburger).toBeEnabled());
+      expect(hamburger).not.toHaveAttribute("aria-controls");
       fireEvent.click(hamburger);
+      expect(hamburger).toHaveAttribute("aria-controls", "mobile-nav-menu");
 
       const menu = screen.getByRole("dialog", { name: "Navigation menu" });
       expect(hamburger).toHaveAttribute("aria-expanded", "true");

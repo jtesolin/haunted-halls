@@ -7,6 +7,7 @@ import ChatInput from "@/components/ChatInput";
 import CampaignSidebar from "@/components/CampaignSidebar";
 import CampaignToolbar, { type NavPanel } from "@/components/CampaignToolbar";
 import CharacterSheetPanel from "@/components/CharacterSheetPanel";
+import { mergeCharacterId } from "@/lib/character-id";
 import ConversationView from "@/components/ConversationView";
 import type {
   CampaignDetailsResponse,
@@ -575,7 +576,7 @@ export default function Home() {
                   ...existingSession,
                   title: campaign.name || existingSession.title,
                   last_message: campaign.last_message,
-                  character_id: campaign.character_id ?? existingSession.character_id,
+                  character_id: mergeCharacterId(campaign.character_id, existingSession.character_id),
                   updated_at: existingSession.updated_at,
                   conversation_loaded: existingSession.conversation_loaded,
                 }
@@ -647,7 +648,7 @@ export default function Home() {
             ? {
                 ...session,
                 title: campaign.name || session.title,
-                character_id: campaign.character_id ?? session.character_id,
+                character_id: mergeCharacterId(campaign.character_id, session.character_id),
                 messages: conversationMessages,
                 updated_at: Date.now(),
                 conversation_loaded: true,
