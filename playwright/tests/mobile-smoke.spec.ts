@@ -13,17 +13,21 @@ test.describe("mobile smoke test", () => {
 
     await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
 
-    const openSidebarButton = page.getByRole("button", { name: "Open sidebar" });
-    await expect(openSidebarButton).toBeVisible();
+    const menuButton = page.getByRole("button", { name: "Open navigation menu" });
+    await expect(menuButton).toBeVisible();
 
-    await openSidebarButton.click();
+    await menuButton.click();
+    await expect(page.getByRole("dialog", { name: "Navigation menu" })).toBeVisible();
+    await page.getByRole("button", { name: "Campaigns" }).click();
     const sidebar = page.locator("#campaign-sidebar");
     await expect(sidebar).toBeVisible();
-    const closeSidebarButton = page.getByRole("button", { name: "Close sidebar", exact: true });
-    await expect(closeSidebarButton).toBeVisible();
+    const backButton = page.getByRole("button", { name: "Back to Conversation" });
+    await expect(backButton).toBeVisible();
 
-    await closeSidebarButton.click();
-    await expect(openSidebarButton).toBeVisible();
+    await backButton.click();
+    await expect(sidebar).toHaveCount(0);
+    await expect(menuButton).toBeVisible();
+    await expect(page.getByLabel("Enter your command")).toBeVisible();
 
     const bodyOverflow = await page.evaluate(() => {
       return document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1;

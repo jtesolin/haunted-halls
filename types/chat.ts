@@ -43,6 +43,7 @@ export interface ChatSession {
   campaign_id?: string;
   last_message?: string | null;
   updated_at: number;
+  character_id?: string | null;
   conversation_loaded: boolean;
   messages: ChatMessage[];
   is_optimistic?: boolean;
@@ -52,6 +53,7 @@ export interface CampaignSummary {
   campaign_id: string;
   name: string;
   last_message: string | null;
+  character_id?: string | null;
 }
 
 export interface CampaignMessageEntry {
@@ -67,6 +69,29 @@ export interface CampaignDetailsResponse {
   description: string | null;
   messages: CampaignMessageEntry[];
   truncated: boolean;
+  character_id?: string | null;
 }
 
 export type CreateCampaignResponse = CampaignDetailsResponse;
+
+export interface CharacterInventoryItem {
+  id: string;
+  name: string;
+  description: string;
+  quantity: number;
+}
+
+export interface CharacterAbility {
+  ability_id: string;
+  display_name: string;
+  description: string;
+  available: boolean;
+  availability_reason?: string | null;
+}
+
+export interface CharacterDetailResponse {
+  character_id: string;
+  name: string;
+  inventory: CharacterInventoryItem[];
+  abilities: CharacterAbility[];
+}

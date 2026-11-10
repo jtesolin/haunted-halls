@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { PanelLeftClose } from "lucide-react";
+import { ArrowLeft, PanelLeftClose } from "lucide-react";
 
 type SessionSummary = {
   id: string;
@@ -75,13 +75,21 @@ export default function CampaignSidebar({
                 <button
                   type="button"
                   onClick={onToggleSidebar}
-                  aria-label={isMobileViewport ? "Close sidebar" : "Collapse sidebar"}
-                  aria-expanded={isSidebarVisible}
-                  aria-controls={id}
-                  title={isMobileViewport ? "Close sidebar" : "Collapse sidebar"}
-                  className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-700/70 bg-zinc-900/20 text-zinc-400 transition-[background-color,border-color,color] duration-300 ease-in-out hover:border-zinc-500 hover:bg-zinc-900/60 hover:text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70"
+                  aria-label={isMobileViewport ? "Back to Conversation" : "Collapse sidebar"}
+                  aria-expanded={isMobileViewport ? undefined : isSidebarVisible}
+                  aria-controls={isMobileViewport ? undefined : id}
+                  title={isMobileViewport ? "Back to Conversation" : "Collapse sidebar"}
+                  autoFocus={isMobileViewport}
+                  className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-zinc-700/70 bg-zinc-900/20 px-2.5 text-xs font-semibold text-zinc-400 transition-[background-color,border-color,color] duration-300 ease-in-out hover:border-zinc-500 hover:bg-zinc-900/60 hover:text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70"
                 >
-                  <PanelLeftClose className="h-4 w-4" aria-hidden="true" />
+                  {isMobileViewport ? (
+                    <>
+                      <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+                      <span>Back</span>
+                    </>
+                  ) : (
+                    <PanelLeftClose className="h-4 w-4" aria-hidden="true" />
+                  )}
                 </button>
               ) : null}
             </div>
