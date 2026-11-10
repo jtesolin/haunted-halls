@@ -5,7 +5,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, useTransition, type 
 import { getProviders, signIn, signOut, useSession } from "next-auth/react";
 import ChatInput from "@/components/ChatInput";
 import CampaignSidebar from "@/components/CampaignSidebar";
-import CampaignToolbar from "@/components/CampaignToolbar";
+import CampaignToolbar, { type NavPanel } from "@/components/CampaignToolbar";
+import CharacterSheetPanel from "@/components/CharacterSheetPanel";
+import { mergeCharacterId } from "@/lib/character-id";
+import { useFocusTrap } from "@/components/useFocusTrap";
 import ConversationView from "@/components/ConversationView";
 import type {
   CampaignDetailsResponse,
@@ -21,7 +24,7 @@ const OPENING_LOADING_TEXT = "Loading opening...";
 const NARRATOR_LOADING_TEXT = "The narrator is responding...";
 const SIDEBAR_PREF_KEY = "haunted-halls-sidebar-collapsed";
 const SIDEBAR_WIDTH = "320px";
-const COLLAPSED_TOOLBAR_WIDTH = "64px";
+const RAIL_WIDTH = "64px";
 const MOBILE_BREAKPOINT_QUERY = "(max-width: 767px)";
 const AMBIGUOUS_RETRY_MESSAGE = "Delivery could not be confirmed. You may safely retry.";
 const REQUEST_ID_ERROR_MESSAGE = "Unable to securely prepare this message. Please try again.";
@@ -178,13 +181,15 @@ function getChatFailure(status: number, payload: unknown): ChatFailure {
 function createSession(
   title: string,
   campaignId?: string,
-  lastMessage?: string | null
+  lastMessage?: string | null,
+  characterId?: string | null
 ): ChatSession {
   return {
     id: campaignId ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     title,
     campaign_id: campaignId,
     last_message: lastMessage,
+    character_id: characterId,
     updated_at: Date.now(),
     conversation_loaded: false,
     messages: [],
@@ -261,9 +266,11 @@ export default function Home() {
   const [deletingSessionIds, setDeletingSessionIds] = useState<string[]>([]);
   const [isDeletingAllSessions, setIsDeletingAllSessions] = useState(false);
   const [isCreatingTransitionPending, startCreateTransition] = useTransition();
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  // Desktop: at most one left-side panel is open next to the icon rail (null = collapsed).
+  const [desktopPanel, setDesktopPanel] = useState<NavPanel | null>("campaigns");
+  // Mobile: at most one overlay (hamburger menu or a full-screen panel) at a time.
+  const [mobileView, setMobileView] = useState<"menu" | NavPanel | null>(null);
   const [isMobileViewport, setIsMobileViewport] = useState(false);
-  const [isMobileDrawerOpen, setIsMobileDrawerOpen] = useState(false);
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId) ?? sessions[0] ?? null,
@@ -271,7 +278,18 @@ export default function Home() {
   );
 
   const hasMessages = activeSession ? activeSession.messages.length > 0 : false;
-  const isSidebarVisible = isMobileViewport ? isMobileDrawerOpen : !isSidebarCollapsed;
+  const activeCharacterId = activeSession?.character_id ?? null;
+  const visiblePanel: NavPanel | null = isMobileViewport
+    ? mobileView === "campaigns" || mobileView === "character"
+      ? mobileView
+      : null
+    : desktopPanel;
+  const isSidebarVisible = visiblePanel === "campaigns";
+  // While a mobile menu or full-screen panel is open it is modal: background content is inert
+  // and keyboard focus stays inside the panel.
+  const isMobileOverlayOpen = isMobileViewport && mobileView !== null;
+  const mobilePanelRef = useRef<HTMLDivElement | null>(null);
+  useFocusTrap(mobilePanelRef, isMobileViewport && visiblePanel !== null);
   const isAuthLoading = authStatus === "loading";
   const isAuthenticated = authStatus === "authenticated";
   const authenticatedSessionKey = isAuthenticated
@@ -301,9 +319,9 @@ export default function Home() {
 
     const savedPreference = window.localStorage.getItem(SIDEBAR_PREF_KEY);
     if (savedPreference === "true" || savedPreference === "false") {
-      const nextValue = savedPreference === "true";
+      const isCollapsed = savedPreference === "true";
       queueMicrotask(() => {
-        setIsSidebarCollapsed(nextValue);
+        setDesktopPanel(isCollapsed ? null : "campaigns");
       });
     }
   }, []);
@@ -317,7 +335,7 @@ export default function Home() {
     const handleChange = (event: MediaQueryListEvent) => {
       setIsMobileViewport(event.matches);
       if (!event.matches) {
-        setIsMobileDrawerOpen(false);
+        setMobileView(null);
       }
     };
 
@@ -335,19 +353,19 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (!isMobileViewport || !isMobileDrawerOpen) {
+    if (!isMobileViewport || mobileView === null) {
       return;
     }
 
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setIsMobileDrawerOpen(false);
+        setMobileView(null);
       }
     };
 
     window.addEventListener("keydown", handleEscape);
     return () => window.removeEventListener("keydown", handleEscape);
-  }, [isMobileDrawerOpen, isMobileViewport]);
+  }, [mobileView, isMobileViewport]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -479,7 +497,7 @@ export default function Home() {
 
       const newestMessage = hydratedMessages[hydratedMessages.length - 1];
       const nextSession: ChatSession = {
-        ...createSession(campaign.name || fallbackTitle, campaign.campaign_id),
+        ...createSession(campaign.name || fallbackTitle, campaign.campaign_id, undefined, campaign.character_id),
         title: campaign.name || fallbackTitle,
         messages: hydratedMessages,
         last_message: newestMessage?.text ?? null,
@@ -564,11 +582,12 @@ export default function Home() {
                   ...existingSession,
                   title: campaign.name || existingSession.title,
                   last_message: campaign.last_message,
+                  character_id: mergeCharacterId(campaign.character_id, existingSession.character_id),
                   updated_at: existingSession.updated_at,
                   conversation_loaded: existingSession.conversation_loaded,
                 }
               : {
-                  ...createSession(campaign.name, campaign.campaign_id, campaign.last_message),
+                  ...createSession(campaign.name, campaign.campaign_id, campaign.last_message, campaign.character_id),
                   updated_at: now - index,
                 };
           });
@@ -635,6 +654,7 @@ export default function Home() {
             ? {
                 ...session,
                 title: campaign.name || session.title,
+                character_id: mergeCharacterId(campaign.character_id, session.character_id),
                 messages: conversationMessages,
                 updated_at: Date.now(),
                 conversation_loaded: true,
@@ -680,7 +700,7 @@ export default function Home() {
     setMessageText("");
 
     if (isMobileViewport) {
-      setIsMobileDrawerOpen(false);
+      setMobileView(null);
     }
 
     if (!selectedSession?.campaign_id) {
@@ -694,17 +714,28 @@ export default function Home() {
     await loadCampaignConversation(id, selectedSession.campaign_id);
   };
 
-  const handleSidebarToggle = () => {
+  const persistDesktopCollapsed = (panel: NavPanel | null) => {
+    try {
+      window.localStorage.setItem(SIDEBAR_PREF_KEY, String(panel === null));
+    } catch {
+      // Preference persistence is best-effort.
+    }
+  };
+
+  const handleToggleDesktopPanel = (panel: NavPanel) => {
+    const nextPanel = desktopPanel === panel ? null : panel;
+    setDesktopPanel(nextPanel);
+    persistDesktopCollapsed(nextPanel);
+  };
+
+  const handleCloseActivePanel = () => {
     if (isMobileViewport) {
-      setIsMobileDrawerOpen((current) => !current);
+      setMobileView(null);
       return;
     }
 
-    setIsSidebarCollapsed((current) => {
-      const nextValue = !current;
-      window.localStorage.setItem(SIDEBAR_PREF_KEY, String(nextValue));
-      return nextValue;
-    });
+    setDesktopPanel(null);
+    persistDesktopCollapsed(null);
   };
 
   const handleDeleteSession = async (id: string) => {
@@ -1072,70 +1103,83 @@ export default function Home() {
       <div className="h-full w-full overflow-x-hidden px-2 py-2 sm:px-6 sm:py-6 lg:px-8">
         <div
           className={`relative h-full md:grid md:min-h-0 md:transition-[grid-template-columns,gap] md:duration-300 md:ease-in-out md:motion-reduce:transition-none ${
-            isSidebarCollapsed
-              ? "md:grid-cols-[var(--collapsed-toolbar-width)_minmax(0,1fr)]"
-              : "md:grid-cols-[var(--sidebar-width)_minmax(0,1fr)]"
-          } ${isSidebarCollapsed ? "md:gap-0" : "md:gap-4"}`}
+            desktopPanel === null
+              ? "md:grid-cols-[var(--rail-width)_minmax(0,1fr)] md:gap-0"
+              : "md:grid-cols-[var(--rail-width)_var(--sidebar-width)_minmax(0,1fr)] md:gap-4"
+          }`}
           style={
             {
               "--sidebar-width": SIDEBAR_WIDTH,
-              "--collapsed-toolbar-width": COLLAPSED_TOOLBAR_WIDTH,
+              "--rail-width": RAIL_WIDTH,
             } as CSSProperties
           }
         >
           <CampaignToolbar
-            isCollapsed={isSidebarCollapsed}
             isMobileViewport={isMobileViewport}
-            isSidebarVisible={isSidebarVisible}
-            onToggleSidebar={handleSidebarToggle}
-            onExpandSidebar={handleSidebarToggle}
+            desktopPanel={desktopPanel}
+            mobileView={mobileView}
+            isCharacterAvailable={Boolean(activeCharacterId)}
+            onToggleDesktopPanel={handleToggleDesktopPanel}
+            onOpenMobileMenu={() => setMobileView("menu")}
+            onSelectMobilePanel={setMobileView}
+            onCloseMobile={() => setMobileView(null)}
             onNewSession={handleNewSession}
             isNewSessionDisabled={
               disableGameActions || isCreatingSession || isCreatingTransitionPending || isDeletingAllSessions
             }
           />
 
-          <button
-            type="button"
-            aria-label="Close sidebar backdrop"
-            onClick={() => setIsMobileDrawerOpen(false)}
-            className={`absolute inset-0 z-20 bg-black/45 transition-opacity duration-300 ease-in-out md:hidden motion-reduce:transition-none ${
-              isMobileDrawerOpen ? "opacity-100" : "pointer-events-none opacity-0"
-            }`}
-          />
+          {visiblePanel !== null ? (
+            <div
+              ref={mobilePanelRef}
+              {...(isMobileViewport
+                ? {
+                    role: "dialog",
+                    "aria-modal": true,
+                    "aria-label": visiblePanel === "campaigns" ? "Campaigns" : "Character Sheet",
+                  }
+                : {})}
+              className={
+                isMobileViewport
+                  ? "fixed inset-0 z-50 bg-[#09090c] p-2"
+                  : "relative z-auto h-full min-h-0 min-w-0"
+              }
+            >
+              {visiblePanel === "campaigns" ? (
+                <CampaignSidebar
+                  id="campaign-sidebar"
+                  sessions={sessions}
+                  activeSessionId={activeSession?.id ?? ""}
+                  onSelectSession={handleSelectSession}
+                  onNewSession={handleNewSession}
+                  onDeleteSession={handleDeleteSession}
+                  onDeleteAllSessions={handleDeleteAllSessions}
+                  isCreating={isCreatingSession || isCreatingTransitionPending}
+                  isDeletingAll={isDeletingAllSessions}
+                  deletingSessionIds={deletingSessionIds}
+                  isActionDisabled={disableGameActions}
+                  onToggleSidebar={handleCloseActivePanel}
+                  isMobileViewport={isMobileViewport}
+                  isSidebarVisible={isSidebarVisible}
+                  className="min-w-0 overflow-hidden"
+                />
+              ) : (
+                <CharacterSheetPanel
+                  id="character-sheet-panel"
+                  characterId={activeCharacterId}
+                  closeLabel={isMobileViewport ? "Back to Conversation" : "Collapse sidebar"}
+                  closeText={isMobileViewport ? "Back" : undefined}
+                  autoFocusClose={isMobileViewport}
+                  onClose={handleCloseActivePanel}
+                />
+              )}
+            </div>
+          ) : null}
 
-          <CampaignSidebar
-            id="campaign-sidebar"
-            sessions={sessions}
-            activeSessionId={activeSession?.id ?? ""}
-            onSelectSession={handleSelectSession}
-            onNewSession={handleNewSession}
-            onDeleteSession={handleDeleteSession}
-            onDeleteAllSessions={handleDeleteAllSessions}
-            isCreating={isCreatingSession || isCreatingTransitionPending}
-            isDeletingAll={isDeletingAllSessions}
-            deletingSessionIds={deletingSessionIds}
-            isActionDisabled={disableGameActions}
-            onToggleSidebar={handleSidebarToggle}
-            isMobileViewport={isMobileViewport}
-            isSidebarVisible={isSidebarVisible}
-            className={`min-w-0 overflow-hidden ${
-              isSidebarCollapsed ? "md:pointer-events-none" : "md:pointer-events-auto"
-            } ${
-              isMobileDrawerOpen ? "pointer-events-auto" : "pointer-events-none md:pointer-events-auto"
-            } absolute inset-y-0 left-0 z-30 w-[min(var(--sidebar-width),calc(100%-0.5rem))] max-w-none transform-gpu transition-transform duration-300 ease-in-out motion-reduce:transition-none ${
-              isMobileDrawerOpen ? "translate-x-0" : "-translate-x-[calc(100%+1rem)]"
-            } ${
-              isSidebarCollapsed
-                ? "md:absolute md:inset-y-0 md:left-0 md:z-30 md:w-[var(--sidebar-width)] md:-translate-x-[calc(100%+1rem)]"
-                : "md:relative md:inset-auto md:z-auto md:w-auto md:translate-x-0"
-            }`}
-            contentClassName={`${
-              isSidebarCollapsed ? "md:pointer-events-none md:-translate-x-3 md:opacity-0" : "md:translate-x-0 md:opacity-100"
-            }`}
-          />
-
-          <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-2 shadow-2xl shadow-black/20 md:p-6">
+          <main
+            inert={isMobileOverlayOpen}
+            className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-2 shadow-2xl shadow-black/20 md:p-6"
+          >
             <header className="mb-2 ml-12 flex h-9 min-w-0 items-center justify-between gap-2 rounded-2xl border border-white/10 bg-white/5 px-2 md:mb-3 md:ml-0 md:h-auto md:gap-4 md:rounded-2xl md:p-3 md:pl-4">
               <div className="min-w-0 flex-1">
                 <h1 className="truncate text-lg font-semibold text-white md:mt-0.5 md:text-xl">Haunted Halls</h1>
