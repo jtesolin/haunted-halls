@@ -102,6 +102,14 @@ describe("CharacterSheetPanel", () => {
     expect(global.fetch).toHaveBeenCalledTimes(2);
   });
 
+  it("maps a 401 to a sign-in message", async () => {
+    vi.mocked(global.fetch).mockImplementationOnce(() => jsonResponse({ error: "Authentication required" }, 401));
+    render(<CharacterSheetPanel characterId="char-1" closeLabel="Collapse sidebar" onClose={vi.fn()} />);
+
+    expect(await screen.findByText("Sign in again to view this character.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
   it("maps 404 and network failures to distinct messages", async () => {
     vi.mocked(global.fetch).mockImplementationOnce(() => jsonResponse({ error: "nope" }, 404));
     const { unmount } = render(
