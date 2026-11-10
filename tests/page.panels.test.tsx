@@ -23,8 +23,23 @@ type Campaigns = { campaign_id: string; name: string; last_message: string | nul
 
 function mockBackend(campaigns: Campaigns) {
   const characterFetches: string[] = [];
-  global.fetch = vi.fn((input: RequestInfo | URL) => {
+  global.fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
+    if (url === "/api/campaign" && init?.method === "POST") {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            campaign_id: "c-new",
+            name: "Fresh start",
+            description: null,
+            truncated: false,
+            character_id: null,
+            messages: [{ turn_id: "t-new", role: "assistant", content: "A blank page", created_at: "2026-01-02" }],
+          }),
+          { status: 201 }
+        )
+      );
+    }
     if (url === "/api/campaigns") {
       return Promise.resolve(new Response(JSON.stringify(campaigns), { status: 200 }));
     }
@@ -177,6 +192,61 @@ describe("unified sidebar panel navigation", () => {
     });
   });
 
+  describe("desktop panel state edge cases", () => {
+    beforeEach(() => setMobile(false));
+
+    it("keeps the Character panel usable when the active campaign changes to one without a character", async () => {
+      mockBackend(WITH_CHARACTER);
+      render(<Home />);
+      await screen.findByText("Welcome to Crypt");
+      const characterButton = screen.getByRole("button", { name: "Character Sheet" });
+      await waitFor(() => expect(characterButton).toBeEnabled());
+      fireEvent.click(characterButton);
+      await screen.findByText("Ada Vale");
+
+      // Creating a campaign from the rail activates a campaign whose character_id is null.
+      fireEvent.click(screen.getByRole("button", { name: "Create new campaign" }));
+      await screen.findByText("A blank page");
+
+      expect(screen.queryByText("Ada Vale")).not.toBeInTheDocument();
+      expect(screen.getByText(/No character is available for this campaign yet/)).toBeInTheDocument();
+      // The open panel can still be closed because its button stays enabled.
+      const openCharacterButton = screen.getByRole("button", { name: "Character Sheet" });
+      expect(openCharacterButton).toBeEnabled();
+      fireEvent.click(openCharacterButton);
+      expect(document.getElementById("character-sheet-panel")).not.toBeInTheDocument();
+      // Once closed, the entry is disabled for the character-less campaign.
+      expect(screen.getByRole("button", { name: "Character Sheet" })).toBeDisabled();
+    });
+
+    it("restores a saved collapsed rail preference on load", async () => {
+      window.localStorage.setItem("haunted-halls-sidebar-collapsed", "true");
+      mockBackend(WITH_CHARACTER);
+      render(<Home />);
+
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Campaigns" })).toHaveAttribute("aria-expanded", "false")
+      );
+      expect(document.getElementById("campaign-sidebar")).not.toBeInTheDocument();
+      expect(await screen.findByText("Welcome to Crypt")).toBeInTheDocument();
+    });
+
+    it("keeps Campaigns open for an explicit expanded or unrecognized saved preference", async () => {
+      window.localStorage.setItem("haunted-halls-sidebar-collapsed", "false");
+      mockBackend(WITH_CHARACTER);
+      const { unmount } = render(<Home />);
+      await screen.findByText("Welcome to Crypt");
+      expect(screen.getByRole("button", { name: "Campaigns" })).toHaveAttribute("aria-expanded", "true");
+      unmount();
+
+      window.localStorage.setItem("haunted-halls-sidebar-collapsed", "garbage");
+      mockBackend(WITH_CHARACTER);
+      render(<Home />);
+      await screen.findByText("Welcome to Crypt");
+      expect(screen.getByRole("button", { name: "Campaigns" })).toHaveAttribute("aria-expanded", "true");
+    });
+  });
+
   describe("mobile", () => {
     beforeEach(() => setMobile(true));
 
@@ -229,6 +299,21 @@ describe("unified sidebar panel navigation", () => {
       fireEvent.click(screen.getByRole("button", { name: "Open navigation menu" }));
       fireEvent.keyDown(window, { key: "Escape" });
       expect(screen.queryByRole("dialog", { name: "Navigation menu" })).not.toBeInTheDocument();
+    });
+
+    it("closes the Character panel on Escape and returns focus to the hamburger", async () => {
+      mockBackend(WITH_CHARACTER);
+      render(<Home />);
+      await screen.findByText("Welcome to Crypt");
+
+      fireEvent.click(screen.getByRole("button", { name: "Open navigation menu" }));
+      fireEvent.click(screen.getByRole("button", { name: "Character Sheet" }));
+      await screen.findByText("Ada Vale");
+
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(document.getElementById("character-sheet-panel")).not.toBeInTheDocument();
+      expect(screen.getByText("Welcome to Crypt")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Open navigation menu" })).toHaveFocus();
     });
 
     it("selecting a campaign returns to the conversation, and the draft survives the round trip", async () => {

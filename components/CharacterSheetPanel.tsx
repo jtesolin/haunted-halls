@@ -4,10 +4,12 @@ import { useEffect, useId, useState, type ReactNode } from "react";
 import { ArrowLeft, ChevronDown, Package, Sparkles, User, X } from "lucide-react";
 import type { CharacterDetailResponse } from "@/types/chat";
 
-type LoadState =
-  | { status: "loading" }
+type LoadResult =
   | { status: "error"; message: string }
   | { status: "loaded"; character: CharacterDetailResponse };
+
+// A result is only valid for the exact request (character + attempt) that produced it.
+type LoadState = { requestKey: string; result: LoadResult } | null;
 
 function errorMessageForStatus(status: number) {
   if (status === 401) {
@@ -68,8 +70,11 @@ export default function CharacterSheetPanel({
   className?: string;
   autoFocusClose?: boolean;
 }) {
-  const [state, setState] = useState<LoadState>({ status: "loading" });
+  const [loadState, setLoadState] = useState<LoadState>(null);
   const [attempt, setAttempt] = useState(0);
+  const requestKey = `${characterId ?? ""}:${attempt}`;
+  // Derived during render so a changed character or a retry never shows the previous result.
+  const result: LoadResult | null = loadState?.requestKey === requestKey ? loadState.result : null;
 
   // The panel is mounted only while open, so every open (and every retry or
   // character change) fetches fresh details from the engine via the BFF route.
@@ -79,11 +84,7 @@ export default function CharacterSheetPanel({
     }
 
     const controller = new AbortController();
-    queueMicrotask(() => {
-      if (!controller.signal.aborted) {
-        setState({ status: "loading" });
-      }
-    });
+    const settle = (next: LoadResult) => setLoadState({ requestKey, result: next });
 
     void (async () => {
       try {
@@ -95,7 +96,7 @@ export default function CharacterSheetPanel({
           return;
         }
         if (!response.ok) {
-          setState({ status: "error", message: errorMessageForStatus(response.status) });
+          settle({ status: "error", message: errorMessageForStatus(response.status) });
           return;
         }
         const data = (await response.json()) as Partial<CharacterDetailResponse>;
@@ -103,10 +104,10 @@ export default function CharacterSheetPanel({
           return;
         }
         if (typeof data?.name !== "string") {
-          setState({ status: "error", message: errorMessageForStatus(500) });
+          settle({ status: "error", message: errorMessageForStatus(500) });
           return;
         }
-        setState({
+        settle({
           status: "loaded",
           character: {
             character_id: data.character_id ?? characterId,
@@ -117,13 +118,13 @@ export default function CharacterSheetPanel({
         });
       } catch {
         if (!controller.signal.aborted) {
-          setState({ status: "error", message: errorMessageForStatus(500) });
+          settle({ status: "error", message: errorMessageForStatus(500) });
         }
       }
     })();
 
     return () => controller.abort();
-  }, [characterId, attempt]);
+  }, [characterId, attempt, requestKey]);
 
   return (
     <div id={id} className={`flex h-full w-full min-w-0 flex-col overflow-hidden ${className ?? ""}`}>
@@ -143,16 +144,16 @@ export default function CharacterSheetPanel({
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto pr-1 custom-scrollbar" aria-live="polite" aria-busy={Boolean(characterId) && state.status === "loading"}>
+        <div className="min-h-0 flex-1 overflow-y-auto pr-1 custom-scrollbar" aria-live="polite" aria-busy={Boolean(characterId) && result === null}>
           {!characterId ? (
             <p className="text-sm text-zinc-400">
               No character is available for this campaign yet. Send a command to begin your adventure.
             </p>
-          ) : state.status === "loading" ? (
+          ) : result === null ? (
             <p className="animate-pulse text-sm text-zinc-400">Loading character...</p>
-          ) : state.status === "error" ? (
+          ) : result.status === "error" ? (
             <div className="space-y-3 text-sm">
-              <p className="text-rose-300">{state.message}</p>
+              <p className="text-rose-300">{result.message}</p>
               <button
                 type="button"
                 onClick={() => setAttempt((current) => current + 1)}
@@ -170,15 +171,15 @@ export default function CharacterSheetPanel({
                 >
                   <User className="h-7 w-7" />
                 </div>
-                <p className="min-w-0 break-words text-lg font-semibold text-white">{state.character.name}</p>
+                <p className="min-w-0 break-words text-lg font-semibold text-white">{result.character.name}</p>
               </div>
 
-              <Section title="Abilities" count={state.character.abilities.length}>
-                {state.character.abilities.length === 0 ? (
+              <Section title="Abilities" count={result.character.abilities.length}>
+                {result.character.abilities.length === 0 ? (
                   <p className="text-sm text-zinc-500">No abilities yet.</p>
                 ) : (
                   <ul className="space-y-3">
-                    {state.character.abilities.map((ability) => (
+                    {result.character.abilities.map((ability) => (
                       <li key={ability.ability_id} className="flex gap-3">
                         <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-sky-300" aria-hidden="true" />
                         <div className="min-w-0">
@@ -196,12 +197,12 @@ export default function CharacterSheetPanel({
                 )}
               </Section>
 
-              <Section title="Inventory" count={state.character.inventory.length}>
-                {state.character.inventory.length === 0 ? (
+              <Section title="Inventory" count={result.character.inventory.length}>
+                {result.character.inventory.length === 0 ? (
                   <p className="text-sm text-zinc-500">Your inventory is empty.</p>
                 ) : (
                   <ul className="space-y-3">
-                    {state.character.inventory.map((item) => (
+                    {result.character.inventory.map((item) => (
                       <li key={item.id} className="flex gap-3">
                         <Package className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" aria-hidden="true" />
                         <div className="min-w-0">

@@ -166,4 +166,62 @@ describe("CharacterSheetPanel", () => {
     fireEvent.click(within(panel).getByRole("button", { name: "Back to Conversation" }));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it("never renders the previous character while the next one is loading", async () => {
+    let resolveSecond: (response: Response) => void = () => {};
+    vi.mocked(global.fetch)
+      .mockImplementationOnce(() => jsonResponse(CHARACTER))
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveSecond = resolve;
+          })
+      );
+
+    const { rerender } = render(
+      <CharacterSheetPanel characterId="char-1" closeLabel="Collapse sidebar" onClose={vi.fn()} />
+    );
+    await screen.findByText("Ada Vale");
+
+    rerender(<CharacterSheetPanel characterId="char-2" closeLabel="Collapse sidebar" onClose={vi.fn()} />);
+    // Synchronously after the id change, the old sheet is gone and loading is shown.
+    expect(screen.queryByText("Ada Vale")).not.toBeInTheDocument();
+    expect(screen.queryByText("Brass Lantern")).not.toBeInTheDocument();
+    expect(screen.getByText("Loading character...")).toBeInTheDocument();
+
+    resolveSecond(new Response(JSON.stringify({ ...CHARACTER, character_id: "char-2", name: "Bram" }), { status: 200 }));
+    expect(await screen.findByText("Bram")).toBeInTheDocument();
+  });
+
+  it("does not show a previous error or sheet when switching to no character", async () => {
+    vi.mocked(global.fetch).mockImplementation(() => jsonResponse(CHARACTER));
+    const { rerender } = render(
+      <CharacterSheetPanel characterId="char-1" closeLabel="Collapse sidebar" onClose={vi.fn()} />
+    );
+    await screen.findByText("Ada Vale");
+
+    rerender(<CharacterSheetPanel characterId={null} closeLabel="Collapse sidebar" onClose={vi.fn()} />);
+    expect(screen.queryByText("Ada Vale")).not.toBeInTheDocument();
+    expect(screen.getByText(/No character is available for this campaign yet/)).toBeInTheDocument();
+  });
+
+  it("does not show the previous error while a retry is loading", async () => {
+    let resolveRetry: (response: Response) => void = () => {};
+    vi.mocked(global.fetch)
+      .mockImplementationOnce(() => jsonResponse({ error: "boom" }, 502))
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveRetry = resolve;
+          })
+      );
+    render(<CharacterSheetPanel characterId="char-1" closeLabel="Collapse sidebar" onClose={vi.fn()} />);
+    await screen.findByText("The character sheet could not be loaded.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(screen.queryByText("The character sheet could not be loaded.")).not.toBeInTheDocument();
+    expect(screen.getByText("Loading character...")).toBeInTheDocument();
+    resolveRetry(new Response(JSON.stringify(CHARACTER), { status: 200 }));
+    expect(await screen.findByText("Ada Vale")).toBeInTheDocument();
+  });
 });
