@@ -3,6 +3,7 @@
 import Image from "next/image";
 import { useEffect, useRef } from "react";
 import { BookOpen, Menu, User } from "lucide-react";
+import { useFocusTrap } from "@/components/useFocusTrap";
 
 export type NavPanel = "campaigns" | "character";
 
@@ -38,7 +39,11 @@ export default function CampaignToolbar({
   isNewSessionDisabled?: boolean;
 }) {
   const hamburgerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const previousMobileViewRef = useRef(mobileView);
+
+  // The mobile menu is modal: keep keyboard focus inside it until it closes.
+  useFocusTrap(menuRef, isMobileViewport && mobileView === "menu");
 
   // Return focus to the hamburger whenever a mobile menu/panel closes back to the conversation.
   useEffect(() => {
@@ -54,7 +59,7 @@ export default function CampaignToolbar({
     <>
       {isMobileViewport ? (
         <>
-          <div className="absolute left-3 top-2 z-40 md:hidden">
+          <div className="absolute left-3 top-2 z-40 md:hidden" inert={mobileView !== null}>
             <button
               ref={hamburgerRef}
               type="button"
@@ -80,8 +85,10 @@ export default function CampaignToolbar({
                 className="absolute inset-0 z-40 bg-black/45"
               />
               <div
+                ref={menuRef}
                 id="mobile-nav-menu"
                 role="dialog"
+                aria-modal="true"
                 aria-label="Navigation menu"
                 className="absolute left-3 top-12 z-50 flex w-56 flex-col gap-1 rounded-2xl border border-white/10 bg-zinc-950 p-2 shadow-xl"
               >

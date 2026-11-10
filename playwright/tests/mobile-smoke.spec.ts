@@ -17,7 +17,13 @@ test.describe("mobile smoke test", () => {
     await expect(menuButton).toBeVisible();
 
     await menuButton.click();
-    await expect(page.getByRole("dialog", { name: "Navigation menu" })).toBeVisible();
+    const menu = page.getByRole("dialog", { name: "Navigation menu" });
+    await expect(menu).toBeVisible();
+    // Keyboard focus stays inside the modal menu no matter how many times Tab is pressed.
+    for (let index = 0; index < 5; index += 1) {
+      await page.keyboard.press("Tab");
+      await expect(menu.locator(":focus")).toHaveCount(1);
+    }
     await page.getByRole("button", { name: "Campaigns" }).click();
     const sidebar = page.locator("#campaign-sidebar");
     await expect(sidebar).toBeVisible();

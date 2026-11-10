@@ -8,6 +8,7 @@ import CampaignSidebar from "@/components/CampaignSidebar";
 import CampaignToolbar, { type NavPanel } from "@/components/CampaignToolbar";
 import CharacterSheetPanel from "@/components/CharacterSheetPanel";
 import { mergeCharacterId } from "@/lib/character-id";
+import { useFocusTrap } from "@/components/useFocusTrap";
 import ConversationView from "@/components/ConversationView";
 import type {
   CampaignDetailsResponse,
@@ -284,6 +285,11 @@ export default function Home() {
       : null
     : desktopPanel;
   const isSidebarVisible = visiblePanel === "campaigns";
+  // While a mobile menu or full-screen panel is open it is modal: background content is inert
+  // and keyboard focus stays inside the panel.
+  const isMobileOverlayOpen = isMobileViewport && mobileView !== null;
+  const mobilePanelRef = useRef<HTMLDivElement | null>(null);
+  useFocusTrap(mobilePanelRef, isMobileViewport && visiblePanel !== null);
   const isAuthLoading = authStatus === "loading";
   const isAuthenticated = authStatus === "authenticated";
   const authenticatedSessionKey = isAuthenticated
@@ -1125,6 +1131,14 @@ export default function Home() {
 
           {visiblePanel !== null ? (
             <div
+              ref={mobilePanelRef}
+              {...(isMobileViewport
+                ? {
+                    role: "dialog",
+                    "aria-modal": true,
+                    "aria-label": visiblePanel === "campaigns" ? "Campaigns" : "Character Sheet",
+                  }
+                : {})}
               className={
                 isMobileViewport
                   ? "fixed inset-0 z-50 bg-[#09090c] p-2"
@@ -1162,7 +1176,10 @@ export default function Home() {
             </div>
           ) : null}
 
-          <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-2 shadow-2xl shadow-black/20 md:p-6">
+          <main
+            inert={isMobileOverlayOpen}
+            className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-2 shadow-2xl shadow-black/20 md:p-6"
+          >
             <header className="mb-2 ml-12 flex h-9 min-w-0 items-center justify-between gap-2 rounded-2xl border border-white/10 bg-white/5 px-2 md:mb-3 md:ml-0 md:h-auto md:gap-4 md:rounded-2xl md:p-3 md:pl-4">
               <div className="min-w-0 flex-1">
                 <h1 className="truncate text-lg font-semibold text-white md:mt-0.5 md:text-xl">Haunted Halls</h1>

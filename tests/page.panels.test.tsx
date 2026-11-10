@@ -288,6 +288,19 @@ describe("unified sidebar panel navigation", () => {
       expect(await screen.findByText("Welcome to Crypt")).toBeInTheDocument();
     });
 
+    it("does not apply modal semantics on desktop", async () => {
+      mockBackend(WITH_CHARACTER);
+      render(<Home />);
+      await screen.findByText("Welcome to Crypt");
+
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(document.querySelector("main")).not.toHaveAttribute("inert");
+      const input = screen.getByRole("textbox", { name: "Enter your command" });
+      input.focus();
+      fireEvent.keyDown(input, { key: "Tab" });
+      expect(input).toHaveFocus();
+    });
+
     it("keeps Campaigns open for an explicit expanded or unrecognized saved preference", async () => {
       window.localStorage.setItem("haunted-halls-sidebar-collapsed", "false");
       mockBackend(WITH_CHARACTER);
@@ -373,6 +386,119 @@ describe("unified sidebar panel navigation", () => {
       expect(document.getElementById("character-sheet-panel")).not.toBeInTheDocument();
       expect(screen.getByText("Welcome to Crypt")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Open navigation menu" })).toHaveFocus();
+    });
+
+    describe("focus containment", () => {
+      const focusableButtons = (container: HTMLElement) =>
+        within(container)
+          .getAllByRole("button")
+          .filter((button) => !button.hasAttribute("disabled") && button.tabIndex >= 0);
+
+      it("treats the open menu as modal: aria-modal, inert background, Tab wraps in both directions", async () => {
+        mockBackend(WITH_CHARACTER);
+        render(<Home />);
+        await screen.findByText("Welcome to Crypt");
+        const main = document.querySelector("main")!;
+        expect(main).not.toHaveAttribute("inert");
+
+        const hamburger = screen.getByRole("button", { name: "Open navigation menu" });
+        fireEvent.click(hamburger);
+
+        const menu = screen.getByRole("dialog", { name: "Navigation menu" });
+        expect(menu).toHaveAttribute("aria-modal", "true");
+        expect(main).toHaveAttribute("inert");
+        expect(hamburger.parentElement).toHaveAttribute("inert");
+
+        const items = focusableButtons(menu);
+        const first = items[0]!;
+        const last = items[items.length - 1]!;
+        expect(first).toHaveFocus();
+
+        last.focus();
+        fireEvent.keyDown(last, { key: "Tab" });
+        expect(first).toHaveFocus();
+
+        fireEvent.keyDown(first, { key: "Tab", shiftKey: true });
+        expect(last).toHaveFocus();
+
+        // Focus that has escaped to the background is pulled back into the menu.
+        const input = screen.getByRole("textbox", { name: "Enter your command" });
+        input.focus();
+        fireEvent.keyDown(input, { key: "Tab" });
+        expect(first).toHaveFocus();
+      });
+
+      it("releases the background and the trap once the menu closes", async () => {
+        mockBackend(WITH_CHARACTER);
+        render(<Home />);
+        await screen.findByText("Welcome to Crypt");
+        const main = document.querySelector("main")!;
+
+        fireEvent.click(screen.getByRole("button", { name: "Open navigation menu" }));
+        expect(main).toHaveAttribute("inert");
+        fireEvent.keyDown(window, { key: "Escape" });
+
+        expect(main).not.toHaveAttribute("inert");
+        expect(screen.getByRole("button", { name: "Open navigation menu" }).parentElement).not.toHaveAttribute("inert");
+        const input = screen.getByRole("textbox", { name: "Enter your command" });
+        input.focus();
+        fireEvent.keyDown(input, { key: "Tab" });
+        expect(input).toHaveFocus();
+      });
+
+      it("treats the full-screen Character panel as modal and contains Tab focus", async () => {
+        mockBackend(WITH_CHARACTER);
+        render(<Home />);
+        await screen.findByText("Welcome to Crypt");
+
+        fireEvent.click(screen.getByRole("button", { name: "Open navigation menu" }));
+        fireEvent.click(screen.getByRole("button", { name: "Character Sheet" }));
+        await screen.findByText("Ada Vale");
+
+        const panel = screen.getByRole("dialog", { name: "Character Sheet" });
+        expect(panel).toHaveAttribute("aria-modal", "true");
+        expect(document.querySelector("main")).toHaveAttribute("inert");
+
+        const items = focusableButtons(panel);
+        const first = items[0]!;
+        const last = items[items.length - 1]!;
+        expect(first).toHaveFocus();
+        expect(first).toHaveAccessibleName("Back to Conversation");
+
+        last.focus();
+        fireEvent.keyDown(last, { key: "Tab" });
+        expect(first).toHaveFocus();
+        fireEvent.keyDown(first, { key: "Tab", shiftKey: true });
+        expect(last).toHaveFocus();
+      });
+
+      it("treats the full-screen Campaigns panel as modal and contains Tab focus", async () => {
+        mockBackend(WITH_CHARACTER);
+        render(<Home />);
+        await screen.findByText("Welcome to Crypt");
+
+        fireEvent.click(screen.getByRole("button", { name: "Open navigation menu" }));
+        fireEvent.click(screen.getByRole("button", { name: "Campaigns" }));
+
+        const panel = screen.getByRole("dialog", { name: "Campaigns" });
+        expect(panel).toHaveAttribute("aria-modal", "true");
+        expect(document.querySelector("main")).toHaveAttribute("inert");
+
+        const items = focusableButtons(panel);
+        const first = items[0]!;
+        const last = items[items.length - 1]!;
+        expect(first).toHaveFocus();
+
+        last.focus();
+        fireEvent.keyDown(last, { key: "Tab" });
+        expect(first).toHaveFocus();
+        fireEvent.keyDown(first, { key: "Tab", shiftKey: true });
+        expect(last).toHaveFocus();
+
+        // Returning to the conversation restores the background.
+        fireEvent.click(screen.getByRole("button", { name: "Back to Conversation" }));
+        expect(document.querySelector("main")).not.toHaveAttribute("inert");
+      });
     });
 
     it("selecting a campaign returns to the conversation, and the draft survives the round trip", async () => {
