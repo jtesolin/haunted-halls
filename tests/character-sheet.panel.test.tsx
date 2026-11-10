@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import CharacterSheetPanel from "@/components/CharacterSheetPanel";
 
@@ -145,8 +145,14 @@ describe("CharacterSheetPanel", () => {
     rerender(<CharacterSheetPanel characterId="char-2" closeLabel="Collapse sidebar" onClose={vi.fn()} />);
     expect(await screen.findByText("Bram")).toBeInTheDocument();
 
-    resolveFirst(new Response(JSON.stringify(CHARACTER), { status: 200 }));
-    await waitFor(() => expect(screen.getByText("Bram")).toBeInTheDocument());
+    await act(async () => {
+      resolveFirst(new Response(JSON.stringify(CHARACTER), { status: 200 }));
+      // Drain the late response's fetch/json microtasks before asserting.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    // The late response for the superseded character must not clobber the current result.
+    expect(screen.getByText("Bram")).toBeInTheDocument();
+    expect(screen.queryByText("Loading character...")).not.toBeInTheDocument();
     expect(screen.queryByText("Ada Vale")).not.toBeInTheDocument();
   });
 
