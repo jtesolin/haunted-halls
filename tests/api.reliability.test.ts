@@ -157,6 +157,39 @@ describe("engine timeout budgets and mapping", () => {
     expect(await response.json()).toEqual({ error: "Backend request timed out" });
   });
 
+  it.each([
+    ["chat", () => postChat(chatRequest(JSON.stringify({ message: "look" })))],
+    ["campaign list", () => getCampaigns()],
+    ["campaign create", () => postCampaign(new Request("http://localhost:3000/api/campaign", { method: "POST" }))],
+  ])("maps a timeout while reading a non-OK engine %s error body to 504", async (_label, call) => {
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: () => Promise.reject(new DOMException("timed out", "TimeoutError")),
+    } as unknown as Response);
+
+    const response = await call();
+
+    expect(response.status).toBe(504);
+    expect(await response.json()).toEqual({ error: "Backend request timed out" });
+  });
+
+  it.each([
+    [500, 502, "Backend request failed"],
+    [429, 429, "Backend request failed"],
+  ])("keeps the status-based fallback for a malformed non-OK engine body (%i)", async (engineStatus, publicStatus, message) => {
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: false,
+      status: engineStatus,
+      json: () => Promise.reject(new SyntaxError("Unexpected end of JSON input")),
+    } as unknown as Response);
+
+    const response = await getCampaigns();
+
+    expect(response.status).toBe(publicStatus);
+    expect(await response.json()).toEqual({ error: message });
+  });
+
   it("keeps a malformed engine body (not a timeout) as an unexpected 500", async () => {
     vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: true,

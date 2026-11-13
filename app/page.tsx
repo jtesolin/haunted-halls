@@ -63,6 +63,7 @@ function getUserFacingErrorMessage(status: number, fallback: string) {
     case 429:
       return "The hall is rate limiting requests right now. Please wait a moment and try again.";
     case 502:
+    case 504:
       return AMBIGUOUS_RETRY_MESSAGE;
     default:
       return fallback;
@@ -718,7 +719,11 @@ export default function Home() {
     } catch {
       markFailed();
     } finally {
-      loadingHistoryIdsRef.current.delete(sessionId);
+      // A stale request must not clear the marker of a newer request for the same id
+      // (the set is already reset when the authenticated session changes).
+      if (!isStale()) {
+        loadingHistoryIdsRef.current.delete(sessionId);
+      }
     }
   }, []);
 
@@ -1170,7 +1175,11 @@ export default function Home() {
             onCloseMobile={() => setMobileView(null)}
             onNewSession={handleNewSession}
             isNewSessionDisabled={
-              disableGameActions || isCreatingSession || isCreatingTransitionPending || isDeletingAllSessions
+              disableGameActions ||
+              campaignListError ||
+              isCreatingSession ||
+              isCreatingTransitionPending ||
+              isDeletingAllSessions
             }
           />
 
@@ -1202,7 +1211,7 @@ export default function Home() {
                   isCreating={isCreatingSession || isCreatingTransitionPending}
                   isDeletingAll={isDeletingAllSessions}
                   deletingSessionIds={deletingSessionIds}
-                  isActionDisabled={disableGameActions}
+                  isActionDisabled={disableGameActions || campaignListError}
                   onToggleSidebar={handleCloseActivePanel}
                   isMobileViewport={isMobileViewport}
                   isSidebarVisible={isSidebarVisible}

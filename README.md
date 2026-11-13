@@ -136,7 +136,9 @@ slow turn can take well over a minute.
 | Per-PR preview frontend Cloud Run request timeout | 300s | `infra/terraform/preview-pr/services.tf` (unchanged; still above every BFF budget) |
 | Engine Cloud Run request timeout | 300s | unchanged |
 
-The invariant is `BFF budget < frontend Cloud Run timeout < engine Cloud Run timeout`. These
+The intended ordering is `BFF budget < frontend Cloud Run timeout <= engine Cloud Run timeout`
+(equal in the preview stack, where both are 300s). The production/staging engine's 300s is the
+Cloud Run default, not a value set in `cloud-run.tf`. These
 values are deliberately duplicated across `lib/engine.ts`, `infra/terraform/` and this table;
 change them together. `tests/api.reliability.test.ts` asserts the TypeScript budgets stay below
 180s.
@@ -148,7 +150,11 @@ delivery-uncertain ("Delivery could not be confirmed. You may safely retry."), a
 reuse the same `Idempotency-Key`, so a turn the engine completes after the BFF gave up is
 not applied twice. Campaign creation has no idempotency key: a timed-out create may still
 finish on the engine and appear in the campaign list on the next load. Aborting the BFF
-fetch does not cancel engine-side work.
+fetch does not cancel engine-side work. Because the agents' own timeouts can be retried by the
+OpenAI SDK (default 2 retries), a pathological turn can exceed the BFF budget (roughly 240s for
+chat, 120s for an opening); the result is still a delivery-uncertain 504. A retry sent while the
+first attempt is still running gets the engine's "already in progress" 503, which the BFF maps to
+502 and the browser again shows as delivery-uncertain, so the player may need to retry once more.
 
 ## Local Security Verification
 

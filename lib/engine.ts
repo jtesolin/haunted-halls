@@ -254,13 +254,13 @@ export async function respondWithEngineError(
   let retryAt: string | null = null;
 
   try {
-    const payload = (await response.json()) as {
+    const payload = await readEngineJson<{
       detail?: unknown;
       error?: unknown;
       code?: unknown;
       retryable?: unknown;
       retry_at?: unknown;
-    };
+    }>(response);
     const structuredDetail = payload.detail && typeof payload.detail === "object"
       ? payload.detail as Record<string, unknown>
       : null;
@@ -286,7 +286,12 @@ export async function respondWithEngineError(
     if (typeof candidateRetryAt === "string" && code !== null && candidateRetryAt.trim()) {
       retryAt = candidateRetryAt.trim();
     }
-  } catch {
+  } catch (error) {
+    // A timed-out body is delivery-uncertain and must surface as the documented 504;
+    // only malformed/empty error bodies fall back to the status-based mapping below.
+    if (error instanceof InternalEngineTimeoutError) {
+      throw error;
+    }
     detail = null;
   }
 

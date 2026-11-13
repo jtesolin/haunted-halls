@@ -215,10 +215,13 @@ describe("campaign history races", () => {
 
     // A's stale response now arrives. B must be untouched.
     historyA.resolve(json(campaign("a", "A history")));
-    await waitFor(() => expect(calls("/api/campaign/a")).toHaveLength(1));
+    // Wait until A's late response has been fully processed and applied to A itself
+    // (observable in the sidebar preview), so the assertions below cannot pass vacuously.
     await act(async () => {
       await historyA.promise;
     });
+    await waitFor(() => expect(calls("/api/campaign/a")).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(screen.queryByText("A history")).not.toBeInTheDocument();
     expect(screen.getAllByText("open the door").length).toBeGreaterThan(0);
@@ -311,5 +314,121 @@ describe("campaign history in-flight guards", () => {
     freshHistory.resolve(json(campaign("a", "FRESH user-2 history")));
     expect(await screen.findByText("FRESH user-2 history")).toBeInTheDocument();
     expect(screen.queryByText("STALE user-1 history")).not.toBeInTheDocument();
+  });
+});
+
+describe("campaign-loading follow-ups", () => {
+  beforeEach(() => {
+    global.fetch = vi.fn() as unknown as typeof fetch;
+    vi.mocked(useSession).mockReset();
+    window.history.replaceState({}, "", "/");
+    signedIn();
+  });
+
+  it("disables New campaign while the campaign list is unavailable so the error state cannot contradict itself", async () => {
+    vi.mocked(global.fetch).mockImplementation((input: RequestInfo | URL) =>
+      String(input) === "/api/campaigns" ? Promise.resolve(json({}, 502)) : Promise.resolve(json({}))
+    );
+
+    render(<Home />);
+    await screen.findByText("Your campaigns could not be loaded.");
+
+    for (const button of screen.getAllByRole("button", { name: "Create new campaign" })) {
+      expect(button).toBeDisabled();
+    }
+    expect(calls("/api/campaign", "POST")).toHaveLength(0);
+  });
+
+  it("shows the delivery-uncertain message when campaign creation times out (504)", async () => {
+    vi.mocked(global.fetch).mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/campaigns") return Promise.resolve(json([]));
+      if (url === "/api/campaign" && init?.method === "POST") {
+        return Promise.resolve(json({ error: "Backend request timed out" }, 504));
+      }
+      return Promise.resolve(json({}));
+    });
+
+    render(<Home />);
+
+    expect(
+      await screen.findByText("Delivery could not be confirmed. You may safely retry.")
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Backend request timed out")).not.toBeInTheDocument();
+  });
+
+  it("loads the next campaign's history after the active campaign is deleted", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(global.fetch).mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/campaigns") return Promise.resolve(json(summaries));
+      if (url === "/api/campaign/a" && init?.method === "DELETE") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (url === "/api/campaign/a") return Promise.resolve(json(campaign("a", "A history")));
+      if (url === "/api/campaign/b") return Promise.resolve(json(campaign("b", "B history")));
+      return Promise.resolve(json({}));
+    });
+
+    render(<Home />);
+    await screen.findByText("A history");
+    expect(calls("/api/campaign/b")).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete session Campaign a" }));
+
+    expect(await screen.findByText("B history")).toBeInTheDocument();
+    expect(composer()).toBeEnabled();
+    expect(calls("/api/campaign/b")).toHaveLength(1);
+  });
+
+  it("does not let a stale request clear a newer request's in-flight guard after a user switch", async () => {
+    const asUser = (internalUserId: string) =>
+      vi.mocked(useSession).mockReturnValue({
+        data: {
+          user: { name: "Player", email: `${internalUserId}@example.com`, image: null },
+          internalUserId,
+          expires: "2099-01-01T00:00:00.000Z",
+        },
+        status: "authenticated",
+        update: vi.fn(),
+      } as never);
+
+    const staleA = deferred();
+    const freshA = deferred();
+    let aCalls = 0;
+    vi.mocked(global.fetch).mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/campaigns") return Promise.resolve(json(summaries));
+      if (url === "/api/campaign/a") {
+        aCalls += 1;
+        return aCalls === 1 ? staleA.promise : freshA.promise;
+      }
+      if (url === "/api/campaign/b") return Promise.resolve(json(campaign("b", "B history")));
+      return Promise.resolve(json({}));
+    });
+
+    asUser("user-1");
+    const view = render(<Home />);
+    await waitFor(() => expect(aCalls).toBe(1));
+    asUser("user-2");
+    view.rerender(<Home />);
+    await waitFor(() => expect(aCalls).toBe(2));
+
+    // user-1's stale request settles while user-2's request for the same id is pending.
+    staleA.resolve(json(campaign("a", "STALE")));
+    await act(async () => {
+      await staleA.promise;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Switch away and back: the effect re-runs for A while user-2's request is still pending.
+    fireEvent.click(screen.getAllByText("Campaign b")[0]);
+    await screen.findByText("B history");
+    fireEvent.click(screen.getAllByText("Campaign a")[0]);
+    await act(async () => {});
+
+    expect(aCalls).toBe(2);
+    freshA.resolve(json(campaign("a", "FRESH")));
+    expect(await screen.findByText("FRESH")).toBeInTheDocument();
   });
 });
