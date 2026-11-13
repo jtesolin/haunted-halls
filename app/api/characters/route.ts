@@ -4,6 +4,7 @@ import {
   isInternalEngineRequestError,
   respondWithEngineError,
   respondWithInternalEngineError,
+  readEngineJson,
   respondWithUnexpectedProxyError,
 } from "@/lib/engine";
 import { ensureAuthenticated } from "@/lib/route-auth";
@@ -30,7 +31,7 @@ export async function GET() {
       );
     }
 
-    const data = await response.json();
+    const data = await readEngineJson(response);
     return NextResponse.json(data);
   } catch (error) {
     if (isInternalEngineRequestError(error)) {

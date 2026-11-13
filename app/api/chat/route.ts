@@ -5,8 +5,10 @@ import {
   isInternalEngineRequestError,
   respondWithEngineError,
   respondWithInternalEngineError,
+  readEngineJson,
   respondWithUnexpectedProxyError,
   getMaxInputCharacters,
+  ENGINE_TIMEOUT_MS,
 } from "@/lib/engine";
 import { ensureAllowedMutationOrigin, ensureAuthenticated } from "@/lib/route-auth";
 
@@ -37,7 +39,14 @@ export async function POST(request: Request) {
       );
     }
 
-    const body = (await request.json()) as Record<string, unknown>;
+    const parsedBody: unknown = await request.json().catch(() => null);
+    if (!parsedBody || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
+      return NextResponse.json(
+        { error: "Request body must be a JSON object" },
+        { status: 400 }
+      );
+    }
+    const body = parsedBody as Record<string, unknown>;
     const message = typeof body.message === "string" ? body.message : "";
     const maxInputCharacters = getMaxInputCharacters();
 
@@ -60,6 +69,7 @@ export async function POST(request: Request) {
 
     const response = await fetchEngineAsUser("/api/chat", internalUserId, {
       method: "POST",
+      timeoutMs: ENGINE_TIMEOUT_MS.chat,
       headers: {
         "Content-Type": "application/json",
         "Idempotency-Key": idempotencyKey,
@@ -71,7 +81,7 @@ export async function POST(request: Request) {
       return await respondWithEngineError(response, "chat proxy", "Backend service unavailable");
     }
 
-    const data: ChatResponse = await response.json();
+    const data = await readEngineJson<ChatResponse>(response);
     return NextResponse.json(data);
   } catch (error) {
     if (isInternalEngineRequestError(error)) {

@@ -5,7 +5,9 @@ import {
   isInternalEngineRequestError,
   respondWithEngineError,
   respondWithInternalEngineError,
+  readEngineJson,
   respondWithUnexpectedProxyError,
+  ENGINE_TIMEOUT_MS,
 } from "@/lib/engine";
 import { ensureAllowedMutationOrigin, ensureAuthenticated } from "@/lib/route-auth";
 
@@ -30,6 +32,7 @@ export async function POST(request: Request) {
 
     const response = await fetchEngineAsUser("/api/campaign", internalUserId, {
       method: "POST",
+      timeoutMs: ENGINE_TIMEOUT_MS.campaignCreate,
       headers: {
         "Content-Type": "application/json",
       },
@@ -44,7 +47,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const data: CreateCampaignResponse = await response.json();
+    const data = await readEngineJson<CreateCampaignResponse>(response);
     return NextResponse.json(data, { status: 201 });
   } catch (error) {
     if (isInternalEngineRequestError(error)) {

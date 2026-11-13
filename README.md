@@ -118,6 +118,44 @@ If you run the app on a different port, update `NEXTAUTH_URL` and register the m
 - Network isolation and the shared bearer token are complementary controls, not substitutes.
 - To verify the protection, call the engine directly without the token and expect `401`, then call the same flow through Next.js and expect success.
 
+## Engine timeout budgets
+
+Every browser request flows browser → Next.js route (BFF) → engine → OpenAI. A chat turn
+runs the engine's model-backed agents **sequentially** inside one request (action parser
+15s → director 15s → narrator 20s, then optionally memory summarizer and reflection at 15s
+each); opening a campaign adds starter-ability generation (20s) and a narrator call (20s).
+Those are per-call timeouts and the OpenAI SDK may retry a timed-out call, so a legitimate
+slow turn can take well over a minute.
+
+| Layer | Budget | Where |
+| --- | --- | --- |
+| BFF → engine, reads/deletes/user-resolve | 30s | `ENGINE_TIMEOUT_MS.read` in `lib/engine.ts` |
+| BFF → engine, campaign creation | 90s | `ENGINE_TIMEOUT_MS.campaignCreate` |
+| BFF → engine, chat turn | 150s | `ENGINE_TIMEOUT_MS.chat` |
+| Frontend Cloud Run request timeout | 180s | `timeout` on the production and staging frontend services in `infra/terraform/cloud-run.tf` |
+| Per-PR preview frontend Cloud Run request timeout | 300s | `infra/terraform/preview-pr/services.tf` (unchanged; still above every BFF budget) |
+| Engine Cloud Run request timeout | 300s | unchanged |
+
+The intended ordering is `BFF budget < frontend Cloud Run timeout <= engine Cloud Run timeout`
+(equal in the preview stack, where both are 300s). The production/staging engine's 300s is the
+Cloud Run default, not a value set in `cloud-run.tf`. These
+values are deliberately duplicated across `lib/engine.ts`, `infra/terraform/` and this table;
+change them together. `tests/api.reliability.test.ts` asserts the TypeScript budgets stay below
+180s.
+
+Each layer is larger than the one it calls, so the BFF answers with a mapped error before
+Cloud Run cuts the request off. A timed-out engine call returns **504**
+`{"error": "Backend request timed out"}`. The browser already treats any 5xx on chat as
+delivery-uncertain ("Delivery could not be confirmed. You may safely retry."), and retries
+reuse the same `Idempotency-Key`, so a turn the engine completes after the BFF gave up is
+not applied twice. Campaign creation has no idempotency key: a timed-out create may still
+finish on the engine and appear in the campaign list on the next load. Aborting the BFF
+fetch does not cancel engine-side work. Because the agents' own timeouts can be retried by the
+OpenAI SDK (default 2 retries), a pathological turn can exceed the BFF budget (roughly 240s for
+chat, 120s for an opening); the result is still a delivery-uncertain 504. A retry sent while the
+first attempt is still running gets the engine's "already in progress" 503, which the BFF maps to
+502 and the browser again shows as delivery-uncertain, so the player may need to retry once more.
+
 ## Local Security Verification
 
 - `npm run test -- tests/api.auth-guard.test.ts`

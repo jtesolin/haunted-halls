@@ -45,6 +45,7 @@ export interface ChatSession {
   updated_at: number;
   character_id?: string | null;
   conversation_loaded: boolean;
+  history_load_failed?: boolean;
   messages: ChatMessage[];
   is_optimistic?: boolean;
 }
