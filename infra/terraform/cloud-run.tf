@@ -242,6 +242,10 @@ resource "google_cloud_run_v2_service" "frontend" {
   template {
     service_account = google_service_account.frontend_runtime.email
 
+    # Must exceed the longest engine budget in lib/engine.ts (ENGINE_TIMEOUT_MS.chat, 150s)
+    # so the BFF can answer with a mapped 504 instead of Cloud Run cutting the request.
+    timeout = "180s"
+
     scaling {
       min_instance_count = 0
       max_instance_count = 2
@@ -364,6 +368,10 @@ resource "google_cloud_run_v2_service" "frontend_staging" {
 
   template {
     service_account = google_service_account.frontend_staging_runtime.email
+
+    # Must exceed the longest engine budget in lib/engine.ts (ENGINE_TIMEOUT_MS.chat, 150s)
+    # so the BFF can answer with a mapped 504 instead of Cloud Run cutting the request.
+    timeout = "180s"
 
     scaling {
       min_instance_count = 0

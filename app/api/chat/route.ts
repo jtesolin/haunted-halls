@@ -7,6 +7,7 @@ import {
   respondWithInternalEngineError,
   respondWithUnexpectedProxyError,
   getMaxInputCharacters,
+  ENGINE_TIMEOUT_MS,
 } from "@/lib/engine";
 import { ensureAllowedMutationOrigin, ensureAuthenticated } from "@/lib/route-auth";
 
@@ -37,7 +38,14 @@ export async function POST(request: Request) {
       );
     }
 
-    const body = (await request.json()) as Record<string, unknown>;
+    const parsedBody: unknown = await request.json().catch(() => null);
+    if (!parsedBody || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
+      return NextResponse.json(
+        { error: "Request body must be a JSON object" },
+        { status: 400 }
+      );
+    }
+    const body = parsedBody as Record<string, unknown>;
     const message = typeof body.message === "string" ? body.message : "";
     const maxInputCharacters = getMaxInputCharacters();
 
@@ -60,6 +68,7 @@ export async function POST(request: Request) {
 
     const response = await fetchEngineAsUser("/api/chat", internalUserId, {
       method: "POST",
+      timeoutMs: ENGINE_TIMEOUT_MS.chat,
       headers: {
         "Content-Type": "application/json",
         "Idempotency-Key": idempotencyKey,

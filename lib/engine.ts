@@ -10,6 +10,19 @@ const INTERNAL_ENGINE_SERVICE_TOKEN_PLACEHOLDERS = new Set([
   "replace-with-internal-engine-token",
   "generate-with-openssl-do-not-commit",
 ]);
+// Per-request engine timeout budgets (milliseconds). The engine runs each model-backed
+// agent sequentially inside one request (parse 15s -> director 15s -> narrator 20s, then
+// optional memory summarizer/reflection 15s each, plus opening-campaign starter abilities
+// 20s + narrator 20s), and the OpenAI SDK may retry a timed-out call. Chat therefore gets
+// the largest budget. Every budget must stay below the frontend Cloud Run request timeout
+// (`timeout = "180s"` on the frontend services in infra/terraform/cloud-run.tf) so this app
+// answers with a mapped 504 before Cloud Run cuts the request off. See README
+// "Engine timeout budgets".
+export const ENGINE_TIMEOUT_MS = {
+  read: 30_000,
+  campaignCreate: 90_000,
+  chat: 150_000,
+} as const;
 let googleAuth: GoogleAuth | undefined;
 const idTokenClients = new Map<string, Promise<IdTokenClient>>();
 const PUBLIC_ENGINE_ERROR_CODES = new Set([
@@ -31,6 +44,13 @@ export class InternalEngineOriginError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "InternalEngineOriginError";
+  }
+}
+
+export class InternalEngineTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InternalEngineTimeoutError";
   }
 }
 
@@ -149,29 +169,55 @@ function resolveEngineUrl(input: string | URL) {
   return url;
 }
 
-export async function fetchEngineAsService(input: string | URL, init: RequestInit = {}) {
-  return fetch(resolveEngineUrl(input), {
-    ...init,
-    headers: await createServiceHeaders(init.headers),
-  });
+type EngineRequestInit = RequestInit & { timeoutMs?: number };
+
+async function fetchEngineWithTimeout(
+  url: URL,
+  headers: Headers,
+  { timeoutMs = ENGINE_TIMEOUT_MS.read, signal, ...init }: EngineRequestInit
+) {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...init,
+      headers,
+      signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
+    });
+  } catch (error) {
+    if (timeoutSignal.aborted && !signal?.aborted) {
+      throw new InternalEngineTimeoutError(`Engine request timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  }
+}
+
+export async function fetchEngineAsService(input: string | URL, init: EngineRequestInit = {}) {
+  return fetchEngineWithTimeout(
+    resolveEngineUrl(input),
+    await createServiceHeaders(init.headers),
+    init
+  );
 }
 
 export async function fetchEngineAsUser(
   input: string | URL,
   internalUserId: string,
-  init: RequestInit = {}
+  init: EngineRequestInit = {}
 ) {
-  return fetch(resolveEngineUrl(input), {
-    ...init,
-    headers: await createUserScopedHeaders(internalUserId, init.headers),
-  });
+  return fetchEngineWithTimeout(
+    resolveEngineUrl(input),
+    await createUserScopedHeaders(internalUserId, init.headers),
+    init
+  );
 }
 
-export async function fetchEnginePublic(input: string | URL, init: RequestInit = {}) {
-  return fetch(resolveEngineUrl(input), {
-    ...init,
-    headers: await createPublicHeaders(init.headers),
-  });
+export async function fetchEnginePublic(input: string | URL, init: EngineRequestInit = {}) {
+  return fetchEngineWithTimeout(
+    resolveEngineUrl(input),
+    await createPublicHeaders(init.headers),
+    init
+  );
 }
 
 export const fetchEngine = fetchEngineAsService;
@@ -266,15 +312,28 @@ export async function respondWithEngineError(
 
 export function isInternalEngineRequestError(
   error: unknown
-): error is InternalEngineConfigurationError | InternalEngineOriginError | InternalEngineUserContextError {
+): error is
+  | InternalEngineConfigurationError
+  | InternalEngineOriginError
+  | InternalEngineTimeoutError
+  | InternalEngineUserContextError {
   return (
     error instanceof InternalEngineConfigurationError ||
+    error instanceof InternalEngineTimeoutError ||
     error instanceof InternalEngineOriginError ||
     error instanceof InternalEngineUserContextError
   );
 }
 
 export function respondWithInternalEngineError(context: string, error: unknown) {
+  if (error instanceof InternalEngineTimeoutError) {
+    // The engine may still complete the work, so mutations must be treated as
+    // delivery-uncertain by callers (the browser treats any 5xx that way and retries
+    // chat with the same Idempotency-Key).
+    console.error(`${context}: ${error.message}`);
+    return NextResponse.json({ error: "Backend request timed out" }, { status: 504 });
+  }
+
   console.error(
     `${context}: ${error instanceof Error ? error.message : "internal engine request failed"}`
   );

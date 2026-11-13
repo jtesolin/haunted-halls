@@ -255,6 +255,9 @@ export default function Home() {
     return url.searchParams.get("error") ? GENERIC_SIGN_IN_ERROR : "";
   });
   const [requestError, setRequestError] = useState("");
+  const [campaignListError, setCampaignListError] = useState(false);
+  const [campaignListAttempt, setCampaignListAttempt] = useState(0);
+  const loadingHistoryIdsRef = useRef(new Set<string>());
   const [isSending, setIsSending] = useState(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const isCreatingSessionRef = useRef(false);
@@ -296,7 +299,20 @@ export default function Home() {
     ? session?.internalUserId?.trim() || session?.user?.email?.trim() || "authenticated"
     : null;
   const disableGameActions = isAuthLoading || !isAuthenticated;
-  const isInputLocked = disableGameActions || isCreatingSession;
+  const activeHistoryTarget =
+    isAuthenticated &&
+    activeSession?.campaign_id &&
+    !activeSession.is_optimistic &&
+    !activeSession.conversation_loaded
+      ? activeSession
+      : null;
+  const activeHistoryFailed = Boolean(activeHistoryTarget?.history_load_failed);
+  const isActiveHistoryLoading = activeHistoryTarget !== null && !activeHistoryFailed;
+  const activeHistorySessionId = activeHistoryTarget?.id ?? null;
+  const activeHistoryCampaignId = activeHistoryTarget?.campaign_id ?? null;
+
+  const isInputLocked =
+    disableGameActions || isCreatingSession || campaignListError || activeHistoryTarget !== null;
   const isSendDisabled =
     isInputLocked ||
     isSending ||
@@ -308,7 +324,13 @@ export default function Home() {
       ? "Sign in to send a command"
       : isCreatingSession
         ? "Preparing campaign..."
-        : "Command input unavailable";
+        : campaignListError
+          ? "Campaigns could not be loaded"
+          : isActiveHistoryLoading
+            ? "Loading campaign history..."
+            : activeHistoryFailed
+              ? "Campaign history could not be loaded"
+              : "Command input unavailable";
   const userDisplayName = session?.user?.name?.trim() || session?.user?.email?.trim() || "Signed in";
   const userImage = session?.user?.image?.trim() || null;
 
@@ -393,6 +415,8 @@ export default function Home() {
     activeCreationOperationRef.current = null;
     isCreatingSessionRef.current = false;
     hasLoadedCampaignSummariesRef.current = false;
+    loadingHistoryIdsRef.current.clear();
+    setCampaignListError(false);
     setIsCreatingSession(false);
 
     if (previousSessionKey !== null) {
@@ -555,6 +579,7 @@ export default function Home() {
           return;
         }
         if (!response.ok) {
+          setCampaignListError(true);
           return;
         }
 
@@ -596,40 +621,66 @@ export default function Home() {
           return nextSessions;
         });
 
+        setCampaignListError(false);
+
+        // The newest campaign becomes the active session and its history is loaded by the
+        // active-session history effect below.
         if (data.length === 0) {
           await createAndHydrateSession();
-          return;
-        }
-
-        const latestCampaign = data[0];
-        if (latestCampaign?.campaign_id) {
-          void loadCampaignConversation(
-            latestCampaign.campaign_id,
-            latestCampaign.campaign_id
-          );
         }
       } catch {
         if (authGeneration !== authGenerationRef.current) {
           return;
         }
-        // Keep local session flow intact if history cannot be loaded.
-        setSessions((currentSessions) =>
-          currentSessions.length > 0 ? currentSessions : [createSession("New adventure")]
-        );
+        // Never fall back to a local "new adventure": the next message would silently
+        // create a brand-new campaign on the engine as a side effect of a failed load.
+        setCampaignListError(true);
       }
     };
 
     void loadCampaignSummaries();
-  }, [authenticatedSessionKey, createAndHydrateSession, isAuthenticated, isAuthLoading]);
+  }, [
+    authenticatedSessionKey,
+    campaignListAttempt,
+    createAndHydrateSession,
+    isAuthenticated,
+    isAuthLoading,
+  ]);
 
-  async function loadCampaignConversation(sessionId: string, campaignId: string) {
+  const loadCampaignConversation = useCallback(async (sessionId: string, campaignId: string) => {
+    if (loadingHistoryIdsRef.current.has(sessionId)) {
+      return;
+    }
+    loadingHistoryIdsRef.current.add(sessionId);
+    const authGeneration = authGenerationRef.current;
+    const isStale = () => authGeneration !== authGenerationRef.current;
+    const markFailed = () => {
+      if (isStale()) {
+        return;
+      }
+      setSessions((currentSessions) =>
+        currentSessions.map((session) =>
+          session.id === sessionId && !session.conversation_loaded
+            ? { ...session, history_load_failed: true }
+            : session
+        )
+      );
+    };
+
     try {
       const response = await fetch(`/api/campaign/${encodeURIComponent(campaignId)}`);
+      if (isStale()) {
+        return;
+      }
       if (!response.ok) {
+        markFailed();
         return;
       }
 
       const campaign: CampaignDetailsResponse = await response.json();
+      if (isStale()) {
+        return;
+      }
       const conversationMessages = [] as ChatMessage[];
 
       if (campaign.truncated) {
@@ -648,9 +699,12 @@ export default function Home() {
         });
       });
 
+      // Apply history only to a session that is still unloaded. A session that has since
+      // been loaded or locally modified (sent/pending/failed messages) must never be
+      // overwritten by a late or duplicate history response.
       setSessions((currentSessions) =>
         currentSessions.map((session) =>
-          session.id === sessionId
+          session.id === sessionId && !session.conversation_loaded
             ? {
                 ...session,
                 title: campaign.name || session.title,
@@ -658,14 +712,43 @@ export default function Home() {
                 messages: conversationMessages,
                 updated_at: Date.now(),
                 conversation_loaded: true,
+                history_load_failed: false,
               }
             : session
         )
       );
     } catch {
-      // Ignore campaign hydration failures and leave the current session intact.
+      markFailed();
+    } finally {
+      loadingHistoryIdsRef.current.delete(sessionId);
     }
-  }
+  }, []);
+
+  // Single owner of history loading: whichever session is active and not yet loaded.
+  useEffect(() => {
+    if (activeHistorySessionId && activeHistoryCampaignId && !activeHistoryFailed) {
+      queueMicrotask(() => {
+        void loadCampaignConversation(activeHistorySessionId, activeHistoryCampaignId);
+      });
+    }
+  }, [activeHistorySessionId, activeHistoryCampaignId, activeHistoryFailed, loadCampaignConversation]);
+
+  const handleRetryCampaignList = () => {
+    setCampaignListError(false);
+    hasLoadedCampaignSummariesRef.current = false;
+    setCampaignListAttempt((attempt) => attempt + 1);
+  };
+
+  const handleRetryHistory = () => {
+    if (!activeHistorySessionId) {
+      return;
+    }
+    setSessions((currentSessions) =>
+      currentSessions.map((session) =>
+        session.id === activeHistorySessionId ? { ...session, history_load_failed: false } : session
+      )
+    );
+  };
 
   async function deleteCampaignForPlayer(campaignId: string) {
     const response = await fetch(`/api/campaign/${encodeURIComponent(campaignId)}`, { method: "DELETE" });
@@ -690,28 +773,17 @@ export default function Home() {
     });
   };
 
-  const handleSelectSession = async (id: string) => {
+  const handleSelectSession = (id: string) => {
     if (!isAuthenticated) {
       return;
     }
 
-    const selectedSession = sessions.find((session) => session.id === id);
     setActiveSessionId(id);
     setMessageText("");
 
     if (isMobileViewport) {
       setMobileView(null);
     }
-
-    if (!selectedSession?.campaign_id) {
-      return;
-    }
-
-    if (selectedSession.conversation_loaded) {
-      return;
-    }
-
-    await loadCampaignConversation(id, selectedSession.campaign_id);
   };
 
   const persistDesktopCollapsed = (panel: NavPanel | null) => {
@@ -837,6 +909,29 @@ export default function Home() {
     text: string;
     loadingMessageId: string;
   }) => {
+    const markMessageFailed = (failure: ChatFailure) => {
+      setSessions((currentSessions) =>
+        sortSessionsByRecency(
+          currentSessions.map((session) =>
+            session.id === sessionId
+              ? {
+                  ...session,
+                  last_message: text,
+                  updated_at: Date.now(),
+                  messages: session.messages
+                    .filter((message) => message.id !== loadingMessageId)
+                    .map((message) =>
+                      message.id === messageId
+                        ? { ...message, delivery_state: "failed" as const, failure }
+                        : message
+                    ),
+                }
+              : session
+          )
+        )
+      );
+    };
+
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
@@ -849,33 +944,10 @@ export default function Home() {
 
       if (!response.ok) {
         const result = await response.json().catch(() => ({}));
-        const failure = response.status >= 500
-          ? createChatFailure(
-              AMBIGUOUS_RETRY_MESSAGE,
-              "ambiguous",
-              Boolean(requestId)
-            )
-          : getChatFailure(response.status, result);
-
-        setSessions((currentSessions) =>
-          sortSessionsByRecency(
-            currentSessions.map((session) =>
-              session.id === sessionId
-                ? {
-                    ...session,
-                    last_message: text,
-                    updated_at: Date.now(),
-                    messages: session.messages
-                      .filter((message) => message.id !== loadingMessageId)
-                      .map((message) =>
-                        message.id === messageId
-                          ? { ...message, delivery_state: "failed" as const, failure }
-                          : message
-                      ),
-                  }
-                : session
-            )
-          )
+        markMessageFailed(
+          response.status >= 500
+            ? createChatFailure(AMBIGUOUS_RETRY_MESSAGE, "ambiguous", Boolean(requestId))
+            : getChatFailure(response.status, result)
         );
         return;
       }
@@ -913,32 +985,7 @@ export default function Home() {
         )
       );
     } catch {
-      const failure = createChatFailure(
-        AMBIGUOUS_RETRY_MESSAGE,
-        "ambiguous",
-        Boolean(requestId)
-      );
-
-      setSessions((currentSessions) =>
-        sortSessionsByRecency(
-          currentSessions.map((session) =>
-            session.id === sessionId
-              ? {
-                  ...session,
-                  last_message: text,
-                  updated_at: Date.now(),
-                  messages: session.messages
-                    .filter((message) => message.id !== loadingMessageId)
-                    .map((message) =>
-                      message.id === messageId
-                        ? { ...message, delivery_state: "failed" as const, failure }
-                        : message
-                    ),
-                }
-              : session
-          )
-        )
-      );
+      markMessageFailed(createChatFailure(AMBIGUOUS_RETRY_MESSAGE, "ambiguous", Boolean(requestId)));
     } finally {
       setIsSending(false);
     }
@@ -1256,6 +1303,40 @@ export default function Home() {
                   <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-zinc-400">
                     <p className="max-w-xl text-lg">Sign in to start or continue a campaign.</p>
                     <p className="text-sm">You must sign in before sending commands.</p>
+                  </div>
+                ) : campaignListError ? (
+                  <div
+                    role="alert"
+                    className="flex h-full flex-col items-center justify-center gap-3 text-center text-zinc-400"
+                  >
+                    <p className="max-w-xl text-lg">Your campaigns could not be loaded.</p>
+                    <p className="text-sm">Your adventures are safe. Check your connection and try again.</p>
+                    <button
+                      type="button"
+                      onClick={handleRetryCampaignList}
+                      className="rounded-lg border border-white/15 px-3 py-1.5 text-sm font-semibold text-zinc-200 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                ) : activeHistoryFailed ? (
+                  <div
+                    role="alert"
+                    className="flex h-full flex-col items-center justify-center gap-3 text-center text-zinc-400"
+                  >
+                    <p className="max-w-xl text-lg">This campaign&apos;s history could not be loaded.</p>
+                    <p className="text-sm">Your adventure is safe. Try again to continue it.</p>
+                    <button
+                      type="button"
+                      onClick={handleRetryHistory}
+                      className="rounded-lg border border-white/15 px-3 py-1.5 text-sm font-semibold text-zinc-200 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                ) : isActiveHistoryLoading ? (
+                  <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-zinc-400">
+                    <p className="max-w-xl text-lg">Loading campaign history...</p>
                   </div>
                 ) : hasMessages ? (
                   <ConversationView

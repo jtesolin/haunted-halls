@@ -6,6 +6,7 @@ import {
   respondWithEngineError,
   respondWithInternalEngineError,
   respondWithUnexpectedProxyError,
+  ENGINE_TIMEOUT_MS,
 } from "@/lib/engine";
 import { ensureAllowedMutationOrigin, ensureAuthenticated } from "@/lib/route-auth";
 
@@ -30,6 +31,7 @@ export async function POST(request: Request) {
 
     const response = await fetchEngineAsUser("/api/campaign", internalUserId, {
       method: "POST",
+      timeoutMs: ENGINE_TIMEOUT_MS.campaignCreate,
       headers: {
         "Content-Type": "application/json",
       },
