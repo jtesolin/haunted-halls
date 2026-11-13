@@ -132,8 +132,14 @@ slow turn can take well over a minute.
 | BFF → engine, reads/deletes/user-resolve | 30s | `ENGINE_TIMEOUT_MS.read` in `lib/engine.ts` |
 | BFF → engine, campaign creation | 90s | `ENGINE_TIMEOUT_MS.campaignCreate` |
 | BFF → engine, chat turn | 150s | `ENGINE_TIMEOUT_MS.chat` |
-| Frontend Cloud Run request timeout | 180s | `timeout` on the frontend services in `infra/terraform/cloud-run.tf` |
-| Engine Cloud Run request timeout | 300s (default) | unchanged |
+| Frontend Cloud Run request timeout | 180s | `timeout` on the production and staging frontend services in `infra/terraform/cloud-run.tf` |
+| Per-PR preview frontend Cloud Run request timeout | 300s | `infra/terraform/preview-pr/services.tf` (unchanged; still above every BFF budget) |
+| Engine Cloud Run request timeout | 300s | unchanged |
+
+The invariant is `BFF budget < frontend Cloud Run timeout < engine Cloud Run timeout`. These
+values are deliberately duplicated across `lib/engine.ts`, `infra/terraform/` and this table;
+change them together. `tests/api.reliability.test.ts` asserts the TypeScript budgets stay below
+180s.
 
 Each layer is larger than the one it calls, so the BFF answers with a mapped error before
 Cloud Run cuts the request off. A timed-out engine call returns **504**

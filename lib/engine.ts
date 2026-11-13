@@ -192,6 +192,20 @@ async function fetchEngineWithTimeout(
   }
 }
 
+// The timeout signal stays armed while the response body streams, so a slow body read
+// rejects with a TimeoutError. Route handlers read engine JSON through this helper so that
+// case maps to the same 504 as a header-phase timeout instead of an unexpected 500.
+export async function readEngineJson<T = unknown>(response: Response): Promise<T> {
+  try {
+    return (await response.json()) as T;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "TimeoutError") {
+      throw new InternalEngineTimeoutError("Engine response body timed out");
+    }
+    throw error;
+  }
+}
+
 export async function fetchEngineAsService(input: string | URL, init: EngineRequestInit = {}) {
   return fetchEngineWithTimeout(
     resolveEngineUrl(input),

@@ -7,6 +7,7 @@ import ChatInput from "@/components/ChatInput";
 import CampaignSidebar from "@/components/CampaignSidebar";
 import CampaignToolbar, { type NavPanel } from "@/components/CampaignToolbar";
 import CharacterSheetPanel from "@/components/CharacterSheetPanel";
+import { applyLoadedHistory } from "@/lib/campaign-history";
 import { mergeCharacterId } from "@/lib/character-id";
 import { useFocusTrap } from "@/components/useFocusTrap";
 import ConversationView from "@/components/ConversationView";
@@ -703,18 +704,15 @@ export default function Home() {
       // been loaded or locally modified (sent/pending/failed messages) must never be
       // overwritten by a late or duplicate history response.
       setSessions((currentSessions) =>
-        currentSessions.map((session) =>
-          session.id === sessionId && !session.conversation_loaded
-            ? {
-                ...session,
-                title: campaign.name || session.title,
-                character_id: mergeCharacterId(campaign.character_id, session.character_id),
-                messages: conversationMessages,
-                updated_at: Date.now(),
-                conversation_loaded: true,
-                history_load_failed: false,
-              }
-            : session
+        applyLoadedHistory(
+          currentSessions,
+          sessionId,
+          {
+            title: campaign.name,
+            character_id: campaign.character_id,
+            messages: conversationMessages,
+          },
+          Date.now()
         )
       );
     } catch {

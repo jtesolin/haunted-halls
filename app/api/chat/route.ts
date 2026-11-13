@@ -5,6 +5,7 @@ import {
   isInternalEngineRequestError,
   respondWithEngineError,
   respondWithInternalEngineError,
+  readEngineJson,
   respondWithUnexpectedProxyError,
   getMaxInputCharacters,
   ENGINE_TIMEOUT_MS,
@@ -80,7 +81,7 @@ export async function POST(request: Request) {
       return await respondWithEngineError(response, "chat proxy", "Backend service unavailable");
     }
 
-    const data: ChatResponse = await response.json();
+    const data = await readEngineJson<ChatResponse>(response);
     return NextResponse.json(data);
   } catch (error) {
     if (isInternalEngineRequestError(error)) {

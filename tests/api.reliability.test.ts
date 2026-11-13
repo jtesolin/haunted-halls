@@ -99,6 +99,7 @@ describe("engine timeout budgets and mapping", () => {
     else process.env.INTERNAL_ENGINE_SERVICE_TOKEN = originalToken;
   });
 
+  // Keep in sync with `timeout = "180s"` on the frontend services in infra/terraform/cloud-run.tf.
   it("keeps every engine budget below the 180s frontend Cloud Run request timeout", () => {
     expect(ENGINE_TIMEOUT_MS.read).toBeLessThan(ENGINE_TIMEOUT_MS.campaignCreate);
     expect(ENGINE_TIMEOUT_MS.campaignCreate).toBeLessThan(ENGINE_TIMEOUT_MS.chat);
@@ -138,6 +139,34 @@ describe("engine timeout budgets and mapping", () => {
 
     expect(timeoutMs).toEqual([ENGINE_TIMEOUT_MS.read]);
     expect(response.status).toBe(504);
+  });
+
+  it.each([
+    ["chat", () => postChat(chatRequest(JSON.stringify({ message: "look" })))],
+    ["campaign list", () => getCampaigns()],
+  ])("maps a timeout while reading the engine %s response body to 504", async (_label, call) => {
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.reject(new DOMException("timed out", "TimeoutError")),
+    } as unknown as Response);
+
+    const response = await call();
+
+    expect(response.status).toBe(504);
+    expect(await response.json()).toEqual({ error: "Backend request timed out" });
+  });
+
+  it("keeps a malformed engine body (not a timeout) as an unexpected 500", async () => {
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.reject(new SyntaxError("Unexpected token")),
+    } as unknown as Response);
+
+    const response = await getCampaigns();
+
+    expect(response.status).toBe(500);
   });
 
   it("does not report a caller-initiated abort as an engine timeout", async () => {

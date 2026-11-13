@@ -5,6 +5,7 @@ import {
   isInternalEngineRequestError,
   respondWithEngineError,
   respondWithInternalEngineError,
+  readEngineJson,
   respondWithUnexpectedProxyError,
   ENGINE_TIMEOUT_MS,
 } from "@/lib/engine";
@@ -46,7 +47,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const data: CreateCampaignResponse = await response.json();
+    const data = await readEngineJson<CreateCampaignResponse>(response);
     return NextResponse.json(data, { status: 201 });
   } catch (error) {
     if (isInternalEngineRequestError(error)) {
