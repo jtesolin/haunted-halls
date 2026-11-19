@@ -19,8 +19,8 @@ authoritative for local engineering practice.
   [`jtesolin/haunted-halls-engine/docs/project-status.md`](https://github.com/jtesolin/haunted-halls-engine/blob/main/docs/project-status.md).
 - Canonical architecture and authority invariants:
   [`jtesolin/haunted-halls-engine/docs/architecture.md`](https://github.com/jtesolin/haunted-halls-engine/blob/main/docs/architecture.md).
-- Canonical review-disposition policy:
-  [`jtesolin/haunted-halls-engine/docs/review-triage-policy.md`](https://github.com/jtesolin/haunted-halls-engine/blob/main/docs/review-triage-policy.md).
+- Haunted Halls frontend dev-loop policy:
+  [`.claude/dev-loop-policy.md`](.claude/dev-loop-policy.md).
 
 When the sibling engine repository is present locally, its usual convenience
 path is `../haunted-halls-engine`; do not require that path to exist. The
@@ -35,8 +35,9 @@ When evaluating a current change, use sources in this order:
    acceptance criteria.
 3. The engine's canonical `docs/project-status.md`.
 4. The engine's canonical `docs/architecture.md`.
-5. This repository's `.github/copilot-instructions.md`.
-6. Older PR descriptions, historical issues, and conversational context only
+5. [.claude/dev-loop-policy.md](.claude/dev-loop-policy.md) when running the dev loop.
+6. This repository's `.github/copilot-instructions.md`.
+7. Older PR descriptions, historical issues, and conversational context only
    as supporting history when needed.
 
 If durable sources conflict, surface the current code and explicit issue intent
