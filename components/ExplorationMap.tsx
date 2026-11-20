@@ -96,6 +96,9 @@ export default function ExplorationMap({
   const viewBox = `${shown.cx - viewW / 2} ${shown.cy - viewH / 2} ${viewW} ${viewH}`;
 
   const onPointerDown = (event: PointerEvent<SVGSVGElement>) => {
+    if (event.pointerType === "mouse" && event.button !== 0) {
+      return;
+    }
     pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
     if (pointers.current.size === 2) {
       const [a, b] = [...pointers.current.values()];
@@ -232,7 +235,13 @@ export default function ExplorationMap({
         onPointerMove={onPointerMove}
         onPointerUp={endPointer}
         onPointerCancel={endPointer}
-        onLostPointerCapture={endPointer}
+        onLostPointerCapture={(event) => {
+          // Re-targeting capture from a node to the svg fires this on the node and bubbles here;
+          // only the svg losing its own capture ends the gesture.
+          if (event.target === event.currentTarget) {
+            endPointer(event);
+          }
+        }}
         className="h-72 w-full cursor-grab touch-none select-none rounded-xl border border-white/10 bg-black/30 active:cursor-grabbing"
       >
         <defs>

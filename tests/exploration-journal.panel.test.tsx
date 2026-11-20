@@ -363,6 +363,17 @@ describe("ExplorationJournalPanel", () => {
     expect(await screen.findByText("The room notes could not be loaded.")).toBeInTheDocument();
   });
 
+  it("rejects a notes response that belongs to a different room", async () => {
+    mockApi({ room: () => json({ room: { id: "hall", name: "Great Hall" }, current: true, notes: ["Wrong room."] }) });
+    renderPanel();
+    await screen.findByText("A cold hearth.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Library" }));
+
+    expect(await screen.findByText("The room notes could not be loaded.")).toBeInTheDocument();
+    expect(screen.queryByText("Wrong room.")).not.toBeInTheDocument();
+  });
+
   describe("map pointer handling", () => {
     const svg = () => screen.getByRole("group", { name: "Exploration map" });
     const center = () => {
@@ -384,6 +395,37 @@ describe("ExplorationJournalPanel", () => {
 
       fireEvent.click(screen.getByRole("button", { name: "Library" }));
       expect(screen.queryByText("Caretaker was here.")).not.toBeInTheDocument();
+    });
+
+    it("a lostpointercapture bubbling from a node mid-drag does not end the pan, but the svg's own does", async () => {
+      renderPanel();
+      await screen.findByText("A cold hearth.");
+      pointer("pointerdown", { clientX: 100, clientY: 100, buttons: 1 });
+      pointer("pointermove", { clientX: 140, clientY: 100, buttons: 1 });
+      const afterFirst = center();
+
+      fireEvent(
+        screen.getByRole("button", { name: "Library" }),
+        Object.assign(new MouseEvent("lostpointercapture", { bubbles: true }), { pointerId: 1, pointerType: "mouse" })
+      );
+      pointer("pointermove", { clientX: 180, clientY: 100, buttons: 1 });
+      expect(center().x).toBeLessThan(afterFirst.x);
+
+      const beforeEnd = center();
+      pointer("lostpointercapture", { buttons: 0 });
+      pointer("pointermove", { clientX: 260, clientY: 100, buttons: 1 });
+      expect(center()).toEqual(beforeEnd);
+    });
+
+    it("ignores non-primary mouse buttons", async () => {
+      renderPanel();
+      await screen.findByText("A cold hearth.");
+      const before = center();
+
+      pointer("pointerdown", { clientX: 100, clientY: 100, button: 2, buttons: 2 });
+      pointer("pointermove", { clientX: 200, clientY: 100, buttons: 2 });
+
+      expect(center()).toEqual(before);
     });
 
     it("a sub-threshold press still selects the room", async () => {

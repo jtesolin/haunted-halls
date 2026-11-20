@@ -181,7 +181,8 @@ export default function ExplorationJournalPanel({
           return;
         }
         const body = parseRoomNotes(res.body);
-        if (!body) {
+        // A payload for any other room must never be shown under the selected one.
+        if (!body || body.room.id !== selectedId) {
           settle({ status: "error", message: notesErrorMessage(500) });
           return;
         }
