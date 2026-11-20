@@ -7,6 +7,7 @@ import ChatInput from "@/components/ChatInput";
 import CampaignSidebar from "@/components/CampaignSidebar";
 import CampaignToolbar, { type NavPanel } from "@/components/CampaignToolbar";
 import CharacterSheetPanel from "@/components/CharacterSheetPanel";
+import ExplorationJournalPanel from "@/components/ExplorationJournalPanel";
 import { applyLoadedHistory } from "@/lib/campaign-history";
 import { mergeCharacterId } from "@/lib/character-id";
 import { useFocusTrap } from "@/components/useFocusTrap";
@@ -285,10 +286,15 @@ export default function Home() {
   const hasMessages = activeSession ? activeSession.messages.length > 0 : false;
   const activeCharacterId = activeSession?.character_id ?? null;
   const visiblePanel: NavPanel | null = isMobileViewport
-    ? mobileView === "campaigns" || mobileView === "character"
+    ? mobileView === "campaigns" || mobileView === "character" || mobileView === "exploration"
       ? mobileView
       : null
     : desktopPanel;
+  const activeCampaignId = activeSession && !activeSession.is_optimistic ? activeSession.campaign_id ?? null : null;
+  // Completed assistant replies: the journal refetches whenever a turn may have changed the world.
+  const completedReplyCount = activeSession
+    ? activeSession.messages.filter((message) => message.role === "assistant" && !message.is_loading).length
+    : 0;
   const isSidebarVisible = visiblePanel === "campaigns";
   // While a mobile menu or full-screen panel is open it is modal: background content is inert
   // and keyboard focus stays inside the panel.
@@ -1169,6 +1175,7 @@ export default function Home() {
             desktopPanel={desktopPanel}
             mobileView={mobileView}
             isCharacterAvailable={Boolean(activeCharacterId)}
+            isExplorationAvailable={Boolean(activeCampaignId)}
             onToggleDesktopPanel={handleToggleDesktopPanel}
             onOpenMobileMenu={() => setMobileView("menu")}
             onSelectMobilePanel={setMobileView}
@@ -1190,7 +1197,12 @@ export default function Home() {
                 ? {
                     role: "dialog",
                     "aria-modal": true,
-                    "aria-label": visiblePanel === "campaigns" ? "Campaigns" : "Character Sheet",
+                    "aria-label":
+                      visiblePanel === "campaigns"
+                        ? "Campaigns"
+                        : visiblePanel === "exploration"
+                          ? "Exploration Journal"
+                          : "Character Sheet",
                   }
                 : {})}
               className={
@@ -1217,6 +1229,19 @@ export default function Home() {
                   isSidebarVisible={isSidebarVisible}
                   className="min-w-0 overflow-hidden"
                 />
+              ) : visiblePanel === "exploration" ? (
+                activeCampaignId ? (
+                  <ExplorationJournalPanel
+                    key={activeCampaignId}
+                    id="exploration-journal-panel"
+                    campaignId={activeCampaignId}
+                    refreshKey={completedReplyCount}
+                    closeLabel={isMobileViewport ? "Back to Conversation" : "Collapse sidebar"}
+                    closeText={isMobileViewport ? "Back" : undefined}
+                    autoFocusClose={isMobileViewport}
+                    onClose={handleCloseActivePanel}
+                  />
+                ) : null
               ) : (
                 <CharacterSheetPanel
                   id="character-sheet-panel"
