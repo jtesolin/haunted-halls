@@ -140,6 +140,15 @@ describe("local OpenAI Responses fixtures", () => {
     expect(() => createMockResponse(titleRequest("Write the title.\nOpening scene:\nOpening"))).toThrow(
       "Unsupported text-generation prompt",
     );
+    // Right user prefix, but a developer prompt that is not the title agent's.
+    for (const developer of [
+      "Write a short campaign title (a few words) for a haunted-house text adventure. Be creative.",
+      "Name this campaign. Reply with the title only: no quotes and no extra commentary.",
+    ]) {
+      const request = titleRequest("Write the campaign title.\nOpening scene:\nOpening");
+      request.input[0] = message("developer", developer);
+      expect(() => createMockResponse(request)).toThrow("Unsupported text-generation prompt");
+    }
     expect(() => createMockResponse(textRequest(
       "Based on the campaign opening below, provide only a short haunted campaign title with no quotes and no extra commentary.\n\nOpening",
     ))).toThrow("Unsupported narrator request");
