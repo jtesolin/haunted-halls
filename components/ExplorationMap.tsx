@@ -41,7 +41,6 @@ export default function ExplorationMap({
   const [size, setSize] = useState(FALLBACK_SIZE);
   // At zoom 1 one map unit is one CSS pixel, so labels stay readable however large the graph is.
   const [view, setView] = useState<View>(homeView);
-  const [userMoved, setUserMoved] = useState(false);
   const drag = useRef<{ startX: number; startY: number; origin: View; moved: boolean } | null>(null);
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const pinch = useRef<{ distance: number; k: number } | null>(null);
@@ -61,13 +60,11 @@ export default function ExplorationMap({
     return () => observer.disconnect();
   }, []);
 
-  // Follow the current room until the user pans or zooms on their own.
-  const [lastHome, setLastHome] = useState(homeView);
-  if (lastHome !== homeView) {
-    setLastHome(homeView);
-    if (!userMoved) {
-      setView(homeView);
-    }
+  // A new current room re-homes the view (the layout is re-rooted there), even after the user panned.
+  const [lastRoomId, setLastRoomId] = useState(currentRoomId);
+  if (lastRoomId !== currentRoomId) {
+    setLastRoomId(currentRoomId);
+    setView(homeView);
   }
 
   const limit = (next: View): View => ({
@@ -76,16 +73,13 @@ export default function ExplorationMap({
     cy: clamp(next.cy, bounds.y, bounds.y + bounds.height),
   });
   const change = (next: View) => {
-    setUserMoved(true);
     setView(limit(next));
   };
-  const zoomBy = (factor: number) => change({ ...view, k: view.k * factor });
+  const zoomBy = (factor: number) => change({ ...shown, k: shown.k * factor });
   const reset = () => {
-    setUserMoved(false);
     setView(homeView);
   };
   const fitAll = () => {
-    setUserMoved(true);
     setView(
       limit({
         cx: bounds.x + bounds.width / 2,
@@ -95,28 +89,37 @@ export default function ExplorationMap({
     );
   };
 
-  const viewW = size.width / view.k;
-  const viewH = size.height / view.k;
-  const viewBox = `${view.cx - viewW / 2} ${view.cy - viewH / 2} ${viewW} ${viewH}`;
+  // Clamped on every render so a refresh that shrinks the bounds cannot strand the view.
+  const shown = limit(view);
+  const viewW = size.width / shown.k;
+  const viewH = size.height / shown.k;
+  const viewBox = `${shown.cx - viewW / 2} ${shown.cy - viewH / 2} ${viewW} ${viewH}`;
 
   const onPointerDown = (event: PointerEvent<SVGSVGElement>) => {
     pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
     if (pointers.current.size === 2) {
       const [a, b] = [...pointers.current.values()];
-      pinch.current = { distance: Math.hypot(a.x - b.x, a.y - b.y) || 1, k: view.k };
-      drag.current = { startX: 0, startY: 0, origin: view, moved: true };
+      pinch.current = { distance: Math.hypot(a.x - b.x, a.y - b.y) || 1, k: shown.k };
+      drag.current = { startX: 0, startY: 0, origin: shown, moved: true };
       return;
     }
-    drag.current = { startX: event.clientX, startY: event.clientY, origin: view, moved: false };
+    drag.current = { startX: event.clientX, startY: event.clientY, origin: shown, moved: false };
   };
   const onPointerMove = (event: PointerEvent<SVGSVGElement>) => {
     if (!pointers.current.has(event.pointerId)) {
       return;
     }
+    if (event.pointerType === "mouse" && event.buttons === 0) {
+      // Button released somewhere we never saw it: stop panning.
+      pointers.current.clear();
+      pinch.current = null;
+      drag.current = null;
+      return;
+    }
     pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
     if (pinch.current && pointers.current.size === 2) {
       const [a, b] = [...pointers.current.values()];
-      change({ ...view, k: pinch.current.k * (Math.hypot(a.x - b.x, a.y - b.y) / pinch.current.distance) });
+      change({ ...shown, k: pinch.current.k * (Math.hypot(a.x - b.x, a.y - b.y) / pinch.current.distance) });
       return;
     }
     const state = drag.current;
@@ -128,12 +131,25 @@ export default function ExplorationMap({
     if (!state.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) {
       return;
     }
+    if (!state.moved) {
+      // Capture only once it is a real drag so a plain click still reaches the room node.
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // Capture is best-effort; the buttons check above covers a missed release.
+      }
+    }
     state.moved = true;
     change({ ...state.origin, cx: state.origin.cx - dx / state.origin.k, cy: state.origin.cy - dy / state.origin.k });
   };
   const endPointer = (event: PointerEvent<SVGSVGElement>) => {
     pointers.current.delete(event.pointerId);
     pinch.current = null;
+    const remaining = [...pointers.current.values()];
+    if (remaining.length === 1) {
+      // Pinch ended with one finger still down: continue as a pan from where it is now.
+      drag.current = { startX: remaining[0].x, startY: remaining[0].y, origin: shown, moved: true };
+    }
     // Keep `moved` readable by the click that follows pointerup, then clear it.
     setTimeout(() => {
       if (pointers.current.size === 0) {
@@ -154,7 +170,6 @@ export default function ExplorationMap({
       }
       event.preventDefault();
       const factor = event.deltaY < 0 ? 1.15 : 1 / 1.15;
-      setUserMoved(true);
       setView((current) => ({
         ...current,
         k: clamp(current.k * factor, MIN_ZOOM, MAX_ZOOM),
@@ -181,9 +196,9 @@ export default function ExplorationMap({
   const revealNode = (x: number, y: number) => {
     const margin = 70;
     const inside =
-      Math.abs(x - view.cx) < viewW / 2 - margin && Math.abs(y - view.cy) < viewH / 2 - margin;
+      Math.abs(x - shown.cx) < viewW / 2 - margin && Math.abs(y - shown.cy) < viewH / 2 - margin;
     if (!inside) {
-      change({ ...view, cx: x, cy: y });
+      change({ ...shown, cx: x, cy: y });
     }
   };
 
@@ -212,11 +227,12 @@ export default function ExplorationMap({
         role="group"
         aria-label="Exploration map"
         viewBox={viewBox}
-        data-view-scale={view.k}
+        data-view-scale={shown.k}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={endPointer}
         onPointerCancel={endPointer}
+        onLostPointerCapture={endPointer}
         className="h-72 w-full cursor-grab touch-none select-none rounded-xl border border-white/10 bg-black/30 active:cursor-grabbing"
       >
         <defs>
@@ -269,7 +285,18 @@ export default function ExplorationMap({
                 data-selected={isSelected}
                 onClick={() => select(node.id)}
                 onKeyDown={(event) => onNodeKey(event, node.id)}
-                onFocus={() => revealNode(x, y)}
+                onFocus={(event) => {
+                  // Only keyboard focus scrolls the map; a mouse click must not shift it under the cursor.
+                  let keyboard = true;
+                  try {
+                    keyboard = event.currentTarget.matches(":focus-visible");
+                  } catch {
+                    // Browsers without :focus-visible: treat as keyboard.
+                  }
+                  if (keyboard) {
+                    revealNode(x, y);
+                  }
+                }}
                 className="group cursor-pointer outline-none"
               >
                 <rect

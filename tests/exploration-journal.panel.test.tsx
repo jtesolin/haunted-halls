@@ -278,22 +278,6 @@ describe("ExplorationJournalPanel", () => {
     expect(Number(svg.getAttribute("data-view-scale"))).toBeGreaterThan(1);
   });
 
-  it("brings a keyboard-focused node into view", async () => {
-    const nodes = Array.from({ length: 8 }, (_, i) => ({ id: `r${i}`, kind: "room", name: `Room ${i}` }));
-    const edges = nodes.slice(1).map((node, i) => ({
-      id: `e${i}`, source: nodes[i].id, target: node.id, kind: "exit", label: "on", traversed: true,
-    }));
-    mockApi({ graph: () => json({ current_location: { id: "r0", name: "Room 0" }, nodes, edges, observations: ["x"] }) });
-    renderPanel();
-    await screen.findByText("x");
-    const svg = screen.getByRole("group", { name: "Exploration map" });
-    const before = svg.getAttribute("viewBox");
-
-    fireEvent.focus(screen.getByRole("button", { name: "Room 7" }));
-
-    expect(svg.getAttribute("viewBox")).not.toBe(before);
-  });
-
   it("follows the current room again after a picked room becomes current", async () => {
     const view = renderPanel();
     await screen.findByText("A cold hearth.");
@@ -364,5 +348,122 @@ describe("ExplorationJournalPanel", () => {
     expect(global.fetch).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("shows the error state for malformed nested graph and notes payloads instead of crashing", async () => {
+    mockApi({ graph: () => json({ ...GRAPH, nodes: [null] }) });
+    const first = renderPanel();
+    expect(await screen.findByText("The exploration journal could not be loaded.")).toBeInTheDocument();
+    first.unmount();
+
+    mockApi({ room: () => json({ room: { id: "library", name: "Library" }, current: false, notes: [null] }) });
+    renderPanel();
+    await screen.findByText("A cold hearth.");
+    fireEvent.click(screen.getByRole("button", { name: "Library" }));
+    expect(await screen.findByText("The room notes could not be loaded.")).toBeInTheDocument();
+  });
+
+  describe("map pointer handling", () => {
+    const svg = () => screen.getByRole("group", { name: "Exploration map" });
+    const center = () => {
+      const [x, y, w, h] = svg().getAttribute("viewBox")!.split(" ").map(Number);
+      return { x: x + w / 2, y: y + h / 2 };
+    };
+    const pointer = (type: string, init: Record<string, unknown>) =>
+      fireEvent(svg(), Object.assign(new MouseEvent(type, { bubbles: true, ...init }), { pointerId: init.pointerId ?? 1, pointerType: init.pointerType ?? "mouse" }));
+
+    it("drag pans the map and suppresses the click that follows", async () => {
+      renderPanel();
+      await screen.findByText("A cold hearth.");
+      const before = center();
+
+      pointer("pointerdown", { clientX: 100, clientY: 100, buttons: 1 });
+      pointer("pointermove", { clientX: 160, clientY: 130, buttons: 1 });
+      pointer("pointerup", { clientX: 160, clientY: 130 });
+      expect(center().x).toBeLessThan(before.x);
+
+      fireEvent.click(screen.getByRole("button", { name: "Library" }));
+      expect(screen.queryByText("Caretaker was here.")).not.toBeInTheDocument();
+    });
+
+    it("a sub-threshold press still selects the room", async () => {
+      renderPanel();
+      await screen.findByText("A cold hearth.");
+      const before = center();
+
+      pointer("pointerdown", { clientX: 100, clientY: 100, buttons: 1 });
+      pointer("pointermove", { clientX: 101, clientY: 101, buttons: 1 });
+      pointer("pointerup", { clientX: 101, clientY: 101 });
+      fireEvent.click(screen.getByRole("button", { name: "Library" }));
+
+      expect(center()).toEqual(before);
+      expect(await screen.findByText("Caretaker was here.")).toBeInTheDocument();
+    });
+
+    it("stops panning once the mouse button was released out of sight", async () => {
+      renderPanel();
+      await screen.findByText("A cold hearth.");
+      pointer("pointerdown", { clientX: 100, clientY: 100, buttons: 1 });
+      pointer("pointermove", { clientX: 140, clientY: 100, buttons: 1 });
+      const panned = center();
+
+      // Release happened outside: the next move over the map reports no button.
+      pointer("pointermove", { clientX: 220, clientY: 100, buttons: 0 });
+
+      expect(center()).toEqual(panned);
+    });
+
+    it("pinch changes the scale and lifting one finger does not make the map jump", async () => {
+      renderPanel();
+      await screen.findByText("A cold hearth.");
+      pointer("pointerdown", { pointerId: 1, pointerType: "touch", clientX: 100, clientY: 100, buttons: 1 });
+      pointer("pointerdown", { pointerId: 2, pointerType: "touch", clientX: 140, clientY: 100, buttons: 1 });
+      pointer("pointermove", { pointerId: 2, pointerType: "touch", clientX: 220, clientY: 100, buttons: 1 });
+      expect(Number(svg().getAttribute("data-view-scale"))).toBeGreaterThan(1);
+
+      pointer("pointerup", { pointerId: 1, pointerType: "touch", clientX: 100, clientY: 100 });
+      const settled = center();
+      pointer("pointermove", { pointerId: 2, pointerType: "touch", clientX: 222, clientY: 100, buttons: 1 });
+
+      expect(Math.abs(center().x - settled.x)).toBeLessThan(5);
+    });
+
+    it("re-homes the view when the current room changes, even after the user panned", async () => {
+      const view = renderPanel();
+      await screen.findByText("A cold hearth.");
+      pointer("pointerdown", { clientX: 100, clientY: 100, buttons: 1 });
+      pointer("pointermove", { clientX: 200, clientY: 100, buttons: 1 });
+      pointer("pointerup", { clientX: 200, clientY: 100 });
+      expect(center().x).not.toBe(0);
+
+      mockApi({
+        graph: () => json({ ...GRAPH, current_location: { id: "library", name: "Library" }, observations: ["Shelves."] }),
+      });
+      view.rerender(<ExplorationJournalPanel campaignId="c1" refreshKey={1} closeLabel="x" onClose={vi.fn()} />);
+      await screen.findByText("Shelves.");
+
+      expect(center()).toEqual({ x: 0, y: 0 });
+    });
+
+    it("mouse focus does not shift the view but keyboard focus does", async () => {
+      const nodes = Array.from({ length: 8 }, (_, i) => ({ id: `r${i}`, kind: "room", name: `Room ${i}` }));
+      const edges = nodes.slice(1).map((node, i) => ({
+        id: `e${i}`, source: nodes[i].id, target: node.id, kind: "exit", label: "on", traversed: true,
+      }));
+      mockApi({ graph: () => json({ current_location: { id: "r0", name: "Room 0" }, nodes, edges, observations: ["x"] }) });
+      renderPanel();
+      await screen.findByText("x");
+      const before = svg().getAttribute("viewBox");
+      const node = screen.getByRole("button", { name: "Room 7" });
+
+      const original = node.matches.bind(node);
+      node.matches = (selector: string) => (selector === ":focus-visible" ? false : original(selector));
+      fireEvent.focus(node);
+      expect(svg().getAttribute("viewBox")).toBe(before);
+
+      node.matches = (selector: string) => (selector === ":focus-visible" ? true : original(selector));
+      fireEvent.focus(node);
+      expect(svg().getAttribute("viewBox")).not.toBe(before);
+    });
   });
 });

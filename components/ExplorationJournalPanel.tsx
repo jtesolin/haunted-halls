@@ -3,6 +3,7 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { ArrowLeft, ChevronDown, LocateFixed, X } from "lucide-react";
 import ExplorationMap from "@/components/ExplorationMap";
+import { parseExploration, parseRoomNotes } from "@/lib/exploration-validate";
 import type { ExplorationResponse, ExplorationRoomNotes } from "@/types/exploration";
 
 type Loaded<T> = { status: "error"; message: string } | { status: "empty" } | { status: "loaded"; data: T };
@@ -113,7 +114,7 @@ export default function ExplorationJournalPanel({
       );
     void (async () => {
       try {
-        const res = await fetchJson<Partial<ExplorationResponse>>(
+        const res = await fetchJson<unknown>(
           `/api/campaign/${encodeURIComponent(campaignId)}/exploration`,
           controller.signal
         );
@@ -125,17 +126,12 @@ export default function ExplorationJournalPanel({
           settle(res.status === 404 ? { status: "empty" } : { status: "error", message: graphErrorMessage(res.status) });
           return;
         }
-        const body = res.body;
-        if (
-          typeof body?.current_location?.id !== "string" ||
-          !Array.isArray(body.nodes) ||
-          !Array.isArray(body.edges) ||
-          !Array.isArray(body.observations)
-        ) {
+        const body = parseExploration(res.body);
+        if (!body) {
           settle({ status: "error", message: graphErrorMessage(500) });
           return;
         }
-        settle({ status: "loaded", data: body as ExplorationResponse });
+        settle({ status: "loaded", data: body });
       } catch {
         if (!controller.signal.aborted) {
           settle({ status: "error", message: graphErrorMessage(500) });
@@ -173,7 +169,7 @@ export default function ExplorationJournalPanel({
       );
     void (async () => {
       try {
-        const res = await fetchJson<Partial<ExplorationRoomNotes>>(
+        const res = await fetchJson<unknown>(
           `/api/campaign/${encodeURIComponent(campaignId)}/exploration/rooms/${encodeURIComponent(selectedId)}`,
           controller.signal
         );
@@ -184,12 +180,12 @@ export default function ExplorationJournalPanel({
           settle({ status: "error", message: notesErrorMessage(res.status) });
           return;
         }
-        const body = res.body;
-        if (typeof body?.room?.name !== "string" || !Array.isArray(body.notes)) {
+        const body = parseRoomNotes(res.body);
+        if (!body) {
           settle({ status: "error", message: notesErrorMessage(500) });
           return;
         }
-        settle({ status: "loaded", data: body as ExplorationRoomNotes });
+        settle({ status: "loaded", data: body });
       } catch {
         if (!controller.signal.aborted) {
           settle({ status: "error", message: notesErrorMessage(500) });
