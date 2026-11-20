@@ -14,6 +14,16 @@ const textRequest = (text: string) => ({
   model: "e2e-test-model",
   input: [message("developer", narrator), message("user", "Current scene (authoritative, observable now):\n{}"), message("user", text)],
 });
+// The engine's dedicated title agent: its own developer prompt, no narrator prompt or scene.
+const titleRequest = (text: string) => ({
+  model: "e2e-test-model",
+  input: [
+    message("developer", "Write a short campaign title (a few words) for a haunted-house text adventure, " +
+      "naming this specific story (its premise and objective), not the starting room or its furnishings. " +
+      "Reply with the title only: no quotes and no extra commentary."),
+    message("user", text),
+  ],
+});
 const structuredRequest = (name: string, text = "Player text:\nlook around") => ({
   model: "e2e-test-model", input: [message("user", text)],
   text: { format: { type: "json_schema", name, strict: true,
@@ -70,6 +80,8 @@ describe("local OpenAI Responses fixtures", () => {
         ability_id: "gentle_pull", display_name: "Gentle Pull",
         description: "Draw a small nearby portable object toward your hand.", track: "resolve", operation: "retrieve",
       },
+      // null is a valid provider answer: the engine falls back to its deterministic scenario.
+      scenario: null,
     });
     expect(JSON.parse(output(structuredRequest("ActionParserOutput")))).toMatchObject({
       action: "observe", target: null, confidence: 1, parse_status: "ok", parser_notes: null,
@@ -82,7 +94,7 @@ describe("local OpenAI Responses fixtures", () => {
 
   it("requires distinct sensory and utility choices in the current starter slots", () => {
     const contract = structuredContracts.StarterAbilityProviderGeneration;
-    expect(contract.required).toEqual(["first_ability", "second_ability"]);
+    expect(contract.required).toEqual(["first_ability", "second_ability", "scenario"]);
     expect(contract.properties.first_ability.anyOf).toEqual(contract.properties.second_ability.anyOf);
     expect(contract.$defs.StarterAbilitySensoryProviderOutput.required).toContain("sense_filter");
     expect(contract.$defs.StarterAbilityUtilityProviderOutput.required).toContain("operation");
@@ -118,10 +130,19 @@ describe("local OpenAI Responses fixtures", () => {
     const look = textRequest("look around");
     look.input.splice(1, 0, message("assistant", "Old opening scene: unrelated"));
     expect(output(look)).toBe(LOOK_AROUND_TEXT);
-    expect(output(textRequest("Based on the campaign opening below, provide only a short haunted campaign title with no quotes and no extra commentary.\n\nOpening"))).toBe("The Lantern's Vigil");
+    expect(output(titleRequest("Write the campaign title.\nPremise: p\nObjective: o\nOpening scene:\nOpening"))).toBe("The Lantern's Vigil");
     expect(output(textRequest("Using the authoritative current scene provided, write the opening scene for this haunted halls campaign. More instructions."))).toBe(OPENING_TEXT);
     expect(output(textRequest("examine the lantern"))).toContain("The lantern glows softly");
     expect(output(look)).toBe(LOOK_AROUND_TEXT);
+  });
+
+  it("rejects a title request that does not match the engine's title agent contract", () => {
+    expect(() => createMockResponse(titleRequest("Write the title.\nOpening scene:\nOpening"))).toThrow(
+      "Unsupported text-generation prompt",
+    );
+    expect(() => createMockResponse(textRequest(
+      "Based on the campaign opening below, provide only a short haunted campaign title with no quotes and no extra commentary.\n\nOpening",
+    ))).toThrow("Unsupported narrator request");
   });
 
   it("supports plain-text summary and JSON-array reflection responses", () => {

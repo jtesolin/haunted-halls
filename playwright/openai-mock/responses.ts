@@ -53,6 +53,8 @@ function structuredOutput(name: unknown, input: ReturnType<typeof messages>) {
           description: "Draw a small nearby portable object toward your hand.",
           track: "resolve", operation: "retrieve",
         },
+        // null is a valid provider answer: the engine then uses its deterministic fallback scenario.
+        scenario: null,
       };
     case "ActionParserOutput": {
       const playerText = input.at(-1)?.text;
@@ -87,6 +89,12 @@ function textOutput(input: ReturnType<typeof messages>): string {
       lastUserText.startsWith("Campaign state:\n")) {
     return JSON.stringify(["The player began exploring the Entry Hall."]);
   }
+  // The engine's dedicated title agent sends its own developer prompt (not the narrator's).
+  if (instruction.startsWith("Write a short campaign title (a few words) for a haunted-house text adventure") &&
+      instruction.endsWith("Reply with the title only: no quotes and no extra commentary.") &&
+      lastUserText.startsWith("Write the campaign title.\n")) {
+    return "The Lantern's Vigil";
+  }
   if (!instruction.startsWith("You are the AI narrator for a haunted halls adventure.") ||
       !input.some((message) => message.text.startsWith("Current scene (authoritative, observable now):\n"))) {
     throw new UnsupportedRequestError("Unsupported text-generation prompt");
@@ -95,11 +103,6 @@ function textOutput(input: ReturnType<typeof messages>): string {
     "Using the authoritative current scene provided, write the opening scene for this haunted halls campaign."
   )) {
     return OPENING_TEXT;
-  }
-  if (lastUserText.startsWith(
-    "Based on the campaign opening below, provide only a short haunted campaign title with no quotes and no extra commentary.\n\n"
-  )) {
-    return "The Lantern's Vigil";
   }
   if (lastUserText === "look around") return LOOK_AROUND_TEXT;
   if (lastUserText === "examine the lantern") {
