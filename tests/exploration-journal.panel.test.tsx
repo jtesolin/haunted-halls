@@ -392,6 +392,33 @@ describe("ExplorationJournalPanel", () => {
       expect(oneWay.querySelector("path")!.getAttribute("marker-end")).toBe("url(#exploration-arrow)");
     });
 
+    it("treats a pair as walked when only one direction was traversed", async () => {
+      const mixed = {
+        ...GRAPH,
+        edges: GRAPH.edges.map((e) => (e.id === "library/exit/s" ? { ...e, traversed: false } : e)),
+      };
+      mockApi({ graph: () => json(mixed) });
+      renderPanel();
+      await screen.findByText("A cold hearth.");
+      const twoWay = edges().find((el) => el.getAttribute("data-two-way") === "true")!;
+      expect(twoWay.querySelector("path")!.getAttribute("stroke-dasharray")).toBeNull();
+      expect(twoWay.querySelector("title")!.textContent).not.toContain("not yet traversed");
+
+    });
+
+    it("draws a pair dashed only when neither direction was traversed", async () => {
+      const none = {
+        ...GRAPH,
+        edges: GRAPH.edges.map((e) => (e.target === "frontier-abc" ? e : { ...e, traversed: false })),
+      };
+      mockApi({ graph: () => json(none) });
+      renderPanel();
+      await screen.findByText("A cold hearth.");
+      const twoWay = edges().find((el) => el.getAttribute("data-two-way") === "true")!;
+      expect(twoWay.querySelector("path")!.getAttribute("stroke-dasharray")).toBe("5 4");
+      expect(twoWay.querySelector("title")!.textContent).toContain("not yet traversed");
+    });
+
     it("re-labels the connection from the new room after the player moves", async () => {
       const moved = {
         ...GRAPH,

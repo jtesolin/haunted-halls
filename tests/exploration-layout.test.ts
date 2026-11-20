@@ -78,7 +78,14 @@ describe("layoutGraph orientation", () => {
   });
 
   it("does not depend on the order the engine lists edges", () => {
-    expect(shown(layoutGraph(hall, [...pair].reverse(), "entry"))).toEqual(shown(layoutGraph(hall, pair, "entry")));
+    const parallel = [...pair, link("entry", "corridor", "stairs", "route"), link("corridor", "entry", "tunnel", "route")];
+    const a = layoutGraph(hall, parallel, "entry");
+    const b = layoutGraph(hall, [...parallel].reverse(), "entry");
+    const byId = (l: typeof a) => [...l.edges].sort((x, y) => (x.edge.id < y.edge.id ? -1 : 1));
+    expect(byId(b).map((e) => [e.edge.id, e.path, e.labelX, e.labelY])).toEqual(
+      byId(a).map((e) => [e.edge.id, e.path, e.labelX, e.labelY])
+    );
+    expect(b.nodes.map((n) => [n.node.id, n.x, n.y])).toEqual(a.nodes.map((n) => [n.node.id, n.x, n.y]));
   });
 
   it("keeps orienting outward through intermediate rooms and re-orients when the player moves", () => {
@@ -134,6 +141,14 @@ describe("layoutGraph orientation", () => {
     expect(out).toContain("a-unmapped passage->b");
     expect(out).toContain("a-west->frontier-1");
     expect(out).toHaveLength(5);
+    const laid = layoutGraph(nodes, edges, "a");
+    expect(new Set(laid.edges.map((e) => e.path)).size).toBe(5);
+  });
+
+  it("never folds when one side has a single exit and the other has several", () => {
+    const nodes = [room("a"), room("b")];
+    const edges = [link("a", "b", "stairs"), link("b", "a", "hatch"), link("b", "a", "door")];
+    expect(shown(layoutGraph(nodes, edges, "a"))).toEqual(["a-stairs->b", "b-door->a", "b-hatch->a"]);
   });
 
   it("pairs several exits between two rooms only by named opposites", () => {
