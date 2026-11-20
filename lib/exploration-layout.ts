@@ -132,19 +132,24 @@ export function layoutGraph(nodes: ExplorationNode[], edges: ExplorationEdge[], 
     };
   });
 
-  const pad = 70;
-  const xs = positioned.map((entry) => entry.x);
-  const ys = positioned.map((entry) => entry.y);
-  const minX = Math.min(...xs, 0) - ROOM_HALF.w - pad / 2;
-  const minY = Math.min(...ys, 0) - ROOM_HALF.h - pad;
+  // Bounds cover node boxes plus every edge label/curve peak, so fanned-out parallel edges and
+  // self-loops are never clipped by "fit whole map".
+  const LABEL_HALF = { w: 50, h: 20 };
+  const left = [...positioned.map((n) => n.x - n.half.w), ...positionedEdges.map((e) => e.labelX - LABEL_HALF.w)];
+  const right = [...positioned.map((n) => n.x + n.half.w), ...positionedEdges.map((e) => e.labelX + LABEL_HALF.w)];
+  const top = [...positioned.map((n) => n.y - n.half.h - 36), ...positionedEdges.map((e) => e.labelY - LABEL_HALF.h)];
+  const bottom = [...positioned.map((n) => n.y + n.half.h), ...positionedEdges.map((e) => e.labelY + LABEL_HALF.h)];
+  const pad = 35;
+  const minX = Math.min(...left, 0) - pad;
+  const minY = Math.min(...top, 0) - pad;
   return {
     nodes: positioned,
     edges: positionedEdges,
     bounds: {
       x: minX,
       y: minY,
-      width: Math.max(...xs, 0) + ROOM_HALF.w + pad / 2 - minX,
-      height: Math.max(...ys, 0) + ROOM_HALF.h + pad / 2 - minY,
+      width: Math.max(...right, 0) + pad - minX,
+      height: Math.max(...bottom, 0) + pad - minY,
     },
   };
 }

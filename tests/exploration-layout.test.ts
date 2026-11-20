@@ -42,4 +42,21 @@ describe("layoutGraph", () => {
     expect(layout.edges).toHaveLength(0);
     expect(layout.bounds.width).toBeGreaterThan(0);
   });
+
+  it("keeps every fanned-out parallel edge curve and label inside the bounds", () => {
+    // A corridor (one row) whose last pair is joined by four parallel/reciprocal edges plus a self-loop.
+    const nodes = [room("a"), room("b"), room("c")];
+    const edges = [
+      edge("a-b", "a", "b"), edge("b-c1", "b", "c"), edge("b-c2", "b", "c"),
+      edge("c-b1", "c", "b"), edge("c-b2", "c", "b"), edge("self", "c", "c"),
+    ];
+    const { edges: laid, bounds } = layoutGraph(nodes, edges, "a");
+
+    for (const { labelX, labelY } of laid) {
+      expect(labelX).toBeGreaterThanOrEqual(bounds.x);
+      expect(labelX).toBeLessThanOrEqual(bounds.x + bounds.width);
+      expect(labelY - 10).toBeGreaterThanOrEqual(bounds.y);
+      expect(labelY + 10).toBeLessThanOrEqual(bounds.y + bounds.height);
+    }
+  });
 });
