@@ -392,10 +392,13 @@ describe("ExplorationJournalPanel", () => {
       expect(oneWay.querySelector("path")!.getAttribute("marker-end")).toBe("url(#exploration-arrow)");
     });
 
-    it("treats a pair as walked when only one direction was traversed", async () => {
+    it.each([
+      ["only the reverse direction was walked", "hall/exit/n"],
+      ["only the outward direction was walked", "library/exit/s"],
+    ])("draws a pair solid when %s", async (_, untraversed) => {
       const mixed = {
         ...GRAPH,
-        edges: GRAPH.edges.map((e) => (e.id === "library/exit/s" ? { ...e, traversed: false } : e)),
+        edges: GRAPH.edges.map((e) => (e.id === untraversed ? { ...e, traversed: false } : e)),
       };
       mockApi({ graph: () => json(mixed) });
       renderPanel();
@@ -403,7 +406,6 @@ describe("ExplorationJournalPanel", () => {
       const twoWay = edges().find((el) => el.getAttribute("data-two-way") === "true")!;
       expect(twoWay.querySelector("path")!.getAttribute("stroke-dasharray")).toBeNull();
       expect(twoWay.querySelector("title")!.textContent).not.toContain("not yet traversed");
-
     });
 
     it("draws a pair dashed only when neither direction was traversed", async () => {
