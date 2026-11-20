@@ -2,10 +2,10 @@
 
 import Image from "next/image";
 import { useEffect, useRef } from "react";
-import { BookOpen, Menu, User } from "lucide-react";
+import { BookOpen, Compass, Menu, User } from "lucide-react";
 import { useFocusTrap } from "@/components/useFocusTrap";
 
-export type NavPanel = "campaigns" | "character";
+export type NavPanel = "campaigns" | "character" | "exploration";
 
 const RAIL_BUTTON_CLASS =
   "inline-flex h-9 w-9 items-center justify-center rounded-lg border transition-[background-color,border-color,color] duration-300 ease-in-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70 disabled:cursor-not-allowed disabled:opacity-40";
@@ -13,6 +13,7 @@ const RAIL_IDLE_CLASS =
   "border-zinc-700/70 bg-zinc-900/20 text-zinc-400 hover:border-zinc-500 hover:bg-zinc-900/60 hover:text-zinc-200";
 const RAIL_SELECTED_CLASS = "border-sky-500/60 bg-sky-500/15 text-sky-200";
 
+export const EXPLORATION_UNAVAILABLE_HINT = "Exploration Journal is available once the campaign has started";
 export const CHARACTER_UNAVAILABLE_HINT = "Character Sheet is available once the campaign has a character";
 
 export default function CampaignToolbar({
@@ -20,6 +21,7 @@ export default function CampaignToolbar({
   desktopPanel,
   mobileView,
   isCharacterAvailable,
+  isExplorationAvailable,
   onToggleDesktopPanel,
   onOpenMobileMenu,
   onSelectMobilePanel,
@@ -31,6 +33,7 @@ export default function CampaignToolbar({
   desktopPanel: NavPanel | null;
   mobileView: "menu" | NavPanel | null;
   isCharacterAvailable: boolean;
+  isExplorationAvailable: boolean;
   onToggleDesktopPanel: (panel: NavPanel) => void;
   onOpenMobileMenu: () => void;
   onSelectMobilePanel: (panel: NavPanel) => void;
@@ -54,6 +57,7 @@ export default function CampaignToolbar({
   }, [mobileView, isMobileViewport]);
 
   const characterEnabled = isCharacterAvailable || desktopPanel === "character";
+  const explorationEnabled = isExplorationAvailable || desktopPanel === "exploration";
 
   return (
     <>
@@ -113,6 +117,16 @@ export default function CampaignToolbar({
                 </button>
                 <button
                   type="button"
+                  disabled={!isExplorationAvailable}
+                  title={isExplorationAvailable ? undefined : EXPLORATION_UNAVAILABLE_HINT}
+                  onClick={() => onSelectMobilePanel("exploration")}
+                  className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium text-zinc-100 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70 disabled:cursor-not-allowed disabled:text-zinc-600 disabled:hover:bg-transparent"
+                >
+                  <Compass className="h-4 w-4" aria-hidden="true" />
+                  Exploration Journal
+                </button>
+                <button
+                  type="button"
                   onClick={onCloseMobile}
                   className="rounded-xl px-3 py-2.5 text-left text-sm text-zinc-400 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70"
                 >
@@ -162,6 +176,19 @@ export default function CampaignToolbar({
               className={`${RAIL_BUTTON_CLASS} ${desktopPanel === "character" ? RAIL_SELECTED_CLASS : RAIL_IDLE_CLASS}`}
             >
               <User className="h-4 w-4" aria-hidden="true" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onToggleDesktopPanel("exploration")}
+              disabled={!explorationEnabled}
+              aria-label="Exploration Journal"
+              aria-expanded={desktopPanel === "exploration"}
+              aria-controls={desktopPanel === "exploration" ? "exploration-journal-panel" : undefined}
+              title={explorationEnabled ? "Exploration Journal" : EXPLORATION_UNAVAILABLE_HINT}
+              className={`${RAIL_BUTTON_CLASS} ${desktopPanel === "exploration" ? RAIL_SELECTED_CLASS : RAIL_IDLE_CLASS}`}
+            >
+              <Compass className="h-4 w-4" aria-hidden="true" />
             </button>
 
             {desktopPanel !== "campaigns" ? (

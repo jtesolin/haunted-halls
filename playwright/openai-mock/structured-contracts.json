@@ -20,6 +20,94 @@
         "title": "ProgressionTrackId",
         "type": "string"
       },
+      "ScenarioBeatProviderOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "beat_id": {
+            "title": "Beat Id",
+            "type": "string"
+          },
+          "clue": {
+            "title": "Clue",
+            "type": "string"
+          }
+        },
+        "required": [
+          "beat_id",
+          "clue"
+        ],
+        "title": "ScenarioBeatProviderOutput",
+        "type": "object"
+      },
+      "ScenarioOutcomeProviderOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "outcome_id": {
+            "title": "Outcome Id",
+            "type": "string"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome_id",
+          "summary"
+        ],
+        "title": "ScenarioOutcomeProviderOutput",
+        "type": "object"
+      },
+      "ScenarioProviderOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "premise": {
+            "title": "Premise",
+            "type": "string"
+          },
+          "objective": {
+            "title": "Objective",
+            "type": "string"
+          },
+          "stakes": {
+            "title": "Stakes",
+            "type": "string"
+          },
+          "opening_hook": {
+            "title": "Opening Hook",
+            "type": "string"
+          },
+          "hidden_truth": {
+            "title": "Hidden Truth",
+            "type": "string"
+          },
+          "beats": {
+            "items": {
+              "$ref": "#/$defs/ScenarioBeatProviderOutput"
+            },
+            "title": "Beats",
+            "type": "array"
+          },
+          "outcomes": {
+            "items": {
+              "$ref": "#/$defs/ScenarioOutcomeProviderOutput"
+            },
+            "title": "Outcomes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "premise",
+          "objective",
+          "stakes",
+          "opening_hook",
+          "hidden_truth",
+          "beats",
+          "outcomes"
+        ],
+        "title": "ScenarioProviderOutput",
+        "type": "object"
+      },
       "StarterAbilitySensoryProviderOutput": {
         "additionalProperties": false,
         "properties": {
@@ -178,11 +266,22 @@
           }
         ],
         "title": "Second Ability"
+      },
+      "scenario": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ScenarioProviderOutput"
+          },
+          {
+            "type": "null"
+          }
+        ]
       }
     },
     "required": [
       "first_ability",
-      "second_ability"
+      "second_ability",
+      "scenario"
     ],
     "title": "StarterAbilityProviderGeneration",
     "type": "object"

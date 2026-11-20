@@ -1013,7 +1013,10 @@ Before fixture dispatch, structured requests must exactly match the checked-in
 `playwright/openai-mock/structured-contracts.json` contracts (object-key order
 is ignored; nested changes are rejected). These were generated with OpenAI SDK
 2.44.0's `type_to_text_format_param` from engine main
-`96360c38431fc1c515d1a94349a79f28efff8665`, not raw Pydantic schemas.
+`77872c2de9b3c1a6a9167dbe219f50aaf7798334`, not raw Pydantic schemas.
+The starter response also answers the contract's nullable `scenario` with `null`
+(the engine then uses its deterministic fallback scenario), and campaign titles
+are routed by the engine's dedicated title-agent prompts, not the narrator's.
 The starter response uses `first_ability`/`second_ability` with mechanically
 distinct sensory (`sense_filter`) and utility (`operation`) choices; the strict
 contract also supports traversal (`traversal_method`) choices.
