@@ -374,6 +374,41 @@ describe("ExplorationJournalPanel", () => {
     expect(screen.queryByText("Wrong room.")).not.toBeInTheDocument();
   });
 
+  describe("map connections", () => {
+    const edges = () => screen.getAllByTestId("map-edge");
+
+    it("draws a reciprocal pair once, labelled from the current room, without an arrowhead", async () => {
+      renderPanel();
+      await screen.findByText("A cold hearth.");
+
+      expect(edges()).toHaveLength(2);
+      const twoWay = edges().find((el) => el.getAttribute("data-two-way") === "true")!;
+      expect(within(twoWay).getByText("north door")).toBeTruthy();
+      expect(within(twoWay).queryByText("south door")).toBeNull();
+      expect(twoWay.querySelector("path")!.getAttribute("marker-end")).toBeNull();
+      expect(twoWay.querySelector("title")!.textContent).toContain("Library: south door");
+      // The anonymous frontier link stays one-way with its arrowhead.
+      const oneWay = edges().find((el) => el.getAttribute("data-two-way") === "false")!;
+      expect(oneWay.querySelector("path")!.getAttribute("marker-end")).toBe("url(#exploration-arrow)");
+    });
+
+    it("re-labels the connection from the new room after the player moves", async () => {
+      const moved = {
+        ...GRAPH,
+        current_location: { id: "library", name: "Library" },
+        edges: GRAPH.edges.filter((e) => e.kind === "exit" && e.target !== "frontier-abc"),
+        nodes: GRAPH.nodes.filter((n) => n.kind === "room"),
+      };
+      mockApi({ graph: () => json(moved) });
+      renderPanel();
+      await screen.findByRole("button", { name: "Library (current room)" });
+
+      expect(edges()).toHaveLength(1);
+      expect(within(edges()[0]).getByText("south door")).toBeTruthy();
+      expect(within(edges()[0]).queryByText("north door")).toBeNull();
+    });
+  });
+
   describe("map pointer handling", () => {
     const svg = () => screen.getByRole("group", { name: "Exploration map" });
     const center = () => {

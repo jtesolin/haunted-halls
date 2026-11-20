@@ -13,7 +13,11 @@ export interface PositionedNode {
 }
 
 export interface PositionedEdge {
+  // The edge as the engine reports it. For a merged reciprocal pair this is the one leaving the
+  // room nearer the player, so its label is the exit direction read outward from that room.
   edge: ExplorationEdge;
+  // The opposite-direction engine edge folded into this connection; null for a single edge.
+  reverse: ExplorationEdge | null;
   path: string;
   labelX: number;
   labelY: number;
@@ -41,13 +45,53 @@ function clipToRect(center: Point, half: { w: number; h: number }, toward: Point
   return { x: center.x + dx * scale, y: center.y + dy * scale };
 }
 
+const OPPOSITE: Record<string, string> = {
+  north: "south", east: "west", up: "down", in: "out", northeast: "southwest", northwest: "southeast",
+};
+for (const [a, b] of Object.entries(OPPOSITE)) {
+  OPPOSITE[b] = a;
+}
+
+// Folds each reciprocal pair of exits (A->B and B->A) into one connection oriented away from the
+// player (the endpoint with the smaller BFS depth is the source; ties break by id). Only exits fold:
+// routes and passages keep their own semantics, and one-way links keep their real direction.
+function connect(
+  edges: ExplorationEdge[],
+  byId: Map<string, { node: ExplorationNode }>,
+  depthOf: Map<string, number>
+): { edge: ExplorationEdge; reverse: ExplorationEdge | null }[] {
+  const isRoom = (id: string) => byId.get(id)?.node.kind === "room";
+  const folded = new Set<string>();
+  const merged = new Map<string, { edge: ExplorationEdge; reverse: ExplorationEdge }>();
+  const exits = edges.filter((e) => e.kind === "exit" && e.source !== e.target && isRoom(e.source) && isRoom(e.target));
+  for (const out of exits) {
+    if (folded.has(out.id)) continue;
+    const back = exits.filter((e) => e.source === out.target && e.target === out.source);
+    const siblings = exits.filter((e) => e.source === out.source && e.target === out.target);
+    // Lone pair is unambiguous; with several exits per side only a named opposite pairs.
+    const mate =
+      siblings.length === 1 && back.length === 1 ? back[0] : back.find((e) => OPPOSITE[out.label] === e.label);
+    if (!mate || folded.has(mate.id)) continue;
+    folded.add(out.id);
+    folded.add(mate.id);
+    const near = (e: ExplorationEdge) => depthOf.get(e.source) ?? 0;
+    const outward = near(mate) < near(out) || (near(mate) === near(out) && mate.source < out.source) ? mate : out;
+    merged.set(outward.id, { edge: outward, reverse: outward === out ? mate : out });
+  }
+  return edges
+    .filter((e) => !folded.has(e.id) || merged.has(e.id))
+    .map((e) => merged.get(e.id) ?? { edge: e, reverse: null });
+}
+
 // Layered layout from the start node. Layout need not be geographic: it only has to be
 // stable, readable, and cope with branches, cycles, and disconnected pieces.
 export function layoutGraph(nodes: ExplorationNode[], edges: ExplorationEdge[], startId: string): GraphLayout {
   const known = new Set(nodes.map((node) => node.id));
   const usable = edges.filter((edge) => known.has(edge.source) && known.has(edge.target));
   const neighbours = new Map<string, string[]>();
-  for (const edge of usable) {
+  // Edge order from the engine is not a contract; sort so layout never depends on it.
+  const ordered = [...usable].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  for (const edge of ordered) {
     neighbours.set(edge.source, [...(neighbours.get(edge.source) ?? []), edge.target]);
     neighbours.set(edge.target, [...(neighbours.get(edge.target) ?? []), edge.source]);
   }
@@ -88,21 +132,24 @@ export function layoutGraph(nodes: ExplorationNode[], edges: ExplorationEdge[], 
   }));
   const byId = new Map(positioned.map((entry) => [entry.node.id, entry]));
 
-  // Parallel/reciprocal edges between one pair fan out so none hide another.
+  const connections = connect(ordered, byId, depthOf);
+
+  // Parallel connections between one pair fan out so none hide another.
   const pairCount = new Map<string, number>();
   const pairSeen = new Map<string, number>();
   const pairKey = (edge: ExplorationEdge) => [edge.source, edge.target].sort().join("\u0000");
-  for (const edge of usable) {
+  for (const { edge } of connections) {
     pairCount.set(pairKey(edge), (pairCount.get(pairKey(edge)) ?? 0) + 1);
   }
 
-  const positionedEdges: PositionedEdge[] = usable.map((edge) => {
+  const positionedEdges: PositionedEdge[] = connections.map(({ edge, reverse }) => {
     const from = byId.get(edge.source)!;
     const to = byId.get(edge.target)!;
     if (edge.source === edge.target) {
       const top = from.y - from.half.h;
       return {
         edge,
+        reverse,
         path: `M ${from.x - 10} ${top} C ${from.x - 30} ${top - 44}, ${from.x + 30} ${top - 44}, ${from.x + 10} ${top}`,
         labelX: from.x,
         labelY: top - 36,
@@ -126,6 +173,7 @@ export function layoutGraph(nodes: ExplorationNode[], edges: ExplorationEdge[], 
     const end = clipToRect(to, to.half, control);
     return {
       edge,
+      reverse,
       path: `M ${start.x} ${start.y} Q ${control.x} ${control.y} ${end.x} ${end.y}`,
       labelX: 0.25 * start.x + 0.5 * control.x + 0.25 * end.x,
       labelY: 0.25 * start.y + 0.5 * control.y + 0.25 * end.y,

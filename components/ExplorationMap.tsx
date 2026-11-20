@@ -34,6 +34,7 @@ export default function ExplorationMap({
 }) {
   const layout = useMemo(() => layoutGraph(nodes, edges, currentRoomId), [nodes, edges, currentRoomId]);
   const { bounds } = layout;
+  const nameOf = (id: string) => nodes.find((n) => n.id === id)?.name ?? "Unnamed room";
   const currentSpot = layout.nodes.find((entry) => entry.node.id === currentRoomId);
   const homeView = useMemo<View>(() => ({ cx: currentSpot?.x ?? 0, cy: currentSpot?.y ?? 0, k: 1 }), [currentSpot?.x, currentSpot?.y]);
 
@@ -250,14 +251,20 @@ export default function ExplorationMap({
           </marker>
         </defs>
         <g>
-          {layout.edges.map(({ edge, path, labelX, labelY }) => (
-            <g key={edge.id} data-testid="map-edge">
-              <title>{`${edge.label} (${edge.kind}${edge.traversed ? "" : ", not yet traversed"})`}</title>
+          {layout.edges.map(({ edge, reverse, path, labelX, labelY }) => {
+            const traversed = edge.traversed || (reverse?.traversed ?? false);
+            return (
+            <g key={edge.id} data-testid="map-edge" data-two-way={reverse !== null}>
+              <title>
+                {reverse
+                  ? `${nameOf(edge.source)}: ${edge.label}; ${nameOf(reverse.source)}: ${reverse.label} (${edge.kind}${traversed ? "" : ", not yet traversed"})`
+                  : `${edge.label} (${edge.kind}${edge.traversed ? "" : ", not yet traversed"})`}
+              </title>
               <path
                 d={path}
                 fill="none"
-                markerEnd="url(#exploration-arrow)"
-                strokeDasharray={edge.traversed ? undefined : "5 4"}
+                markerEnd={reverse ? undefined : "url(#exploration-arrow)"}
+                strokeDasharray={traversed ? undefined : "5 4"}
                 className={edge.kind === "exit" ? "stroke-zinc-500" : "stroke-amber-400/80"}
                 strokeWidth={1.5}
               />
@@ -265,7 +272,8 @@ export default function ExplorationMap({
                 {truncate(edge.label, 16)}
               </text>
             </g>
-          ))}
+            );
+          })}
 
           {layout.nodes.map(({ node, x, y, half }) => {
             if (node.kind === "frontier") {
