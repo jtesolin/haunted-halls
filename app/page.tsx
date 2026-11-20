@@ -1230,18 +1230,16 @@ export default function Home() {
                   className="min-w-0 overflow-hidden"
                 />
               ) : visiblePanel === "exploration" ? (
-                activeCampaignId ? (
-                  <ExplorationJournalPanel
-                    key={activeCampaignId}
-                    id="exploration-journal-panel"
-                    campaignId={activeCampaignId}
-                    refreshKey={completedReplyCount}
-                    closeLabel={isMobileViewport ? "Back to Conversation" : "Collapse sidebar"}
-                    closeText={isMobileViewport ? "Back" : undefined}
-                    autoFocusClose={isMobileViewport}
-                    onClose={handleCloseActivePanel}
-                  />
-                ) : null
+                <ExplorationJournalPanel
+                  key={activeCampaignId ?? "none"}
+                  id="exploration-journal-panel"
+                  campaignId={activeCampaignId}
+                  refreshKey={completedReplyCount}
+                  closeLabel={isMobileViewport ? "Back to Conversation" : "Collapse sidebar"}
+                  closeText={isMobileViewport ? "Back" : undefined}
+                  autoFocusClose={isMobileViewport}
+                  onClose={handleCloseActivePanel}
+                />
               ) : (
                 <CharacterSheetPanel
                   id="character-sheet-panel"

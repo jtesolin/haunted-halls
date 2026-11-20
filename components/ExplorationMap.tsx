@@ -1,19 +1,23 @@
 "use client";
 
-import { useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
-import { Minus, Plus, RotateCcw } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { LocateFixed, Maximize2, Minus, Plus } from "lucide-react";
 import { layoutGraph } from "@/lib/exploration-layout";
 import type { ExplorationEdge, ExplorationNode } from "@/types/exploration";
 
-const MIN_ZOOM = 0.4;
+const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 3;
 const DRAG_THRESHOLD_PX = 4;
+const FALLBACK_SIZE = { width: 320, height: 288 };
 const ZOOM_BUTTON_CLASS =
   "inline-flex h-7 w-7 items-center justify-center rounded-md border border-white/15 bg-zinc-900/80 text-zinc-300 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70";
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
 function truncate(text: string, max: number) {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
+
+type View = { cx: number; cy: number; k: number };
 
 export default function ExplorationMap({
   nodes,
@@ -29,22 +33,94 @@ export default function ExplorationMap({
   onSelectRoom: (roomId: string) => void;
 }) {
   const layout = useMemo(() => layoutGraph(nodes, edges, currentRoomId), [nodes, edges, currentRoomId]);
-  const [view, setView] = useState({ x: 0, y: 0, k: 1 });
-  const drag = useRef<{ startX: number; startY: number; originX: number; originY: number; moved: boolean } | null>(null);
-  const svgRef = useRef<SVGSVGElement | null>(null);
   const { bounds } = layout;
-  const cx = bounds.x + bounds.width / 2;
-  const cy = bounds.y + bounds.height / 2;
+  const currentSpot = layout.nodes.find((entry) => entry.node.id === currentRoomId);
+  const homeView = useMemo<View>(() => ({ cx: currentSpot?.x ?? 0, cy: currentSpot?.y ?? 0, k: 1 }), [currentSpot?.x, currentSpot?.y]);
 
-  const zoomBy = (factor: number) =>
-    setView((current) => ({ ...current, k: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, current.k * factor)) }));
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const [size, setSize] = useState(FALLBACK_SIZE);
+  // At zoom 1 one map unit is one CSS pixel, so labels stay readable however large the graph is.
+  const [view, setView] = useState<View>(homeView);
+  const [userMoved, setUserMoved] = useState(false);
+  const drag = useRef<{ startX: number; startY: number; origin: View; moved: boolean } | null>(null);
+  const pointers = useRef(new Map<number, { x: number; y: number }>());
+  const pinch = useRef<{ distance: number; k: number } | null>(null);
+
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const observer = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      if (width > 0 && height > 0) {
+        setSize({ width, height });
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // Follow the current room until the user pans or zooms on their own.
+  const [lastHome, setLastHome] = useState(homeView);
+  if (lastHome !== homeView) {
+    setLastHome(homeView);
+    if (!userMoved) {
+      setView(homeView);
+    }
+  }
+
+  const limit = (next: View): View => ({
+    k: clamp(next.k, MIN_ZOOM, MAX_ZOOM),
+    cx: clamp(next.cx, bounds.x, bounds.x + bounds.width),
+    cy: clamp(next.cy, bounds.y, bounds.y + bounds.height),
+  });
+  const change = (next: View) => {
+    setUserMoved(true);
+    setView(limit(next));
+  };
+  const zoomBy = (factor: number) => change({ ...view, k: view.k * factor });
+  const reset = () => {
+    setUserMoved(false);
+    setView(homeView);
+  };
+  const fitAll = () => {
+    setUserMoved(true);
+    setView(
+      limit({
+        cx: bounds.x + bounds.width / 2,
+        cy: bounds.y + bounds.height / 2,
+        k: Math.min(size.width / bounds.width, size.height / bounds.height),
+      })
+    );
+  };
+
+  const viewW = size.width / view.k;
+  const viewH = size.height / view.k;
+  const viewBox = `${view.cx - viewW / 2} ${view.cy - viewH / 2} ${viewW} ${viewH}`;
 
   const onPointerDown = (event: PointerEvent<SVGSVGElement>) => {
-    drag.current = { startX: event.clientX, startY: event.clientY, originX: view.x, originY: view.y, moved: false };
+    pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pointers.current.size === 2) {
+      const [a, b] = [...pointers.current.values()];
+      pinch.current = { distance: Math.hypot(a.x - b.x, a.y - b.y) || 1, k: view.k };
+      drag.current = { startX: 0, startY: 0, origin: view, moved: true };
+      return;
+    }
+    drag.current = { startX: event.clientX, startY: event.clientY, origin: view, moved: false };
   };
   const onPointerMove = (event: PointerEvent<SVGSVGElement>) => {
+    if (!pointers.current.has(event.pointerId)) {
+      return;
+    }
+    pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pinch.current && pointers.current.size === 2) {
+      const [a, b] = [...pointers.current.values()];
+      change({ ...view, k: pinch.current.k * (Math.hypot(a.x - b.x, a.y - b.y) / pinch.current.distance) });
+      return;
+    }
     const state = drag.current;
-    if (!state || event.buttons === 0) {
+    if (!state) {
       return;
     }
     const dx = event.clientX - state.startX;
@@ -53,17 +129,42 @@ export default function ExplorationMap({
       return;
     }
     state.moved = true;
-    // Convert screen pixels to viewBox units so panning tracks the pointer at any rendered size.
-    const rect = svgRef.current?.getBoundingClientRect();
-    const scale = rect && rect.width > 0 ? Math.max(bounds.width / rect.width, bounds.height / (rect.height || 1)) : 1;
-    setView((current) => ({ ...current, x: state.originX + dx * scale, y: state.originY + dy * scale }));
+    change({ ...state.origin, cx: state.origin.cx - dx / state.origin.k, cy: state.origin.cy - dy / state.origin.k });
   };
-  const endDrag = () => {
+  const endPointer = (event: PointerEvent<SVGSVGElement>) => {
+    pointers.current.delete(event.pointerId);
+    pinch.current = null;
     // Keep `moved` readable by the click that follows pointerup, then clear it.
     setTimeout(() => {
-      drag.current = null;
+      if (pointers.current.size === 0) {
+        drag.current = null;
+      }
     }, 0);
   };
+  // Plain wheel keeps scrolling the drawer; ctrl/meta+wheel (and trackpad pinch) zooms the map.
+  const { x: bx, y: by, width: bw, height: bh } = bounds;
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) {
+      return;
+    }
+    const handler = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) {
+        return;
+      }
+      event.preventDefault();
+      const factor = event.deltaY < 0 ? 1.15 : 1 / 1.15;
+      setUserMoved(true);
+      setView((current) => ({
+        ...current,
+        k: clamp(current.k * factor, MIN_ZOOM, MAX_ZOOM),
+        cx: clamp(current.cx, bx, bx + bw),
+        cy: clamp(current.cy, by, by + bh),
+      }));
+    };
+    el.addEventListener("wheel", handler, { passive: false });
+    return () => el.removeEventListener("wheel", handler);
+  }, [bx, by, bw, bh]);
 
   const select = (roomId: string) => {
     if (!drag.current?.moved) {
@@ -76,11 +177,20 @@ export default function ExplorationMap({
       onSelectRoom(roomId);
     }
   };
+  // Keyboard focus on a node outside the visible window brings it into view.
+  const revealNode = (x: number, y: number) => {
+    const margin = 70;
+    const inside =
+      Math.abs(x - view.cx) < viewW / 2 - margin && Math.abs(y - view.cy) < viewH / 2 - margin;
+    if (!inside) {
+      change({ ...view, cx: x, cy: y });
+    }
+  };
 
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-zinc-500">Drag to pan. Select a visited room to read its notes.</p>
+        <p className="text-xs text-zinc-500">Drag to pan, pinch or use the buttons to zoom. Select a visited room to read its notes.</p>
         <div className="flex shrink-0 items-center gap-1" role="group" aria-label="Map zoom">
           <button type="button" aria-label="Zoom out" onClick={() => zoomBy(1 / 1.25)} className={ZOOM_BUTTON_CLASS}>
             <Minus className="h-3.5 w-3.5" aria-hidden="true" />
@@ -88,13 +198,11 @@ export default function ExplorationMap({
           <button type="button" aria-label="Zoom in" onClick={() => zoomBy(1.25)} className={ZOOM_BUTTON_CLASS}>
             <Plus className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
-          <button
-            type="button"
-            aria-label="Reset map view"
-            onClick={() => setView({ x: 0, y: 0, k: 1 })}
-            className={ZOOM_BUTTON_CLASS}
-          >
-            <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+          <button type="button" aria-label="Fit whole map" onClick={fitAll} className={ZOOM_BUTTON_CLASS}>
+            <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+          <button type="button" aria-label="Center on current room" onClick={reset} className={ZOOM_BUTTON_CLASS}>
+            <LocateFixed className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
         </div>
       </div>
@@ -103,12 +211,12 @@ export default function ExplorationMap({
         ref={svgRef}
         role="group"
         aria-label="Exploration map"
-        viewBox={`${bounds.x} ${bounds.y} ${bounds.width} ${bounds.height}`}
+        viewBox={viewBox}
+        data-view-scale={view.k}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
-        onPointerUp={endDrag}
-        onPointerLeave={endDrag}
-        onPointerCancel={endDrag}
+        onPointerUp={endPointer}
+        onPointerCancel={endPointer}
         className="h-72 w-full cursor-grab touch-none select-none rounded-xl border border-white/10 bg-black/30 active:cursor-grabbing"
       >
         <defs>
@@ -116,7 +224,7 @@ export default function ExplorationMap({
             <path d="M 0 0 L 10 5 L 0 10 z" className="fill-zinc-400" />
           </marker>
         </defs>
-        <g transform={`translate(${view.x} ${view.y}) translate(${cx} ${cy}) scale(${view.k}) translate(${-cx} ${-cy})`}>
+        <g>
           {layout.edges.map(({ edge, path, labelX, labelY }) => (
             <g key={edge.id} data-testid="map-edge">
               <title>{`${edge.label} (${edge.kind}${edge.traversed ? "" : ", not yet traversed"})`}</title>
@@ -161,8 +269,20 @@ export default function ExplorationMap({
                 data-selected={isSelected}
                 onClick={() => select(node.id)}
                 onKeyDown={(event) => onNodeKey(event, node.id)}
-                className="cursor-pointer outline-none [&:focus-visible>rect]:stroke-sky-300"
+                onFocus={() => revealNode(x, y)}
+                className="group cursor-pointer outline-none"
               >
+                <rect
+                  x={x - half.w - 9}
+                  y={y - half.h - 9}
+                  width={half.w * 2 + 18}
+                  height={half.h * 2 + 18}
+                  rx={16}
+                  fill="none"
+                  strokeDasharray="4 3"
+                  strokeWidth={2}
+                  className="stroke-transparent group-focus-visible:stroke-amber-300"
+                />
                 <title>{name}</title>
                 <rect
                   x={x - half.w}

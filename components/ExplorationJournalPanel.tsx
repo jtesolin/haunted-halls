@@ -79,7 +79,7 @@ export default function ExplorationJournalPanel({
   autoFocusClose,
 }: {
   id?: string;
-  campaignId: string;
+  campaignId: string | null;
   // Changes whenever the game state may have changed (e.g. a turn completed) so the journal refetches.
   refreshKey: number;
   closeLabel: string;
@@ -98,12 +98,19 @@ export default function ExplorationJournalPanel({
 
   const graphKey = `${campaignId}:${refreshKey}:${attempt}`;
   // During a background refresh keep showing the previous graph instead of flashing a spinner.
-  // A stale error is dropped so Retry shows the loading state again.
+  // A stale error is dropped so Retry shows the loading state again. A loaded graph is kept
+  // while a refresh is in flight or fails.
   const graph = graphState && (graphState.result.status !== "error" || graphState.requestKey === graphKey) ? graphState.result : null;
 
   useEffect(() => {
+    if (!campaignId) {
+      return;
+    }
     const controller = new AbortController();
-    const settle = (result: Loaded<ExplorationResponse>) => setGraphState({ requestKey: graphKey, result });
+    const settle = (result: Loaded<ExplorationResponse>) =>
+      setGraphState((prev) =>
+        result.status === "error" && prev?.result.status === "loaded" ? prev : { requestKey: graphKey, result }
+      );
     void (async () => {
       try {
         const res = await fetchJson<Partial<ExplorationResponse>>(
@@ -144,16 +151,26 @@ export default function ExplorationJournalPanel({
   const pickIsVisited = Boolean(
     loadedGraph && pickedRoomId && loadedGraph.nodes.some((node) => node.kind === "room" && node.id === pickedRoomId)
   );
+  // Once the character walks into the picked room it is the current room again: drop the pick
+  // so the journal keeps following later moves.
+  if (currentId && pickedRoomId === currentId) {
+    setPickedRoomId(null);
+  }
   const selectedId = pickIsVisited ? pickedRoomId : currentId;
   const viewingHistory = Boolean(selectedId && currentId && selectedId !== currentId);
 
   const notesKey = `${campaignId}:${selectedId}:${refreshKey}:${attempt}`;
   useEffect(() => {
-    if (!viewingHistory || !selectedId) {
+    if (!campaignId || !viewingHistory || !selectedId) {
       return;
     }
     const controller = new AbortController();
-    const settle = (result: Loaded<ExplorationRoomNotes>) => setNotesState({ requestKey: notesKey, result });
+    const settle = (result: Loaded<ExplorationRoomNotes>) =>
+      setNotesState((prev) =>
+        result.status === "error" && prev?.result.status === "loaded" && prev.result.data.room.id === selectedId
+          ? prev
+          : { requestKey: notesKey, result }
+      );
     void (async () => {
       try {
         const res = await fetchJson<Partial<ExplorationRoomNotes>>(
@@ -187,7 +204,13 @@ export default function ExplorationJournalPanel({
     setJournalOpen(true);
   };
 
-  const notesResult = notesState?.requestKey === notesKey ? notesState.result : null;
+  // Notes already shown for this room stay visible while a refresh runs or fails.
+  const notesResult =
+    notesState &&
+    (notesState.requestKey === notesKey ||
+      (notesState.result.status === "loaded" && notesState.result.data.room.id === selectedId))
+      ? notesState.result
+      : null;
   const selectedNode = loadedGraph?.nodes.find((node) => node.id === selectedId);
 
   let journalBody: ReactNode;
@@ -266,7 +289,9 @@ export default function ExplorationJournalPanel({
         </div>
 
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1 custom-scrollbar">
-          {graph === null ? (
+          {!campaignId ? (
+            <p className="text-sm text-zinc-400">This campaign has not started yet.</p>
+          ) : graph === null ? (
             <p className="animate-pulse text-sm text-zinc-400" aria-live="polite">Loading exploration journal...</p>
           ) : graph.status === "error" ? (
             <div className="space-y-3 text-sm">

@@ -229,8 +229,140 @@ describe("ExplorationJournalPanel", () => {
     const group = screen.getByRole("group", { name: "Map zoom" });
     fireEvent.click(within(group).getByRole("button", { name: "Zoom in" }));
     fireEvent.click(within(group).getByRole("button", { name: "Zoom out" }));
-    fireEvent.click(within(group).getByRole("button", { name: "Reset map view" }));
+    fireEvent.click(within(group).getByRole("button", { name: "Fit whole map" }));
+    fireEvent.click(within(group).getByRole("button", { name: "Center on current room" }));
     fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts at a readable scale centred on the current room for a large graph", async () => {
+    const nodes = Array.from({ length: 30 }, (_, i) => ({ id: `r${i}`, kind: "room", name: `Room ${i}` }));
+    const edges = nodes.slice(1).map((node, i) => ({
+      id: `e${i}`,
+      source: nodes[i].id,
+      target: node.id,
+      kind: "exit",
+      label: "on",
+      traversed: true,
+    }));
+    mockApi({
+      graph: () =>
+        json({ current_location: { id: "r15", name: "Room 15" }, nodes, edges, observations: ["Mid corridor."] }),
+    });
+    renderPanel();
+    await screen.findByText("Mid corridor.");
+
+    const svg = screen.getByRole("group", { name: "Exploration map" });
+    expect(svg).toHaveAttribute("data-view-scale", "1");
+    const [vx, , vw] = svg.getAttribute("viewBox")!.split(" ").map(Number);
+    // 1 map unit = 1 px at the default view (fallback width) and the current room (x=0 here) is inside it.
+    expect(vw).toBeLessThan(400);
+    expect(vx).toBeLessThan(0);
+    expect(vx + vw).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: /^Room \d+/ })).toHaveLength(30);
+
+    fireEvent.click(screen.getByRole("button", { name: "Fit whole map" }));
+    expect(Number(svg.getAttribute("data-view-scale"))).toBeLessThan(1);
+    fireEvent.click(screen.getByRole("button", { name: "Center on current room" }));
+    expect(svg).toHaveAttribute("data-view-scale", "1");
+  });
+
+  it("zooms with ctrl+wheel but leaves plain wheel for scrolling the drawer", async () => {
+    renderPanel();
+    await screen.findByText("A cold hearth.");
+    const svg = screen.getByRole("group", { name: "Exploration map" });
+
+    fireEvent.wheel(svg, { deltaY: -100 });
+    expect(svg).toHaveAttribute("data-view-scale", "1");
+    fireEvent.wheel(svg, { deltaY: -100, ctrlKey: true });
+    expect(Number(svg.getAttribute("data-view-scale"))).toBeGreaterThan(1);
+  });
+
+  it("brings a keyboard-focused node into view", async () => {
+    const nodes = Array.from({ length: 8 }, (_, i) => ({ id: `r${i}`, kind: "room", name: `Room ${i}` }));
+    const edges = nodes.slice(1).map((node, i) => ({
+      id: `e${i}`, source: nodes[i].id, target: node.id, kind: "exit", label: "on", traversed: true,
+    }));
+    mockApi({ graph: () => json({ current_location: { id: "r0", name: "Room 0" }, nodes, edges, observations: ["x"] }) });
+    renderPanel();
+    await screen.findByText("x");
+    const svg = screen.getByRole("group", { name: "Exploration map" });
+    const before = svg.getAttribute("viewBox");
+
+    fireEvent.focus(screen.getByRole("button", { name: "Room 7" }));
+
+    expect(svg.getAttribute("viewBox")).not.toBe(before);
+  });
+
+  it("follows the current room again after a picked room becomes current", async () => {
+    const view = renderPanel();
+    await screen.findByText("A cold hearth.");
+    fireEvent.click(screen.getByRole("button", { name: "Library" }));
+    await screen.findByText("Caretaker was here.");
+
+    const inLibrary = { ...GRAPH, current_location: { id: "library", name: "Library" }, observations: ["Dusty shelves."] };
+    mockApi({ graph: () => json(inLibrary) });
+    view.rerender(<ExplorationJournalPanel campaignId="c1" refreshKey={1} closeLabel="x" onClose={vi.fn()} />);
+    expect(await screen.findByText("Dusty shelves.")).toBeInTheDocument();
+
+    const inHall = { ...GRAPH, observations: ["Back by the hearth."] };
+    mockApi({ graph: () => json(inHall) });
+    view.rerender(<ExplorationJournalPanel campaignId="c1" refreshKey={2} closeLabel="x" onClose={vi.fn()} />);
+    expect(await screen.findByText("Back by the hearth.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Return to Current Room" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the last good graph and notes when a background refresh fails or is pending", async () => {
+    const view = renderPanel();
+    await screen.findByText("A cold hearth.");
+    fireEvent.click(screen.getByRole("button", { name: "Library" }));
+    await screen.findByText("Caretaker was here.");
+
+    let releaseGraph: (response: Response) => void = () => {};
+    mockApi({
+      graph: () => new Promise<Response>((resolve) => { releaseGraph = resolve; }),
+      room: () => json({}, 500),
+    });
+    view.rerender(<ExplorationJournalPanel campaignId="c1" refreshKey={1} closeLabel="x" onClose={vi.fn()} />);
+    // In flight: no spinner replaces what is shown.
+    expect(screen.queryByText("Loading notes...")).not.toBeInTheDocument();
+    expect(screen.queryByText("Loading exploration journal...")).not.toBeInTheDocument();
+    expect(screen.getByText("Caretaker was here.")).toBeInTheDocument();
+
+    await act(async () => releaseGraph(new Response("{}", { status: 500 })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByText("The exploration journal could not be loaded.")).not.toBeInTheDocument();
+    expect(screen.queryByText("The room notes could not be loaded.")).not.toBeInTheDocument();
+    expect(screen.getByText("Caretaker was here.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Library" })).toBeInTheDocument();
+  });
+
+  it("ignores a superseded graph response that resolves late", async () => {
+    let releaseFirst: (response: Response) => void = () => {};
+    let call = 0;
+    mockApi({
+      graph: () => {
+        call += 1;
+        return call === 1
+          ? new Promise<Response>((resolve) => { releaseFirst = resolve; })
+          : json({ ...GRAPH, observations: ["Fresh note."] });
+      },
+    });
+    const view = renderPanel();
+    view.rerender(<ExplorationJournalPanel campaignId="c1" refreshKey={1} closeLabel="x" onClose={vi.fn()} />);
+    expect(await screen.findByText("Fresh note.")).toBeInTheDocument();
+
+    await act(async () => releaseFirst(new Response(JSON.stringify({ ...GRAPH, observations: ["Stale note."] }))));
+    expect(screen.queryByText("Stale note.")).not.toBeInTheDocument();
+    expect(screen.getByText("Fresh note.")).toBeInTheDocument();
+  });
+
+  it("shows a close control and no fetches when there is no campaign", () => {
+    const onClose = vi.fn();
+    renderPanel({ campaignId: null, onClose });
+    expect(screen.getByText("This campaign has not started yet.")).toBeInTheDocument();
+    expect(global.fetch).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+    expect(onClose).toHaveBeenCalled();
   });
 });

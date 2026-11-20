@@ -28,6 +28,9 @@ function mockBackend() {
         new Response(JSON.stringify([{ campaign_id: "c1", name: "Crypt", last_message: "hi", character_id: "char-1" }]))
       );
     }
+    if (url === "/api/chat") {
+      return Promise.resolve(new Response(JSON.stringify({ reply: "You step into the hall.", campaign_id: "c1", turn_id: "t2" })));
+    }
     if (url.endsWith("/exploration")) {
       explorationFetches.push(url);
       return Promise.resolve(new Response(JSON.stringify(GRAPH)));
@@ -117,5 +120,30 @@ describe("Exploration Journal navigation", () => {
     fireEvent.click(screen.getByRole("button", { name: "Back to Conversation" }));
     expect(document.getElementById("exploration-journal-panel")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open navigation menu" })).toHaveFocus();
+  });
+
+  it("refetches the journal after a turn completes", async () => {
+    setMobile(false);
+    const { explorationFetches } = mockBackend();
+    render(<Home />);
+    await screen.findByText("Welcome to Crypt");
+    const button = screen.getByRole("button", { name: "Exploration Journal" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    await screen.findByText("A cold hearth.");
+    expect(explorationFetches).toHaveLength(1);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Enter your command" }), { target: { value: "look" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await screen.findByText("You step into the hall.");
+    await waitFor(() => expect(explorationFetches.length).toBeGreaterThan(1));
+  });
+
+  it("disables the entry for a campaign-less session", async () => {
+    setMobile(false);
+    global.fetch = vi.fn(() => Promise.resolve(new Response("[]"))) as unknown as typeof fetch;
+    render(<Home />);
+    expect(screen.getByRole("button", { name: "Exploration Journal" })).toBeDisabled();
   });
 });
